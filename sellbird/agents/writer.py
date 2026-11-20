@@ -74,6 +74,52 @@ def _sections(markdown: str) -> dict[str, str]:
 MERGE_VAR = re.compile(r"\{\{\s*\w+\s*\}\}")
 
 
+def _safe_int(value, default: int = 0) -> int:
+    if value is None or isinstance(value, bool):
+        return default
+    try:
+        return int(value)
+    except (TypeError, ValueError):
+        try:
+            return int(float(str(value).strip()))
+        except (TypeError, ValueError):
+            return default
+
+
+def _unwrap_email_dict(result) -> dict | None:
+    """Unwrap common nested LLM wrappers like {'email': {'subject': ..., 'body': ...}}."""
+    if not isinstance(result, dict):
+        return None
+    if "subject" in result or "body" in result:
+        return result
+    for key in ("email", "draft", "result", "data", "message"):
+        nested = result.get(key)
+        if isinstance(nested, dict) and ("subject" in nested or "body" in nested):
+            return nested
+    for val in result.values():
+        if isinstance(val, dict) and ("subject" in val or "body" in val):
+            return val
+    return None
+
+
+def _fill_personal_merge_leaks(text: str, prospect) -> str:
+    """Replace any accidentally emitted merge variables in a 1-to-1 personal email."""
+    if "{{" not in text:
+        return text
+    first = getattr(prospect, "first_name", "") or ("there" if getattr(prospect, "is_company_inbox", False) else "")
+    replacements = {
+        "first_name": first,
+        "firstname": first,
+        "last_name": getattr(prospect, "last_name", "") or "",
+        "lastname": getattr(prospect, "last_name", "") or "",
+        "company": getattr(prospect, "company", "") or "",
+        "title": getattr(prospect, "title", "") or "",
+    }
+    for k, v in replacements.items():
+        text = re.sub(rf"\{{\{{\s*{k}\s*\}}\}}", v, text, flags=re.IGNORECASE)
+    return text
+
+
 def _names(prospect) -> list[str]:
     """Text that belongs to the prospect (their name, their company), so the
     style rules never read "Elevate Fitness" as an AI tell."""
@@ -186,12 +232,25 @@ class Writer:
     def is_native(self) -> bool:
         return self.config.channels.email.provider in NATIVE_PROVIDERS
 
+    def _load_writer_skills(self) -> str:
+        """Load writer skills and guarantee email_frameworks is included when available."""
+        skills = self.brain.load_skills_for_agent("writer") or ""
+        load_one = getattr(self.brain, "load_skill", None)
+        if callable(load_one):
+            try:
+                frameworks = load_one("email_frameworks") or ""
+            except Exception:
+                frameworks = ""
+            if isinstance(frameworks, str) and frameworks.strip() and frameworks.strip()[:80] not in skills:
+                skills = f"{skills}\n\n{frameworks.strip()}".strip()
+        return skills
+
     async def run(self):
         """Create email campaigns for prospects that need outreach."""
         logger.info("Writer: Crafting email campaigns...")
 
         # Load foundational skills for this agent
-        self.skills = self.brain.load_skills_for_agent("writer")
+        self.skills = self._load_writer_skills()
         # The offer can change in the dashboard while Sellbird runs: use the
         # one saved now, not the one read at startup. A hosted workspace's
         # config comes from its own store, never a file, so it's left alone.
@@ -350,21 +409,21 @@ class Writer:
         """writer.require_tip, or False when the config has none."""
         return bool(getattr(getattr(self.config, "writer", None), "require_tip", False))
 
-    async def _site_facts(self, company_id) -> list[str]:
+    async def _site_facts(self, company_id, *, include_booking: bool = False) -> list[str]:
         """Homepage findings for the prompt, unless writer.site_facts is off."""
         if not getattr(getattr(self.config, "writer", None), "site_facts", True):
             return []
-        return await site_facts(getattr(self, "state", None), company_id)
+        return await site_facts(getattr(self, "state", None), company_id, include_booking=include_booking)
 
     async def _has_tip_basis(self, prospect) -> bool:
         """Does the Writer have something concrete to build its one tip on?
 
-        A homepage finding, a startup fact, a buying signal or the Scout's
-        research notes. A failed read counts as "nothing known".
+        A homepage finding, a startup fact, a buying signal, tech stack, or the
+        Scout's research notes. A failed read counts as "nothing known".
         """
         if (prospect.personalization_notes or "").strip():
             return True
-        if await self._site_facts(prospect.company_id):
+        if await self._site_facts(prospect.company_id, include_booking=True):
             return True
         if await self._startup(prospect.company_id):
             return True
@@ -372,7 +431,7 @@ class Writer:
             company = await self.state.get_company(prospect.company_id) if prospect.company_id else None
         except Exception:
             company = None
-        return bool(company and company.signals)
+        return bool(company and (company.signals or company.tech_stack))
 
     async def _count_failed_attempt(self, batch_name: str, prospects: list):
         """Count one unusable sequence against each prospect in the batch.
@@ -611,14 +670,16 @@ Requirements:
 
 Return ONLY JSON: {{"subject": "...", "body": "..."}}"""
 
-        result = await self.brain.think_json(
-            prompt, session_id="sellbird-writer",
-            agent="writer", task="personal_email",
+        result = _unwrap_email_dict(
+            await self.brain.think_json(
+                prompt, session_id="sellbird-writer",
+                agent="writer", task="personal_email",
+            )
         )
         if not isinstance(result, dict):
             return None
-        subject = str(result.get("subject") or "").strip()
-        body = str(result.get("body") or "").strip()
+        subject = _fill_personal_merge_leaks(str(result.get("subject") or "").strip(), prospect)
+        body = _fill_personal_merge_leaks(str(result.get("body") or "").strip(), prospect)
         if not subject or not body:
             return None
         return {"subject": subject[:120], "body": body[:2000]}
@@ -803,8 +864,10 @@ Draft:
 
 Return ONLY a JSON object: {{"subject": "...", "body": "..."}}"""
         try:
-            result = await self.brain.think_json(
-                prompt, session_id="sellbird-writer", agent="writer", task="fix_draft",
+            result = _unwrap_email_dict(
+                await self.brain.think_json(
+                    prompt, session_id="sellbird-writer", agent="writer", task="fix_draft",
+                )
             )
         except Exception as e:
             logger.warning(f"Writer: rewrite to rules failed: {e}")
@@ -824,16 +887,18 @@ Return ONLY a JSON object: {{"subject": "...", "body": "..."}}"""
     def _parse_sequence(self, result) -> list[EmailStep]:
         """Robustly coerce LLM output into a validated EmailStep list.
 
-        Never raises. Tolerates a wrapper dict ({"emails": [...]}), missing
-        or wrong-typed fields, and extra keys. Drops invalid steps rather
-        than failing the whole sequence.
+        Never raises. Tolerates a wrapper dict ({"emails": [...]}, or any dict
+        containing a list), missing or wrong-typed fields, and extra keys. Drops
+        invalid steps rather than failing the whole sequence.
         """
         if isinstance(result, dict):
-            # Model wrapped the array in an object — unwrap common keys.
-            for key in ("emails", "sequence", "steps", "campaign"):
+            # Model wrapped the array in an object — unwrap common keys, else first list value.
+            for key in ("emails", "sequence", "steps", "campaign", "results", "data"):
                 if isinstance(result.get(key), list):
                     result = result[key]
                     break
+            else:
+                result = next((v for v in result.values() if isinstance(v, list)), None)
         if not isinstance(result, list) or not result:
             logger.error(f"Writer: Brain did not return an email array (got {type(result).__name__}).")
             return []
@@ -848,10 +913,8 @@ Return ONLY a JSON object: {{"subject": "...", "body": "..."}}"""
             if not subject or not body:
                 logger.warning(f"Writer: Skipping step {i + 1} with empty subject/body.")
                 continue
-            try:
-                delay = max(0, int(raw.get("delay_days", 3 if steps else 0)))
-            except (TypeError, ValueError):
-                delay = 3 if steps else 0
+            default_delay = 3 if steps else 0
+            delay = max(0, _safe_int(raw.get("delay_days", default_delay), default_delay))
             try:
                 steps.append(
                     EmailStep(

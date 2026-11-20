@@ -244,8 +244,16 @@ def _powershell(env: Mapping[str, str]) -> str:
 
 
 def _run_powershell(runner, script: str, env: Mapping[str, str], extra: Mapping[str, str]):
-    return runner([_powershell(env), "-NoProfile", "-NonInteractive", "-Command", script],
-                  env={**env, **extra}, capture_output=True, text=True)
+    utf8_script = f"[Console]::OutputEncoding = [System.Text.Encoding]::UTF8; {script}"
+    return runner(
+        [_powershell(env), "-NoProfile", "-NonInteractive", "-Command", utf8_script],
+        env={**env, **extra},
+        capture_output=True,
+        text=True,
+        encoding="utf-8",
+        errors="replace",
+        creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0),
+    )
 
 
 def read_shortcut(path: Path, runner=subprocess.run,
@@ -311,7 +319,7 @@ def _install_windows(path: Path, runner, env: Mapping[str, str], home: Path | No
     if existing is not None:
         if existing["Description"] != MARKER:
             raise ForeignLoginItem(path)
-        if existing["TargetPath"] == target and existing["Arguments"] == arguments:
+        if _same_windows_path(existing["TargetPath"], target) and existing["Arguments"] == arguments:
             return LoginItemResult(False, path, "Already starts at login.")
     path.parent.mkdir(parents=True, exist_ok=True)
     proc = _run_powershell(runner, _CREATE_SCRIPT, env, {

@@ -24,6 +24,7 @@ import logging
 import os
 import random
 import re
+import time
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from typing import Optional
@@ -35,7 +36,11 @@ import httpx
 logger = logging.getLogger("sellbird.email_finder")
 
 # Cache MX host + type per domain to avoid repeated lookups.
+# Negative results (None) expire after NEGATIVE_MX_TTL_SECONDS (5 minutes) so a
+# transient DNS hiccup never permanently marks a company's domain invalid.
 _mx_cache: dict[str, Optional[str]] = {}
+_mx_negative_ts: dict[str, float] = {}
+NEGATIVE_MX_TTL_SECONDS = 300.0
 
 API_TIMEOUT = httpx.Timeout(connect=10.0, read=20.0, write=10.0, pool=10.0)
 
@@ -147,24 +152,36 @@ def classify_mx(mx_host: str) -> str:
 
 
 async def get_mx_host(domain: str) -> Optional[str]:
-    """Primary MX host for a domain (cached; None on failure)."""
+    """Primary MX host for a domain (cached; 5-minute TTL on None)."""
     domain = _clean_domain(domain)
     if not domain:
         return None
     if domain in _mx_cache:
-        return _mx_cache[domain]
+        cached = _mx_cache[domain]
+        if cached is not None:
+            return cached
+        neg_at = _mx_negative_ts.get(domain)
+        if neg_at is None or (time.monotonic() - neg_at) < NEGATIVE_MX_TTL_SECONDS:
+            return None
+        _mx_cache.pop(domain, None)
+        _mx_negative_ts.pop(domain, None)
     try:
-        loop = asyncio.get_event_loop()
+        loop = asyncio.get_running_loop()
         answers = await loop.run_in_executor(
             None, lambda: dns.resolver.resolve(domain, "MX")
         )
         records = sorted(answers, key=lambda x: x.preference)
         mx_host = str(records[0].exchange).rstrip(".") if records else None
         _mx_cache[domain] = mx_host or None
+        if _mx_cache[domain] is None:
+            _mx_negative_ts[domain] = time.monotonic()
+        else:
+            _mx_negative_ts.pop(domain, None)
         return _mx_cache[domain]
     except Exception as e:
         logger.debug(f"MX lookup failed for {domain}: {e}")
         _mx_cache[domain] = None
+        _mx_negative_ts[domain] = time.monotonic()
         return None
 
 
@@ -382,6 +399,14 @@ def _hunter_api_key() -> str:
     return os.getenv("HUNTER_API_KEY", "").strip()
 
 
+def _resolve_hunter_key(env=None) -> str:
+    if env is not None:
+        key = str(getattr(env, "hunter_api_key", "") or "").strip()
+        if key:
+            return key
+    return _hunter_api_key()
+
+
 # Hunter's free tier is 25 domain-searches/month for the whole account, and
 # every call spends one no matter how many people it returns. Paid plans set
 # HUNTER_MONTHLY_SEARCHES to their own allowance. Every domain-search call in
@@ -468,6 +493,7 @@ async def derive_pattern(
     known_emails: Optional[list[tuple[str, str, str]]] = None,
     state=None,
     default_pattern: str = DEFAULT_PATTERN,
+    env=None,
 ) -> tuple[str, str, float]:
     """Determine a domain's email pattern. Returns (pattern, source, confidence).
 
@@ -500,7 +526,7 @@ async def derive_pattern(
     # A site guess is better than nothing, but Hunter gets one look first.
     site_guess = cached if cached and cached.get("pattern") and source.startswith("site_address_guess") else None
     hunter_tried = source.endswith("_after_hunter")
-    key = _hunter_api_key()
+    key = _resolve_hunter_key(env)
     if key and not hunter_tried and await hunter_searches_remaining(state) > 0:
         await record_hunter_search(state)
         try:
@@ -673,7 +699,7 @@ async def _verify_candidate(email: str, mx_type: str, env) -> tuple[Optional[str
     """
     reoon_key = getattr(env, "reoon_api_key", "") if env else ""
     zerobounce_key = getattr(env, "zerobounce_api_key", "") if env else ""
-    hunter_key = _hunter_api_key()
+    hunter_key = _resolve_hunter_key(env)
 
     catch_all_seen = False
 
@@ -800,7 +826,7 @@ async def find_email(
     mx_type = classify_mx(mx_host)
 
     pattern, source, confidence = await derive_pattern(
-        domain, known_emails=known_emails, state=state, default_pattern=default_pattern,
+        domain, known_emails=known_emails, state=state, default_pattern=default_pattern, env=env,
     )
     candidate = build_email(pattern, first_name, last_name, domain)
     own = _clean_name_part(first_name), _clean_name_part(last_name)

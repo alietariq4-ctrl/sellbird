@@ -28,9 +28,12 @@ With no handoff configured, nothing is called: the person shows up as
 ``offers_accepted`` tool, for you or your coding agent to act on.
 """
 
+import asyncio
 import logging
 import os
 import re
+
+from sellbird.integrations.stealth_fetch import validate_public_url
 
 logger = logging.getLogger("sellbird.handoff")
 
@@ -99,20 +102,28 @@ async def call_tool(h, arguments: dict, env: dict | None = None) -> dict:
                 return {"ok": False, "error": f"{h.token_env} isn't set in .env"}
             if token:
                 headers["Authorization"] = f"Bearer {token}"
+            await validate_public_url(h.mcp_url)
             async with create_mcp_http_client(headers=headers) as http:
                 async with streamable_http_client(h.mcp_url, http_client=http) as (read, write):
                     async with ClientSession(read, write) as session:
-                        await session.initialize()
+                        await asyncio.wait_for(session.initialize(), timeout=CALL_TIMEOUT)
                         result = await session.call_tool(h.tool, arguments,
                                                          read_timeout_seconds=CALL_TIMEOUT)
         else:
             from mcp.client.stdio import StdioServerParameters, stdio_client
-            params = StdioServerParameters(command=h.mcp_command[0], args=list(h.mcp_command[1:]))
+            params = StdioServerParameters(
+                command=h.mcp_command[0],
+                args=list(h.mcp_command[1:]),
+                env=dict(env),
+            )
             async with stdio_client(params) as (read, write):
                 async with ClientSession(read, write) as session:
-                    await session.initialize()
+                    await asyncio.wait_for(session.initialize(), timeout=CALL_TIMEOUT)
                     result = await session.call_tool(h.tool, arguments,
                                                      read_timeout_seconds=CALL_TIMEOUT)
+    except ValueError as e:
+        logger.warning(f"Handoff: blocked unsafe or invalid URL for {h.tool}: {e}")
+        return {"ok": False, "error": f"invalid or non-public handoff URL ({e})"}
     except Exception as e:  # any transport or server failure
         logger.warning(f"Handoff: calling {h.tool} failed: {e}")
         return {"ok": False, "error": f"couldn't reach the handoff server ({type(e).__name__})"}

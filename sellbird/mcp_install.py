@@ -487,9 +487,11 @@ def _apply_file(change: PlannedChange, now: datetime) -> None:
 
 
 def _run_cli(argv: tuple[str, ...], runner) -> None:
+    extra = ({"creationflags": getattr(subprocess, "CREATE_NO_WINDOW", 0)}
+             if sys.platform == "win32" else {})
     try:
         result = runner(list(argv), capture_output=True, text=True, encoding="utf-8",
-                        errors="replace", timeout=60)
+                        errors="replace", timeout=60, **extra)
     except (OSError, subprocess.SubprocessError) as e:
         raise InstallError(f"`{shlex.join(argv[:3])}` couldn't run ({type(e).__name__})")
     if result.returncode != 0:

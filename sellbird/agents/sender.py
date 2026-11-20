@@ -690,6 +690,7 @@ class Sender:
             zone = await self._zone_or_default(prospect) if window is not None else ""
             cumulative_days = 0
             new_rows = 0
+            step1_created = False
             for step in campaign.sequence:
                 if step.step > 1 and not getattr(self.config.channels.email, "follow_ups", True):
                     continue    # first email only; a reply is still answered
@@ -712,9 +713,20 @@ class Sender:
                 if item_id:
                     staged += 1
                     new_rows += 1
-            if new_rows and self.inboxes is not None and self.inboxes.several:
-                # The thread's inbox: every one of its emails leaves from it.
-                await self.inboxes.assign(campaign.id, prospect.id, staged_now=True)
+                    if step.step == 1:
+                        step1_created = True
+            if self.inboxes is not None and self.inboxes.several:
+                # If Step 1 was created right now, no inbox had counted it yet (staged_now=True).
+                # If Writer already personalized Step 1 earlier, it sits on MAIN and was already
+                # counted in MAIN.queued_first by _load_inboxes(), so reassign with staged_now=False
+                # even when new_rows == 0 (e.g. follow_ups=False).
+                if step1_created:
+                    await self.inboxes.assign(campaign.id, prospect.id, staged_now=True)
+                elif (
+                    not await self.inboxes.store.thread_started(campaign.id, prospect.id)
+                    and await self.inboxes.store.has_unsent_first_email(campaign.id, prospect.id)
+                ):
+                    await self.inboxes.assign(campaign.id, prospect.id, staged_now=False)
             # Conditional: never overwrite a status set while staging
             # (marked sent by hand, a reply).
             await self.state.queue_prospect_if_unsent(prospect.id)

@@ -1,0 +1,80 @@
+# brain.yaml — which models Sellbird thinks with, in order of preference.
+# Copy this to brain.yaml beside sellbird.yaml, then set the keys in .env.
+# Wire it in with:  brain: { provider: openrouter }
+#   or:             brain: { transport_factory: "harvey_brain.router_factory:build" }
+
+system_prefix: ""
+
+budget:
+  max_usd_per_day: 5.0
+
+chain:
+  - provider: openrouter
+    model: anthropic/claude-sonnet-5.5
+    json_mode: auto
+    max_output_tokens: 4096
+
+  - provider: xai
+    model: grok-4.7
+    reasoning_effort: high
+
+  - provider: gemini
+    model: gemini-4-hydrogen
+
+  # Local fallback that costs nothing on a bill.
+  - provider: ollama
+    model: llama3.2
+    timeout: 120
+
+  # - provider: lmstudio
+  #   model: local-model
+  # - provider: vllm
+  #   model: local-model
+  # - provider: custom
+  #   base_url: http://localhost:8080/v1
+  #   model: qwen2.5-72b
+  # - provider: claude_cli
+  # - provider: codex_cli
+
+profiles:
+  scout:
+    provider: openrouter
+    model: anthropic/claude-haiku-5.5
+    max_output_tokens: 1024
+    temperature: 0
+    json_mode: auto
+  researcher:
+    provider: openrouter
+    model: anthropic/claude-haiku-5.5
+    max_output_tokens: 2048
+    temperature: 0.1
+    json_mode: auto
+  enricher:
+    provider: openrouter
+    model: anthropic/claude-haiku-5.5
+    max_output_tokens: 1024
+    temperature: 0
+    json_mode: auto
+  writer:
+    provider: openrouter
+    model: anthropic/claude-sonnet-5.5
+    max_output_tokens: 2048
+    temperature: 0.7
+    json_mode: auto
+  critic:
+    provider: openrouter
+    model: anthropic/claude-haiku-5.5
+    max_output_tokens: 1024
+    temperature: 0.1
+    json_mode: auto
+  handler:
+    provider: openrouter
+    model: anthropic/claude-haiku-5.5
+    max_output_tokens: 1024
+    temperature: 0.2
+    json_mode: auto
+  analyst:
+    provider: openrouter
+    model: anthropic/claude-sonnet-5.5
+    max_output_tokens: 4096
+    json_mode: json_object

@@ -34,8 +34,10 @@ from sellbird.integrations.mail_provider import (
 )
 from sellbird.integrations.signature import SignatureError, load_signature, set_body
 
-_AUTO_REPLY_HEADERS = ("Auto-Submitted", "X-Autoreply", "X-Autorespond", "X-Autoresponse",
-                       "Precedence")
+_AUTO_REPLY_HEADERS = (
+    "Auto-Submitted", "X-Autoreply", "X-Autorespond", "X-Autoresponse",
+    "Precedence", "References", "X-Failed-Recipients", "Final-Recipient", "Original-Recipient",
+)
 logger = logging.getLogger("sellbird.smtp")
 
 
@@ -93,6 +95,10 @@ class SmtpImapProvider(MailProvider):
         self.imap_user = getattr(env, "imap_username", "") or self.smtp_user
         self.imap_pass = getattr(env, "imap_password", "") or self.smtp_pass
 
+    @property
+    def username(self) -> str:
+        return self.imap_user or self.smtp_user or (self.identity.address if self.identity else "")
+
     def is_configured(self) -> bool:
         return bool(self.smtp_host and self.smtp_user and self.smtp_pass)
 
@@ -141,29 +147,52 @@ class SmtpImapProvider(MailProvider):
         return SendResult(ok=True, message_id=message_id, thread_ref=message_id)
 
     async def get_replies(self, limit: int = 50) -> list[InboundMessage]:
-        loop = asyncio.get_event_loop()
+        loop = asyncio.get_running_loop()
         try:
             return await loop.run_in_executor(None, self._fetch_unseen, limit)
+        except OSError:
+            logger.error("IMAP connection error while fetching replies")
+            raise
         except Exception as e:
             logger.error(f"IMAP fetch failed: {e}")
-            return []
+            raise RuntimeError(f"IMAP fetch failed: {e}") from e
+
+    def _own_addresses(self) -> set[str]:
+        addrs = {
+            (self.imap_user or "").strip().lower(),
+            (self.smtp_user or "").strip().lower(),
+            (self.identity.address if self.identity else "").strip().lower(),
+        }
+        return {a for a in addrs if a and "@" in a}
 
     def _fetch_unseen(self, limit: int) -> list[InboundMessage]:
         out: list[InboundMessage] = []
+        own = self._own_addresses()
         conn = imaplib.IMAP4_SSL(self.imap_host, self.imap_port)
         try:
             conn.login(self.imap_user, self.imap_pass)
-            conn.select("INBOX")
+            sel_status, _ = conn.select("INBOX")
+            if sel_status != "OK":
+                raise RuntimeError(f"IMAP select INBOX failed ({sel_status})")
             status, data = conn.search(None, "UNSEEN")
             if status != "OK":
-                return []
-            ids = data[0].split()[-limit:]
+                raise RuntimeError(f"IMAP search UNSEEN failed ({status})")
+            ids = (data[0] or b"").split()[-limit:]
             for msg_id in ids:
-                status, parts = conn.fetch(msg_id, "(RFC822)")
-                if status != "OK" or not parts or not isinstance(parts[0], tuple):
+                # Use BODY.PEEK[] so unread messages are NOT destructively marked \Seen
+                # before Handler finishes classifying and recording them.
+                status, parts = conn.fetch(msg_id, "(BODY.PEEK[])")
+                if status != "OK" or not parts:
                     continue
-                parsed = self._parse_rfc822(parts[0][1])
-                if parsed:
+                raw_bytes = None
+                for part in parts:
+                    if isinstance(part, tuple) and len(part) >= 2 and isinstance(part[1], (bytes, bytearray)):
+                        raw_bytes = bytes(part[1])
+                        break
+                if not raw_bytes:
+                    continue
+                parsed = self._parse_rfc822(raw_bytes)
+                if parsed and parsed.from_email.lower() not in own:
                     out.append(parsed)
         finally:
             try:
@@ -191,6 +220,16 @@ class SmtpImapProvider(MailProvider):
                 if part.get_content_type() == "text/html":
                     import re
                     body = re.sub(r"<[^>]+>", " ", body)
+            if msg.is_multipart():
+                dsn_chunks = []
+                for subpart in msg.walk():
+                    if subpart.get_content_type() in ("message/delivery-status", "text/rfc822-headers"):
+                        try:
+                            dsn_chunks.append(subpart.as_string())
+                        except Exception:
+                            pass
+                if dsn_chunks:
+                    body = (body + "\n" + "\n".join(dsn_chunks)).strip()
         except Exception:
             pass
 

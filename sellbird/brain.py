@@ -8,8 +8,11 @@ other one.
 """
 
 import asyncio
+from collections.abc import Mapping
+import inspect
 import json
 import logging
+import os
 import re
 import time
 from pathlib import Path
@@ -40,7 +43,19 @@ _NON_RETRYABLE_PATTERNS = (
 )
 
 
-PROVIDER_LABELS = {"claude": "Claude", "codex": "Codex"}
+PROVIDER_LABELS = {
+    "claude": "Claude",
+    "codex": "Codex",
+    "openrouter": "OpenRouter",
+    "openai_compat": "OpenAI-Compatible",
+}
+
+# The provider label a transport's usage row and daily counter use. A
+# transport may be backed by any per-token API (OpenRouter, xAI, Gemini,
+# DeepSeek, Groq); the ledger records the fact of the spend, and the model
+# column names which actual model charged it. It must exist in
+# BRAIN_PROVIDERS (config + state), which `record_usage_event` validates.
+TRANSPORT_USAGE_PROVIDER = "openrouter"
 
 # Settings key holding the brain's last health transition, for `sellbird
 # status` and the dashboard: {"provider", "status": "ok"|"paused", "reason",
@@ -80,6 +95,79 @@ class BrainUnavailable(Exception):
     a caller must leave its input untouched for a later retry."""
 
 
+# Specs already reported. A typo in sellbird.yaml is logged once, not once
+# per Brain construction (the dashboard builds one per request), unless the
+# environment or .env file changed (e.g. an API key was just added).
+_TRANSPORT_SPEC_REPORTED: set[str] = set()
+_LAST_ENV_FINGERPRINT: tuple | None = None
+_WATCHED_ENV_KEYS = (
+    "HARVEY_BRAIN_CONFIG", "SELLBIRD_HOME",
+    "OPENROUTER_API_KEY", "OPENAI_API_KEY", "OPENAI_BASE_URL", "OPENAI_MODEL",
+    "XAI_API_KEY", "GEMINI_API_KEY", "DEEPSEEK_API_KEY", "GROQ_API_KEY",
+    "MISTRAL_API_KEY", "TOGETHER_API_KEY", "FIREWORKS_API_KEY", "CEREBRAS_API_KEY",
+)
+
+
+def _transport_env_fingerprint() -> tuple:
+    env_vals = tuple(os.environ.get(k, "") for k in _WATCHED_ENV_KEYS)
+    dotenv_mtime = 0
+    try:
+        env_path = PROJECT_ROOT / ".env"
+        if env_path.exists():
+            dotenv_mtime = env_path.stat().st_mtime_ns
+    except OSError:
+        pass
+    return env_vals + (dotenv_mtime,)
+
+
+def _resolve_transport(spec: str):
+    """Build the transport named by ``brain.transport_factory``, or None.
+
+    ``spec`` is ``"pkg.module:callable"``, or ``"pkg.module"`` to call its
+    ``build``. The callable returns the transport object itself (see
+    ``Brain.__init__`` for the contract).
+
+    Never raises. Every ``Brain(...)`` in the codebase (main, cli, dashboard,
+    setup, trainer) constructs one unconditionally, so a typo in config must
+    degrade to "no transport" — which is exactly today's behaviour — rather
+    than take the whole CLI down. The reason is logged once per distinct spec
+    so an operator sees it without the log filling up.
+    """
+    global _LAST_ENV_FINGERPRINT
+    spec = (spec or "").strip()
+    if not spec:
+        return None
+    fp = _transport_env_fingerprint()
+    if _LAST_ENV_FINGERPRINT is not None and fp != _LAST_ENV_FINGERPRINT:
+        _TRANSPORT_SPEC_REPORTED.clear()
+    _LAST_ENV_FINGERPRINT = fp
+    try:
+        import importlib
+
+        module_name, _, attr = spec.partition(":")
+        target = importlib.import_module(module_name.strip())
+        factory = getattr(target, (attr or "build").strip(), None)
+        if factory is None:
+            raise AttributeError(
+                f"{module_name.strip()} has no {attr or 'build'!r}")
+        transport = factory()
+        if transport is None:
+            raise TypeError(f"{spec} returned None")
+        if not callable(transport):
+            raise TypeError(f"{spec} returned {type(transport).__name__}, "
+                            "which is not callable")
+        _TRANSPORT_SPEC_REPORTED.discard(spec)
+        return transport
+    except Exception as e:
+        if spec not in _TRANSPORT_SPEC_REPORTED:
+            _TRANSPORT_SPEC_REPORTED.add(spec)
+            logger.error(
+                "brain.transport_factory %r did not load (%s: %s); using "
+                "brain.provider instead. Check the dotted path.",
+                spec, type(e).__name__, e)
+        return None
+
+
 def _read_knowledge(folder: str, name: str) -> str:
     """``<home>/<folder>/<name>.md``, or the shipped copy when the home has
     none (a home with no prompts folder, such as a hosted workspace, still
@@ -104,14 +192,22 @@ class Brain:
         ``paused_reason`` attribute (str) to pause calls the way a usage limit
         does. This is the public seam a server running Sellbird for others
         (the hosted product's API brain) plugs into, instead of overriding
-        ``think``."""
+        ``think``.
+
+        An explicit ``transport=`` always wins. Otherwise the transport named
+        by ``brain.transport_factory`` is built (see ``_resolve_transport``);
+        when that is unset too, Claude or Codex runs as before. The transport
+        is orthogonal to ``brain.provider``: it is checked first in ``think``
+        and ``preflight``, so ``provider: claude`` stays valid config on a
+        box that has no Claude CLI.
+        """
         from sellbird.config import BrainConfig
 
         self.state = state
-        self.transport = transport
         self.config = brain_config or BrainConfig()
         self.provider = self.config.provider
         self.model = self.config.model
+        self.transport = transport or self._configured_transport()
         self.codex = None
         # Whether the last think_json got no reply at all (an outage, logout,
         # rate limit or timeout), as opposed to a reply that wasn't valid
@@ -124,20 +220,149 @@ class Brain:
         self._usage_limited_until = 0.0
         self._usage_pause_recorded = False
         self._status_synced = False
-        if self.provider == "codex":
+        if self.transport is not None:
+            # A transport is not a subscription: quota/usage endpoints that
+            # describe a plan do not exist for it, so it never builds either
+            # client. Its spend is accounted per call instead.
+            self.quota = None
+            self._attach_usage_recorder()
+        elif self.provider == "codex":
             from sellbird.codex import CodexClient, CodexQuotaClient
             self.codex = CodexClient(
                 model=self.model, reasoning_effort=self.config.reasoning_effort
             )
             self.quota = CodexQuotaClient(self.codex)
+        elif self.provider in ("openrouter", "openai_compat"):
+            self.quota = None
         else:
             # Lazy import avoids a cycle (quota -> usage -> state).
             from sellbird.integrations.quota import QuotaClient
             self.quota = QuotaClient()
 
     @property
+    def is_transport_active(self) -> bool:
+        return self.transport is not None
+
+    async def aclose(self) -> None:
+        """Close any underlying HTTP transport or Codex client cleanly."""
+        if self.transport is not None:
+            close_fn = getattr(self.transport, "aclose", None)
+            if callable(close_fn):
+                try:
+                    res = close_fn()
+                    if inspect.isawaitable(res):
+                        await res
+                except Exception as e:
+                    logger.debug(f"Transport close failed: {e}")
+        if self.codex is not None:
+            close_fn = getattr(self.codex, "close", None)
+            if callable(close_fn):
+                try:
+                    res = close_fn()
+                    if inspect.isawaitable(res):
+                        await res
+                except Exception as e:
+                    logger.debug(f"Codex close failed: {e}")
+
+    def _configured_transport(self):
+        """The transport ``brain.transport_factory`` names (or harvey_brain for openrouter), or None."""
+        spec = (getattr(self.config, "transport_factory", "") or "").strip()
+        if not spec and self.provider in ("openrouter", "openai_compat"):
+            spec = "harvey_brain.router_factory:build"
+        return _resolve_transport(spec)
+
+    def _ensure_api_transport(self) -> bool:
+        """Re-try loading the API transport if keys were added to .env after init."""
+        if self.transport is not None:
+            return True
+        if self.provider not in ("openrouter", "openai_compat") and not (
+            getattr(self.config, "transport_factory", "") or ""
+        ).strip():
+            return False
+        loaded = self._configured_transport()
+        if loaded is not None:
+            self.transport = loaded
+            self.quota = None
+            self.unavailable = ""
+            self._attach_usage_recorder()
+            return True
+        return False
+
+    def _attach_usage_recorder(self):
+        """Give the transport an ``on_usage=`` hook that writes a real
+        ``usage_events`` row per call.
+
+        Accepts either a positional ``Usage`` object or keyword arguments so
+        both :class:`harvey_brain.router.RouterTransport` and custom keyword
+        transports work seamlessly.
+        """
+        sink = getattr(self.transport, "on_usage", None)
+        if sink is not None:
+            return   # the transport brought its own recorder
+        chain = getattr(self.transport, "chain", None)
+        if isinstance(chain, (list, tuple)) and chain and all(
+            getattr(member, "on_usage", None) is not None for member in chain
+        ):
+            return   # every chain member already brought its own recorder
+
+        async def record(*args, **kwargs) -> None:
+            if self.state is None:
+                return
+            if args and args[0] is not None and not isinstance(args[0], Mapping):
+                u = args[0]
+                model = str(getattr(u, "model", "") or kwargs.get("model", ""))
+                input_tokens = int(getattr(u, "input_tokens", 0) or kwargs.get("input_tokens", 0) or 0)
+                output_tokens = int(getattr(u, "output_tokens", 0) or kwargs.get("output_tokens", 0) or 0)
+                cache_read_tokens = int(
+                    getattr(u, "cache_read_tokens", 0)
+                    or getattr(u, "cached_input_tokens", 0)
+                    or kwargs.get("cache_read_tokens", 0)
+                    or kwargs.get("cached_input_tokens", 0)
+                    or 0
+                )
+                cost_usd = float(getattr(u, "cost_usd", 0.0) or kwargs.get("cost_usd", 0.0) or 0.0)
+                agent = str(getattr(u, "agent", "") or kwargs.get("agent", ""))
+                task = str(getattr(u, "task", "") or kwargs.get("task", ""))
+                duration_ms = int(getattr(u, "duration_ms", 0) or kwargs.get("duration_ms", 0) or 0)
+            else:
+                data = dict(args[0]) if (args and isinstance(args[0], Mapping)) else kwargs
+                model = str(data.get("model") or "")
+                input_tokens = int(data.get("input_tokens") or 0)
+                output_tokens = int(data.get("output_tokens") or 0)
+                cache_read_tokens = int(
+                    data.get("cache_read_tokens") or data.get("cached_input_tokens") or 0
+                )
+                cost_usd = float(data.get("cost_usd") or 0.0)
+                agent = str(data.get("agent") or "")
+                task = str(data.get("task") or "")
+                duration_ms = int(data.get("duration_ms") or 0)
+
+            provider = TRANSPORT_USAGE_PROVIDER
+            try:
+                await self.state.record_usage_event(
+                    agent=agent, task=task, model=model,
+                    input_tokens=input_tokens, output_tokens=output_tokens,
+                    cache_read_tokens=cache_read_tokens,
+                    cost_usd=cost_usd, duration_ms=duration_ms,
+                    num_turns=1,
+                    source="transport", provider=provider,
+                )
+                await self.state.increment_usage(provider)
+            except Exception as e:      # accounting never breaks a call
+                logger.warning(f"Could not record transport usage: {e}")
+
+        try:
+            setattr(self.transport, "on_usage", record)
+        except Exception as e:          # a slotted/immutable transport
+            logger.debug(f"Transport does not accept on_usage: {e}")
+
+    @property
     def provider_label(self) -> str:
-        return PROVIDER_LABELS[self.provider]
+        # A transport is what actually answers, so it is what the operator
+        # should see named in status lines and budget messages — even though
+        # `provider` still reads claude/codex, which is valid config.
+        key = TRANSPORT_USAGE_PROVIDER if self.transport is not None else self.provider
+        return PROVIDER_LABELS[key]
 
     @property
     def paused_reason(self) -> str:
@@ -165,7 +390,23 @@ class Brain:
         file or the Codex executable changes, or every
         PROVIDER_RECHECK_SECONDS, so a persistent problem doesn't start
         runtimes every heartbeat.
+
+        A transport needs no CLI probe at all: it is not Claude or Codex, so
+        neither CLI's presence says anything about whether it works. It
+        reports its own health through ``paused_reason``, which
+        ``Brain.paused_reason`` already reads, and ``_think_transport``
+        checks. Probing Claude here was what paused the whole loop for a
+        transport-only install with no ``claude`` binary.
         """
+        if self.transport is not None or self._ensure_api_transport():
+            return ""
+        if self.provider in ("openrouter", "openai_compat"):
+            reason = (
+                "OpenRouter / OpenAI-compatible API brain has no configured key. "
+                "Set OPENROUTER_API_KEY (or OPENAI_BASE_URL) in .env."
+            )
+            self.unavailable = reason
+            return reason
         if self.provider != "codex":
             return await self._claude_preflight()
         from sellbird.codex import CodexError
@@ -291,9 +532,14 @@ class Brain:
         ``agent``/``task`` label the call in the usage_events ledger so the
         dashboard can attribute tokens and cost to specific work.
         """
-        if self.transport is not None:
+        if self.transport is not None or self._ensure_api_transport():
             return await self._think_transport(prompt, expect_json=expect_json,
                                                timeout=timeout, agent=agent, task=task)
+        if self.provider in ("openrouter", "openai_compat"):
+            logger.error(
+                "OpenRouter / OpenAI-compatible call not sent: no API key configured in .env."
+            )
+            return ""
         if self.provider == "codex":
             return await self._think_codex(
                 prompt, session_id=session_id, timeout=timeout,
@@ -616,8 +862,13 @@ class Brain:
             prompt
             + "\n\nRespond ONLY with valid JSON. No markdown, no explanation."
         )
+        # expect_json=True is what tells a transport this call needs JSON: it
+        # is the only signal that reaches it, since the instruction above is
+        # just prose inside the prompt. The Claude and Codex paths ignore the
+        # flag (they return the CLI's text either way) and go on parsing it.
         response = await self.think(
-            full_prompt, session_id=session_id, agent=agent, task=task
+            full_prompt, session_id=session_id, expect_json=True,
+            agent=agent, task=task,
         )
         self.last_reply_empty = not response
         if not response:
@@ -637,11 +888,17 @@ class Brain:
             return json.loads(cleaned)
         except json.JSONDecodeError:
             pass
-        # Fall back: model wrapped the JSON in explanation text
-        for open_ch, close_ch in (("{", "}"), ("[", "]")):
-            start = cleaned.find(open_ch)
+        # Fall back: model wrapped the JSON in explanation text. Try whichever
+        # outer delimiter ({ vs [) appears earlier in the string first.
+        candidates = [
+            (cleaned.find(open_ch), open_ch, close_ch)
+            for open_ch, close_ch in (("{", "}"), ("[", "]"))
+            if cleaned.find(open_ch) != -1
+        ]
+        candidates.sort(key=lambda item: item[0])
+        for start, _, close_ch in candidates:
             end = cleaned.rfind(close_ch)
-            if start != -1 and end > start:
+            if end > start:
                 try:
                     return json.loads(cleaned[start : end + 1])
                 except json.JSONDecodeError:
@@ -655,14 +912,20 @@ class Brain:
         "over budget is unknown" and return a safe 0.0 so a broken DB read
         doesn't crash the heartbeat.
         """
+        provider = (
+            TRANSPORT_USAGE_PROVIDER
+            if (self.transport is not None or self.provider in ("openrouter", "openai_compat"))
+            else self.provider
+        )
         try:
-            return await self.state.get_usage_today(provider=self.provider)
+            return await self.state.get_usage_today(provider=provider)
         except Exception as e:
             logger.warning(f"Could not read usage from state: {e}")
             return 0.0
 
     async def is_within_budget(
-        self, max_daily_calls: int = 200, max_percent: float | None = None
+        self, max_daily_calls: int = 200, max_percent: float | None = None,
+        max_usd: float | None = None,
     ) -> bool:
         """Check whether Sellbird may spend more of the active subscription.
 
@@ -671,6 +934,13 @@ class Brain:
         against max_percent so Sellbird always leaves the remainder for the
         user's own interactive work. Fallback when those are unavailable:
         Sellbird's own call counter for this provider against max_daily_calls.
+
+        A transport has no subscription to measure, and its calls are billed
+        per token, so when one is active and ``max_usd`` is given the limit
+        is real money: today's recorded ``usage_events.cost_usd`` total
+        against ``max_usd``. That branch comes first because a dollar cap and
+        a plan-percentage cap are not comparable, and the plan one would
+        otherwise read a quota client that does not exist.
         """
         await self._expire_usage_pause()
         if time.monotonic() < self._usage_limited_until:
@@ -678,6 +948,23 @@ class Brain:
             # not be mistaken for room to spend.
             logger.info(f"{self.paused_reason}; waiting for it to reset.")
             return False
+        if self.transport is not None and max_usd is not None:
+            try:
+                spent = await self.state.spend_today_usd()
+            except Exception as e:
+                # An unreadable ledger must not be mistaken for room to
+                # spend: a per-token provider would keep billing.
+                logger.warning(f"Could not read today's spend ({e}); "
+                               "holding the dollar budget closed.")
+                return False
+            within = spent < max_usd
+            if not within:
+                logger.info(
+                    f"AI budget gate: ${spent:.2f} spent today >= "
+                    f"${max_usd:.2f} limit (usage.max_daily_usd). "
+                    "Spend resets at midnight."
+                )
+            return within
         if max_percent is not None:
             try:
                 windows = await self.quota.get_utilization()
@@ -729,13 +1016,20 @@ class Brain:
         except OSError as e:
             logger.error(f"Could not read prompt file {prompt_name}.md: {e}")
             return ""
-        for key, value in kwargs.items():
-            template = template.replace(f"{{{{{key}}}}}", str(value))
-        # Surface templating mistakes early instead of sending {{foo}} to Claude
-        leftover = re.findall(r"\{\{(\w+)\}\}", template)
+        # Check unfilled variables against the template BEFORE substituting
+        # untrusted values, and substitute in one single pass so {{other_var}}
+        # inside scraped text is never cross-expanded.
+        template_vars = set(re.findall(r"\{\{(\w+)\}\}", template))
+        leftover = sorted(template_vars - set(kwargs.keys()))
         if leftover:
             logger.warning(
-                f"Prompt '{prompt_name}' has unfilled variables: {sorted(set(leftover))}"
+                f"Prompt '{prompt_name}' has unfilled variables: {leftover}"
+            )
+        if kwargs:
+            template = re.sub(
+                r"\{\{(\w+)\}\}",
+                lambda m: str(kwargs[m.group(1)]) if m.group(1) in kwargs else m.group(0),
+                template,
             )
         return template
 
@@ -760,10 +1054,13 @@ class Brain:
         # and loaded by every agent that needs product context
         skill_map = {
             "scout": ["prospecting_tactics", "lead_qualification", "account_navigation", "signal_playbook", "product_knowledge"],
+            "researcher": ["prospecting_tactics", "signal_playbook", "product_knowledge"],
+            "enricher": ["lead_qualification", "product_knowledge"],
             # The writer gets a short prompt (prompts/writer.md) and only the part of
             # signal_playbook that fits each prospect (Writer._signal_guide): long
             # playbooks bury the few rules that matter for a 40-word email.
             "writer": ["product_knowledge", "competitive_intel"],
+            "critic": ["email_frameworks", "product_knowledge"],
             "handler": ["objection_handling", "sales_methodology", "offer_strategy", "product_knowledge", "competitive_intel"],
             "sender": ["email_frameworks", "product_knowledge"],
             "linkedin": ["linkedin_outreach", "prospecting_tactics", "product_knowledge"],

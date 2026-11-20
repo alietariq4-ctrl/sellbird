@@ -131,7 +131,7 @@ async def preview_email(brain, state, config, entry: str) -> dict:
     trial = copy.deepcopy(config)
     trial.product.offer.entry = entry
     writer = Writer(brain, state, trial, None)
-    writer.skills = brain.load_skills_for_agent("writer")
+    writer.skills = writer._load_writer_skills()
     writer.email_rules = ""
     draft = await writer._write_personal_email(prospect)
     draft = await writer._keep_to_rules(draft, step=1, names=_names(prospect)) if draft else None

@@ -45,6 +45,8 @@
     <symbol id="i-pen" viewBox="0 0 24 24"><path d="M4 20h4L19 9l-4-4L4 16z"/><path d="m13.5 6.5 4 4"/></symbol>
     <symbol id="i-download" viewBox="0 0 24 24"><path d="M12 4v11M7 10l5 5 5-5M5 20h14"/></symbol>
     <symbol id="i-flag" viewBox="0 0 24 24"><path d="M5 21V4M5 4h11l-2 4 2 4H5"/></symbol>
+    <symbol id="i-brain" viewBox="0 0 24 24"><path d="M12 2a4 4 0 0 0-4 4v1a4 4 0 0 0-2 7.46V16a4 4 0 0 0 4 4h1V2zm0 0a4 4 0 0 1 4 4v1a4 4 0 0 1 2 7.46V16a4 4 0 0 1-4 4h-1V2z"/><path d="M8 8h8M6 12h12M8 16h8"/></symbol>
+    <symbol id="i-enrichment" viewBox="0 0 24 24"><path d="M12 3v18M3 9h18M3 15h18"/><rect x="3" y="3" width="18" height="18" rx="2"/></symbol>
   </defs>
 </svg>
 
@@ -71,7 +73,10 @@
 
 <aside class="sidebar">
   <div class="brand">
-    <h1 class="brand-lockup"><a href="https://sellbird.ai" target="_blank" rel="noopener" title="sellbird.ai"><svg viewBox="0 0 1040 640" aria-hidden="true"><path fill="currentColor" d="M83 0C246 47 417 91 562 157C676 209 759 258 744 314C813 257 896 239 954 301L1034 324L944 359C837 473 731 548 563 524C506 516 464 513 427 519L0 631L407 406L224 213L555 300L420 428L663 315L630 281C407 229 264 237 83 0Z"/></svg><span>sellbird</span></a></h1>
+    <div class="brand-top">
+      <h1 class="brand-lockup"><a href="https://sellbird.ai" target="_blank" rel="noopener" title="sellbird.ai"><svg viewBox="0 0 1040 640" aria-hidden="true"><path fill="currentColor" d="M83 0C246 47 417 91 562 157C676 209 759 258 744 314C813 257 896 239 954 301L1034 324L944 359C837 473 731 548 563 524C506 516 464 513 427 519L0 631L407 406L224 213L555 300L420 428L663 315L630 281C407 229 264 237 83 0Z"/></svg><span>sellbird</span></a></h1>
+      <button class="oled-toggle" onclick="toggleOledTheme()" title="Toggle OLED Dark Theme" aria-label="Toggle OLED Dark Theme"><svg class="icon"><use href="#i-moon"/></svg></button>
+    </div>
     <div class="tagline">Make the first move.</div>
   </div>
 
@@ -95,6 +100,8 @@
     <div class="nav-group">
       <div class="nav-label">System</div>
       <button onclick="showTab('activity', this)"><svg class="icon" aria-hidden="true"><use href="#i-activity"/></svg><span class="label">Activity</span></button>
+      <button onclick="showTab('brain', this)"><svg class="icon" aria-hidden="true"><use href="#i-brain"/></svg><span class="label">Brain Studio</span></button>
+      <button onclick="showTab('enrichment', this)"><svg class="icon" aria-hidden="true"><use href="#i-enrichment"/></svg><span class="label">Clay AI</span></button>
       <button onclick="showTab('usage', this)"><svg class="icon" aria-hidden="true"><use href="#i-usage"/></svg><span class="label">Usage</span></button>
       <button onclick="showTab('controls', this)"><svg class="icon" aria-hidden="true"><use href="#i-controls"/></svg><span class="label">Controls</span></button>
       <button onclick="showTab('settings', this)"><svg class="icon" aria-hidden="true"><use href="#i-settings"/></svg><span class="label">Settings</span></button>
@@ -309,6 +316,157 @@
 
 <dialog id="inbox-dialog" class="modal" aria-labelledby="inbox-dialog-title"></dialog>
 
+<dialog id="enrichment-dialog" class="modal modal-wide" aria-labelledby="enrichment-dialog-title">
+  <div class="modal-head">
+    <h3 id="enrichment-dialog-title">Add Custom AI Column</h3>
+    <button class="btn btn-ghost" onclick="closeAddColumnModal()"><svg class="icon"><use href="#i-close"/></svg></button>
+  </div>
+  <div class="modal-body">
+    <div class="form-group">
+      <label class="form-label" for="col-name">Column Display Name</label>
+      <input type="text" class="form-input" id="col-name" placeholder="e.g. Tech Stack Deep Dive" oninput="autoSlugColKey(this.value)">
+    </div>
+    <div class="form-group">
+      <label class="form-label" for="col-key">Column Identifier Key</label>
+      <input type="text" class="form-input" id="col-key" placeholder="e.g. tech_stack_analysis">
+    </div>
+    <div class="form-group">
+      <label class="form-label" for="col-prompt">AI Research Prompt Instruction</label>
+      <textarea class="form-input" id="col-prompt" rows="3" placeholder="Instruct the AI what to research and evaluate about this company or prospect..."></textarea>
+    </div>
+    <div class="form-row">
+      <div class="form-group">
+        <label class="form-label" for="col-type">Data Type</label>
+        <select class="form-input" id="col-type">
+          <option value="text">Text / Summary</option>
+          <option value="number">Numeric / Count</option>
+          <option value="boolean">Boolean (Yes / No)</option>
+        </select>
+      </div>
+    </div>
+  </div>
+  <div class="modal-foot">
+    <button class="btn btn-secondary" onclick="closeAddColumnModal()">Cancel</button>
+    <button class="btn btn-primary" onclick="submitAddColumn()">Save Column</button>
+  </div>
+</dialog>
+
+<!-- Brain Studio -->
+<div id="brain" class="section">
+  <div class="section-head">
+    <div>
+      <h2>Brain Studio</h2>
+      <p>Configure universal OpenAI-compatible LLMs, multi-provider fallback chains, and per-role routing.</p>
+    </div>
+  </div>
+
+  <div class="subhead">Daily Dollar Budget</div>
+  <div class="card">
+    <div class="spend-headline">
+      <div>
+        <span class="spend-amount" id="brain-spend-usd">$0.0000</span>
+        <span class="spend-cap" id="brain-spend-cap">of $5.00/day limit</span>
+      </div>
+      <span class="tag accent" id="brain-budget-status">Active</span>
+    </div>
+    <div class="progress-wrap">
+      <div class="progress-bar">
+        <div class="progress-fill emerald" id="brain-budget-bar" style="width: 0%"></div>
+      </div>
+    </div>
+    <div class="form-row" style="margin-top: var(--sp-3)">
+      <div class="form-group" style="max-width: 240px; margin-bottom: 0">
+        <label class="form-label" for="brain-max-usd">Max daily spend ($USD)</label>
+        <input type="number" step="0.5" min="0" max="1000" class="form-input" id="brain-max-usd" value="5.0">
+      </div>
+      <button class="btn btn-primary" onclick="saveBrainBudget()">Update Limit</button>
+    </div>
+  </div>
+
+  <div class="subhead">Fallback Provider Chain <span class="hint">Top-to-bottom automatic failover</span></div>
+  <div class="card">
+    <p class="desc">Requests try the first provider. If rate-limited, timed out, or returning a 5xx error, the router automatically fails over to the next provider in line.</p>
+    <div id="brain-chain-container" style="display: flex; flex-direction: column; gap: 8px; margin-bottom: var(--sp-4);"></div>
+    <div class="btn-group">
+      <button class="btn btn-secondary" onclick="addChainRow()">+ Add Provider</button>
+      <button class="btn btn-primary" onclick="saveBrainChain()">Save Fallback Chain</button>
+    </div>
+  </div>
+
+  <div class="subhead">Specialized Role Routing <span class="hint">Assign the right model to each task</span></div>
+  <div class="card">
+    <p class="desc">Route high-volume extraction to fast, cheap models (DeepSeek V4.1 Flash, Gemini Flash, Groq) and persuasive copywriting to capable reasoning models.</p>
+    <div class="roles-grid" id="brain-roles-grid"></div>
+    <div style="margin-top: var(--sp-4)">
+      <button class="btn btn-primary" onclick="saveBrainRoles()">Save Role Assignments</button>
+    </div>
+  </div>
+
+  <div class="subhead">Diagnostics &amp; Live Probe</div>
+  <div class="card">
+    <div style="display: flex; gap: var(--sp-3); align-items: center; flex-wrap: wrap;">
+      <button class="btn btn-secondary" onclick="runBrainDoctor()">Run Brain Doctor</button>
+      <span id="brain-doctor-status" class="hint">Check API connectivity and credentials</span>
+    </div>
+    <div id="brain-doctor-results" class="doctor-panel" style="display: none;"></div>
+
+    <div style="margin-top: var(--sp-5); border-top: 1px solid var(--line); padding-top: var(--sp-4);">
+      <h3>Interactive Model Probe</h3>
+      <p class="desc">Send a real test prompt through the router to verify latency, JSON output, and token accounting.</p>
+      <div class="form-row">
+        <div class="form-group" style="max-width: 220px">
+          <label class="form-label" for="probe-role">Agent Role</label>
+          <select class="form-input" id="probe-role">
+            <option value="scout">Scout</option>
+            <option value="writer">Writer</option>
+            <option value="researcher">Researcher</option>
+            <option value="enricher">Enricher</option>
+            <option value="critic">Critic</option>
+            <option value="handler">Handler</option>
+            <option value="analyst">Analyst</option>
+            <option value="trainer">Trainer</option>
+          </select>
+        </div>
+        <div class="form-group" style="flex: 1">
+          <label class="form-label" for="probe-domain">Target Domain</label>
+          <input type="text" class="form-input" id="probe-domain" placeholder="example.com" value="stripe.com">
+        </div>
+        <button class="btn btn-primary" style="align-self: flex-end; margin-bottom: var(--sp-3)" onclick="runBrainProbe()">Send Probe</button>
+      </div>
+      <pre id="probe-output" style="display: none; background: var(--surface-2); padding: 12px; border-radius: var(--r-md); overflow-x: auto; font-size: var(--fs-caption); border: 1px solid var(--line); max-height: 280px;"></pre>
+    </div>
+  </div>
+</div>
+
+<!-- Clay AI Enrichment -->
+<div id="enrichment" class="section">
+  <div class="section-head">
+    <div>
+      <h2>Clay-Style Custom AI Columns</h2>
+      <p>Enrich prospects and companies with custom web research and tailored AI signals.</p>
+    </div>
+  </div>
+
+  <div class="card">
+    <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: var(--sp-4);">
+      <div>
+        <h3>Custom Enrichment Columns</h3>
+        <p class="desc">Each column runs prompt instructions against company facts and live OSINT to produce structured data.</p>
+      </div>
+      <button class="btn btn-primary" onclick="openAddColumnModal()">+ Add AI Column</button>
+    </div>
+
+    <div class="clay-col-list" id="clay-column-list">
+      <div class="inset" style="text-align: center; color: var(--text-2); padding: 24px;">Loading custom columns...</div>
+    </div>
+
+    <div style="display: flex; gap: var(--sp-3); align-items: center; border-top: 1px solid var(--line); padding-top: var(--sp-4);">
+      <button class="btn btn-primary" onclick="triggerEnrichmentRun()">Run Batch Enrichment</button>
+      <span id="enrichment-run-status" class="hint">Processes un-enriched companies and prospects</span>
+    </div>
+  </div>
+</div>
+
 <!-- Activity -->
 <div id="activity" class="section">
   <div class="section-head"><div><h2>Activity</h2><p>A running log of every action Sellbird's agents have taken.</p></div></div>
@@ -468,6 +626,99 @@
           <input type="password" class="form-input" id="cf-api-token" placeholder="Your Cloudflare API Token" autocomplete="off">
         </div>
         <button class="btn btn-primary btn-sm" onclick="saveCloudflare()">Save Cloudflare</button>
+      </div>
+    </div>
+  </div>
+
+  <div class="subhead">Universal AI Brain &amp; Providers <span class="hint">OpenAI-compatible &amp; Cloud LLMs</span></div>
+  <div class="card">
+    <div class="settings-row">
+      <div>
+        <h3>Universal OpenAI-Compatible Endpoint</h3>
+        <p class="desc">Connect local vLLM, LMStudio, Ollama, DeepSeek V4.1, or any custom API without Claude login.</p>
+      </div>
+      <div class="fields">
+        <div class="form-group"><label class="form-label" for="openai-base-url">Base URL</label>
+          <input type="text" class="form-input" id="openai-base-url" placeholder="https://api.deepseek.com/v1 or http://localhost:11434/v1" autocomplete="off"></div>
+        <div class="form-row">
+          <div class="form-group"><label class="form-label" for="openai-model">Default Model</label>
+            <input type="text" class="form-input" id="openai-model" placeholder="deepseek-chat or custom" autocomplete="off"></div>
+          <div class="form-group"><label class="form-label" for="openai-key">API Key</label>
+            <div class="with-btn"><input type="password" class="form-input" id="openai-key" placeholder="API key (or sk-none)" autocomplete="off">
+              <button class="btn btn-secondary" onclick="toggleVisibility('openai-key')">Show</button></div></div>
+        </div>
+        <button class="btn btn-primary btn-sm" onclick="saveUniversalBrain()">Save OpenAI-Compatible</button>
+      </div>
+    </div>
+
+    <div class="settings-row">
+      <div>
+        <h3>Cloud Model API Keys</h3>
+        <p class="desc">API keys for fallback failovers and role assignments.</p>
+      </div>
+      <div class="fields">
+        <div class="key-grid">
+          <div class="form-group"><label class="form-label" for="openrouter-key">OpenRouter API Key <span id="openrouter-status" class="email-tag"></span></label>
+            <input type="password" class="form-input" id="openrouter-key" placeholder="sk-or-v1-..." autocomplete="off"></div>
+          <div class="form-group"><label class="form-label" for="deepseek-key">DeepSeek API Key <span id="deepseek-status" class="email-tag"></span></label>
+            <input type="password" class="form-input" id="deepseek-key" placeholder="sk-..." autocomplete="off"></div>
+          <div class="form-group"><label class="form-label" for="gemini-key">Gemini API Key <span id="gemini-status" class="email-tag"></span></label>
+            <input type="password" class="form-input" id="gemini-key" placeholder="AIzaSy..." autocomplete="off"></div>
+          <div class="form-group"><label class="form-label" for="xai-key">xAI Grok API Key <span id="xai-status" class="email-tag"></span></label>
+            <input type="password" class="form-input" id="xai-key" placeholder="xai-..." autocomplete="off"></div>
+          <div class="form-group"><label class="form-label" for="groq-key">Groq API Key <span id="groq-status" class="email-tag"></span></label>
+            <input type="password" class="form-input" id="groq-key" placeholder="gsk_..." autocomplete="off"></div>
+        </div>
+        <button class="btn btn-primary btn-sm" onclick="saveCloudModelKeys()">Save Model Keys</button>
+      </div>
+    </div>
+  </div>
+
+  <div class="subhead">Search, Scraping &amp; Integrations</div>
+  <div class="card">
+    <div class="settings-row">
+      <div>
+        <h3>Web Search &amp; Discovery Engines</h3>
+        <p class="desc">Used by Discover and DeepResearcher. Keyless DuckDuckGo is active by default.</p>
+      </div>
+      <div class="fields">
+        <div class="key-grid">
+          <div class="form-group"><label class="form-label" for="tavily-key">Tavily Search Key</label>
+            <input type="password" class="form-input" id="tavily-key" placeholder="tvly-..." autocomplete="off"></div>
+          <div class="form-group"><label class="form-label" for="firecrawl-key">Firecrawl API Key</label>
+            <input type="password" class="form-input" id="firecrawl-key" placeholder="fc-..." autocomplete="off"></div>
+          <div class="form-group"><label class="form-label" for="serper-key">Serper (Google Search) Key</label>
+            <input type="password" class="form-input" id="serper-key" placeholder="Enter key" autocomplete="off"></div>
+          <div class="form-group"><label class="form-label" for="searxng-url">SearXNG Base URL</label>
+            <input type="text" class="form-input" id="searxng-url" placeholder="https://searx.example.com" autocomplete="off"></div>
+        </div>
+        <button class="btn btn-primary btn-sm" onclick="saveSearchTools()">Save Search Tools</button>
+      </div>
+    </div>
+
+    <div class="settings-row">
+      <div>
+        <h3>Calendar, CRM &amp; Copilot Alerts</h3>
+        <p class="desc">Auto-booking links, Twenty CRM synchronization, and instant Telegram/Slack alerts.</p>
+      </div>
+      <div class="fields">
+        <div class="key-grid">
+          <div class="form-group"><label class="form-label" for="calcom-key">Cal.com API Key</label>
+            <input type="password" class="form-input" id="calcom-key" placeholder="cal_live_..." autocomplete="off"></div>
+          <div class="form-group"><label class="form-label" for="calcom-event-type-id">Cal.com Event Type ID</label>
+            <input type="text" class="form-input" id="calcom-event-type-id" placeholder="e.g. 123456" autocomplete="off"></div>
+          <div class="form-group"><label class="form-label" for="twenty-url">Twenty CRM URL</label>
+            <input type="text" class="form-input" id="twenty-url" placeholder="https://twenty.example.com" autocomplete="off"></div>
+          <div class="form-group"><label class="form-label" for="twenty-key">Twenty CRM API Key</label>
+            <input type="password" class="form-input" id="twenty-key" placeholder="Enter API key" autocomplete="off"></div>
+          <div class="form-group"><label class="form-label" for="telegram-token">Telegram Bot Token</label>
+            <input type="password" class="form-input" id="telegram-token" placeholder="bot123456:ABC-DEF..." autocomplete="off"></div>
+          <div class="form-group"><label class="form-label" for="telegram-chat">Telegram Chat ID</label>
+            <input type="text" class="form-input" id="telegram-chat" placeholder="12345678" autocomplete="off"></div>
+          <div class="form-group"><label class="form-label" for="slack-webhook">Slack Webhook URL</label>
+            <input type="password" class="form-input" id="slack-webhook" placeholder="https://hooks.slack.com/services/..." autocomplete="off"></div>
+        </div>
+        <button class="btn btn-primary btn-sm" onclick="saveIntegrations()">Save Integrations</button>
       </div>
     </div>
   </div>

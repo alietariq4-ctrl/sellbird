@@ -161,12 +161,30 @@ def cmd_train(args):
                 ("reasoning_effort", args.reasoning_effort),
             ) if v is not None
         }
-        if overrides:
-            if "provider" in overrides and overrides["provider"] != brain_config.provider:
-                # A different provider never inherits the other one's model.
-                brain_config = BrainConfig(**overrides)
+        if args.provider in ("claude", "codex"):
+            had_transport = bool((getattr(brain_config, "transport_factory", "") or "").strip())
+            cli_overrides = {k: v for k, v in overrides.items() if k != "provider"}
+            if args.provider != brain_config.provider or had_transport:
+                # Explicit CLI provider clears transport_factory and never inherits
+                # another provider's or router's model.
+                brain_config = BrainConfig(
+                    provider=args.provider,
+                    transport_factory="",
+                    **cli_overrides,
+                )
             else:
-                brain_config = BrainConfig(**{**brain_config.model_dump(), **overrides})
+                brain_config = BrainConfig(
+                    **{**brain_config.model_dump(), **overrides, "transport_factory": ""}
+                )
+        elif args.provider == "openrouter":
+            tf = (getattr(brain_config, "transport_factory", "") or "").strip() or "harvey_brain.router_factory:build"
+            extra = {k: v for k, v in overrides.items() if k != "provider"}
+            try:
+                brain_config = BrainConfig(provider="openrouter", transport_factory=tf, **extra)
+            except ValidationError:
+                brain_config = BrainConfig(provider="claude", transport_factory=tf, **extra)
+        elif overrides:
+            brain_config = BrainConfig(**{**brain_config.model_dump(), **overrides})
     except (ConfigError, ValidationError) as e:
         print(f"  {e}")
         sys.exit(2)
@@ -211,6 +229,22 @@ def cmd_dashboard(args):
         sys.exit(2)
 
 
+def _transport_failure_line(spec: str, provider_label: str) -> str:
+    """`status --check`'s report for a transport_factory that did not load.
+
+    Pure so a test can assert the exact wording without a database or a CLI
+    run. ``spec`` is the dotted path from ``brain.transport_factory`` and
+    ``provider_label`` is the CLI the calls will fall back to.
+    """
+    return (
+        f"  Brain:                transport_factory {spec} FAILED to load\n"
+        "                        The configured provider chain is unusable "
+        "(usually: every provider's API key is empty, or the dotted path is "
+        "wrong). See the log line \"brain.transport_factory ... did not "
+        f"load\". Falling back to {provider_label}, which needs a CLI login."
+    )
+
+
 def cmd_status(args):
     """Show current pipeline status."""
     from sellbird.state import StateManager
@@ -236,9 +270,6 @@ def cmd_status(args):
         print(f"  Draft campaigns:      {summary['draft_campaigns']}")
         print(f"  Active campaigns:     {summary['active_campaigns']}")
         print(f"  Open conversations:   {summary['open_conversations']}")
-        by_provider = summary.get("usage_today_by_provider", {})
-        print(f"  Claude calls today:   {by_provider.get('claude', summary['usage_today'])}")
-        print(f"  Codex calls today:    {by_provider.get('codex', 0)}")
         from sellbird.config import compliance_notice, load_config, sending_notice
         loaded = None
         try:
@@ -249,6 +280,28 @@ def cmd_status(args):
             # Status must still print when sellbird.yaml is broken; that's
             # when people run it. The --check path reports config errors.
             notice = address_notice = ""
+        by_provider = summary.get("usage_today_by_provider", {})
+        router_calls = sum(
+            int(v or 0) for k, v in by_provider.items() if k not in ("claude", "codex")
+        )
+        spend_today = 0.0
+        try:
+            if hasattr(state, "spend_today_usd"):
+                spend_today = float(await state.spend_today_usd() or 0.0)
+            else:
+                t_now = await state.usage_totals()
+                spend_today = float((t_now.get("today") or {}).get("cost_usd") or 0.0)
+        except Exception:
+            spend_today = 0.0
+        max_usd_cap = (
+            f" / ${loaded.usage.max_daily_usd:.2f}"
+            if loaded is not None and hasattr(loaded, "usage") and hasattr(loaded.usage, "max_daily_usd")
+            else ""
+        )
+        print(f"  Claude calls today:   {by_provider.get('claude', summary['usage_today'])}")
+        print(f"  Codex calls today:    {by_provider.get('codex', 0)}")
+        print(f"  AI Router calls today: {router_calls}")
+        print(f"  AI spend today:       ${spend_today:.4f}{max_usd_cap}")
         from sellbird.main import unusable_backlog_notice
         backlog = unusable_backlog_notice(summary)
         if backlog:
@@ -285,15 +338,26 @@ def cmd_status(args):
                                 subsequent_indent="                        "))
         from sellbird.brain import BRAIN_STATUS_KEY, Brain, active_brain_status
         from sellbird.config import ConfigError, load_brain_config
+        import inspect
         try:
             brain_config = load_brain_config()
         except ConfigError as e:
             brain_config, config_error = None, e
+        is_router = bool(
+            brain_config and (
+                (getattr(brain_config, "transport_factory", "") or "").strip()
+                or (getattr(brain_config, "provider", "") or "").strip().lower() in ("openrouter", "openai_compat")
+            )
+        )
+        raw_brain_status = await state.get_setting(BRAIN_STATUS_KEY)
         # Only the configured provider's health: an old Codex pause says
-        # nothing once sellbird.yaml has switched to Claude.
+        # nothing once sellbird.yaml has switched to Claude or AI Router.
         brain_status = active_brain_status(
-            await state.get_setting(BRAIN_STATUS_KEY),
-            brain_config.provider if brain_config else "")
+            raw_brain_status,
+            "openrouter" if is_router else (brain_config.provider if brain_config else ""),
+        )
+        if not brain_status and is_router and brain_config:
+            brain_status = active_brain_status(raw_brain_status, brain_config.provider)
         healthy = True
         if getattr(args, "check", False):
             if brain_config is None:
@@ -301,22 +365,76 @@ def cmd_status(args):
                 healthy = False
             else:
                 brain = Brain(state, brain_config)
-                problem = await brain.preflight()
-                label = brain.provider_label + (f" ({brain.model})" if brain.model else "")
-                if problem:
-                    healthy = False
-                    print(f"  Brain:                {label} NOT READY")
-                    print(f"                        {problem}")
-                elif brain.provider == "codex":
-                    print(f"  Brain:                {label} ready (CLI, isolation, login, "
-                          "model and account checked; no prompt sent)")
-                else:
-                    print(f"  Brain:                {label} CLI isolation flags present "
-                          "(login not checked: Claude is checked by its first call)")
-        elif brain_status.get("status") == "paused":
-            label = {"claude": "Claude", "codex": "Codex"}.get(brain_status.get("provider"), "Brain")
-            print(f"  Brain:                {label} PAUSED since {brain_status.get('since', '?')}")
-            print(f"                        {brain_status.get('reason', '')}")
+                try:
+                    spec = getattr(brain_config, "transport_factory", "") or ""
+                    if spec and brain.transport is None:
+                        # The configured chain did not load, so every real call
+                        # falls through to a CLI that may not be logged in. That
+                        # is not "ready", and scripts must see it as a failure.
+                        healthy = False
+                        print(_transport_failure_line(spec, brain.provider_label))
+                    else:
+                        problem = await brain.preflight()
+                        paused_reason = getattr(brain, "paused_reason", None)
+                        if callable(paused_reason):
+                            paused_reason = paused_reason()
+                        if inspect.isawaitable(paused_reason):
+                            paused_reason = await paused_reason
+                        if not paused_reason and brain_status.get("status") == "paused":
+                            paused_reason = brain_status.get("reason")
+                        label = brain.provider_label + (f" ({brain.model})" if brain.model else "")
+                        if problem:
+                            healthy = False
+                            print(f"  Brain:                {label} NOT READY")
+                            print(f"                        {problem}")
+                        elif paused_reason:
+                            healthy = False
+                            print(f"  Brain:                {label} PAUSED (NOT READY)")
+                            print(f"                        {paused_reason}")
+                        elif brain.transport is not None:
+                            # No CLI, no login, no plan: the transport answers.
+                            print(f"  Brain:                {label} transport ready "
+                                  "(no CLI or login involved; spend is capped by "
+                                  "usage.max_daily_usd)")
+                        elif brain.provider == "codex":
+                            print(f"  Brain:                {label} ready (CLI, isolation, login, "
+                                  "model and account checked; no prompt sent)")
+                        else:
+                            print(f"  Brain:                {label} CLI isolation flags present "
+                                  "(login not checked: Claude is checked by its first call)")
+                finally:
+                    if hasattr(brain, "aclose"):
+                        res_close = brain.aclose()
+                        if inspect.isawaitable(res_close):
+                            await res_close
+        else:
+            paused_now = ""
+            if brain_config is not None and is_router:
+                probe_brain = Brain(state, brain_config)
+                try:
+                    pr = getattr(probe_brain, "paused_reason", None)
+                    if callable(pr):
+                        pr = pr()
+                    if inspect.isawaitable(pr):
+                        pr = await pr
+                    paused_now = str(pr or "")
+                finally:
+                    if hasattr(probe_brain, "aclose"):
+                        rc = probe_brain.aclose()
+                        if inspect.isawaitable(rc):
+                            await rc
+            if brain_status.get("status") == "paused":
+                label = {
+                    "claude": "Claude",
+                    "codex": "Codex",
+                    "openrouter": "AI Router",
+                    "openai_compat": "AI Router",
+                }.get(brain_status.get("provider"), "Brain")
+                print(f"  Brain:                {label} PAUSED since {brain_status.get('since', '?')}")
+                print(f"                        {brain_status.get('reason', '')}")
+            elif paused_now:
+                print("  Brain:                AI Router PAUSED")
+                print(f"                        {paused_now}")
         print()
         return healthy
 
@@ -326,9 +444,9 @@ def cmd_status(args):
 
 
 def cmd_usage(args):
-    """Show brain usage: active provider's quota, totals, breakdowns."""
+    """Show brain usage: active provider's quota or USD budget, totals, breakdowns."""
     from sellbird.state import StateManager
-    from sellbird.config import ConfigError, load_brain_config
+    from sellbird.config import ConfigError, load_brain_config, load_config
 
     async def _usage():
         state = StateManager()
@@ -340,9 +458,87 @@ def cmd_usage(args):
             print(f"  {e}")
             brain_config = None
 
-        # Live quota for the ACTIVE provider only (best-effort). Each
-        # subscription's gauge is read from its own source and labelled as
-        # such; one is never shown as the other.
+        transport_active = bool(
+            brain_config and (
+                (getattr(brain_config, "transport_factory", "") or "").strip()
+                or (getattr(brain_config, "provider", "") or "").strip().lower() in ("openrouter", "openai_compat")
+            )
+        )
+
+        totals = await state.usage_totals()
+
+        if transport_active:
+            max_daily_usd = 5.0
+            try:
+                cfg = load_config()
+                max_daily_usd = float(getattr(cfg.usage, "max_daily_usd", 5.0))
+            except Exception:
+                pass
+
+            if hasattr(state, "spend_today_usd"):
+                spend_today = float(await state.spend_today_usd() or 0.0)
+            else:
+                spend_today = float((totals.get("today") or {}).get("cost_usd") or 0.0)
+            pct = (spend_today / max_daily_usd * 100.0) if max_daily_usd > 0 else 0.0
+
+            print("\n  AI Router Usage (OpenAI-Compatible)")
+            print("  " + "=" * 62)
+            print(f"  Daily budget:    ${spend_today:.4f} / ${max_daily_usd:.2f} daily budget ({pct:.1f}% used)")
+            print()
+            print(f"  {'Period':<10} {'Calls':>7} {'Input':>12} {'Output':>10} {'Cost (USD)':>12}")
+            for p_label, key in (("Today", "today"), ("7 days", "week"), ("30 days", "month")):
+                t = totals.get(key) or {}
+                cost = float(t.get("cost_usd") or 0.0)
+                print(
+                    f"  {p_label:<10} {t.get('calls', 0):>7} "
+                    f"{t.get('input_tokens', 0):>12,} {t.get('output_tokens', 0):>10,} "
+                    f"${cost:>11.4f}"
+                )
+
+            by_model = await state.usage_by_model(days=args.days) if hasattr(state, "usage_by_model") else []
+            if by_model:
+                print(f"\n  By model (last {args.days} days):")
+                for row in by_model:
+                    model_name = row.get("model") or "unknown"
+                    cost = float(row.get("cost_usd") or 0.0)
+                    print(
+                        f"    {model_name:<30} {row['calls']:>5} calls  "
+                        f"{row['output_tokens']:>10,} out tokens  ${cost:.4f}"
+                    )
+
+            by_agent = await state.usage_by_agent(days=args.days)
+            if by_agent:
+                print(f"\n  By agent (last {args.days} days):")
+                for row in by_agent:
+                    cost = float(row.get("cost_usd") or 0.0)
+                    print(
+                        f"    {row['agent']:<16} {row['calls']:>5} calls  "
+                        f"{row['output_tokens']:>10,} out tokens  ${cost:.4f}"
+                    )
+
+            by_provider = await state.usage_by_provider(days=args.days)
+            if by_provider:
+                print(f"\n  By provider (last {args.days} days):")
+                for row in by_provider:
+                    cost = float(row.get("cost_usd") or 0.0)
+                    print(
+                        f"    {row['provider']:<16} {row['calls']:>5} calls  "
+                        f"{row['output_tokens']:>10,} out tokens  ${cost:.4f}"
+                    )
+
+            by_task = await state.usage_by_task(days=args.days)
+            if by_task:
+                print(f"\n  By task (last {args.days} days):")
+                for row in by_task[:10]:
+                    cost = float(row.get("cost_usd") or 0.0)
+                    print(
+                        f"    {row['task']:<22} {row['calls']:>5} calls  "
+                        f"{row['output_tokens']:>10,} out tokens  ${cost:.4f}"
+                    )
+            print()
+            return
+
+        # Live quota for the ACTIVE subscription provider only (best-effort).
         windows = None
         provider = brain_config.provider if brain_config else None
         try:
@@ -371,7 +567,6 @@ def cmd_usage(args):
         elif provider == "claude":
             print("  Quota gauge unavailable (run 'claude login' or check network).")
 
-        totals = await state.usage_totals()
         print()
         print(f"  {'Period':<10} {'Calls':>7} {'Input':>12} {'Output':>10} {'Cache read':>12}")
         for label, key in (("Today", "today"), ("7 days", "week"), ("30 days", "month")):
@@ -1073,9 +1268,10 @@ def _carry_over_from_harvey():
     import sellbird
     from sellbird.legacy import migrate_files
     notes = migrate_files()
-    if sellbird.LEGACY_ENV:
+    legacy_env = getattr(sellbird, "LEGACY_ENV", [])
+    if legacy_env:
         notes.append("Using your HARVEY_* settings as "
-                     + ", ".join(sellbird.LEGACY_ENV)
+                     + ", ".join(legacy_env)
                      + ". Rename them when convenient.")
     for note in notes:
         print(f"Sellbird (formerly Harvey): {note}", file=sys.stderr)
@@ -1116,6 +1312,191 @@ def cmd_suppressions(args):
         sys.exit(code)
 
 
+def cmd_research(args):
+    """Run deep company research across pipeline companies or a specific domain."""
+    import inspect
+    from sellbird.brain import Brain
+    from sellbird.config import load_config, load_env
+    from sellbird.state import StateManager
+
+    if args.limit < 1:
+        print("\n  --limit must be at least 1.\n")
+        sys.exit(2)
+
+    try:
+        from sellbird.agents.researcher import DeepResearcher
+    except ImportError:
+        print("\n  DeepResearcher agent is not installed in this build.\n")
+        sys.exit(1)
+
+    async def _run():
+        config = load_config()
+        env = load_env()
+        state = StateManager()
+        await state.init_db()
+        brain = Brain(state, config.brain)
+        try:
+            problem = await brain.preflight()
+            if problem:
+                print(f"\n  Brain is not ready: {problem}\n")
+                return 1
+            max_calls = max(int(200 * (config.usage.max_daily_claude_percent / 100)), 1)
+            if not await brain.is_within_budget(
+                max_calls,
+                max_percent=config.usage.max_daily_claude_percent,
+                max_usd=config.usage.max_daily_usd,
+            ):
+                print("\n  Daily AI budget reached. Raise usage.max_daily_usd or try tomorrow.\n")
+                return 1
+
+            init_sig = inspect.signature(DeepResearcher)
+            init_kwargs = {}
+            for p_name in init_sig.parameters:
+                if p_name == "brain":
+                    init_kwargs[p_name] = brain
+                elif p_name == "state":
+                    init_kwargs[p_name] = state
+                elif p_name == "config":
+                    init_kwargs[p_name] = config
+                elif p_name == "env":
+                    init_kwargs[p_name] = env
+            researcher = DeepResearcher(**init_kwargs)
+
+            target = (args.company or "").strip()
+            run_sig = inspect.signature(researcher.run)
+            run_kwargs = {}
+            for p_name in run_sig.parameters:
+                if p_name == "limit":
+                    run_kwargs[p_name] = args.limit
+                elif p_name in ("domain", "company") and target:
+                    run_kwargs[p_name] = target
+
+            if target and not any(k in run_kwargs for k in ("domain", "company")) and hasattr(researcher, "research_domain"):
+                outcome = await researcher.research_domain(target)
+            else:
+                outcome = await researcher.run(**run_kwargs)
+
+            scope = f"domain {target}" if target else f"up to {args.limit} companies"
+            print(f"\n  Deep research finished ({scope}): {outcome}\n")
+            return 0
+        finally:
+            if hasattr(brain, "aclose"):
+                rc = brain.aclose()
+                if inspect.isawaitable(rc):
+                    await rc
+
+    code = asyncio.run(_run())
+    if code:
+        sys.exit(code)
+
+
+def cmd_brain(args):
+    """Inspect or probe the AI Brain router (doctor / probe)."""
+    import inspect
+    from sellbird.paths import PROJECT_ROOT
+
+    action = getattr(args, "brain_action", "doctor") or "doctor"
+
+    async def _doctor():
+        use_network = bool(getattr(args, "network", False))
+        brain_yaml = PROJECT_ROOT / "brain.yaml"
+        payload = None
+        try:
+            from harvey_brain import router_factory as rf
+            fn_async = getattr(rf, "doctor_async", None)
+            fn_sync = getattr(rf, "doctor", None)
+            target_fn = fn_async or fn_sync
+            if callable(target_fn):
+                sig = inspect.signature(target_fn)
+                kwargs = {}
+                for p_name in sig.parameters:
+                    if p_name in ("network", "check_network", "live"):
+                        kwargs[p_name] = use_network
+                    elif p_name in ("config_path", "path", "brain_yaml", "settings_path"):
+                        kwargs[p_name] = brain_yaml
+                    elif p_name in ("home", "root", "project_root"):
+                        kwargs[p_name] = PROJECT_ROOT
+                res = (await fn_async(**kwargs)) if fn_async is not None else (await asyncio.to_thread(fn_sync, **kwargs))
+                from sellbird.dashboard import _coerce_doctor_payload
+                payload = _coerce_doctor_payload(res, use_network)
+        except Exception:
+            payload = None
+
+        if payload is None:
+            from sellbird.dashboard import _fallback_brain_doctor
+            payload = await _fallback_brain_doctor(use_network)
+
+        mode_str = "network check" if use_network else "config & keys"
+        print(f"\n  AI Brain Doctor ({mode_str})")
+        print("  " + "=" * 62)
+        providers = payload.get("providers") or []
+        if not providers:
+            print(f"  {payload.get('summary') or 'No providers configured in brain.yaml.'}")
+        for p in providers:
+            if not isinstance(p, dict):
+                print(f"  - {p}")
+                continue
+            ok = bool(p.get("ok") or p.get("ready"))
+            status_txt = "READY" if ok else "NOT READY"
+            prov = p.get("provider") or "provider"
+            mod = p.get("model") or ""
+            detail = p.get("detail") or p.get("reason") or p.get("error") or ""
+            print(f"  [{status_txt:<9}] {prov:<14} {mod:<28} {detail}".rstrip())
+        if payload.get("summary"):
+            print(f"\n  Summary: {payload['summary']}")
+        print()
+        return 0 if payload.get("ok") else 1
+
+    async def _probe():
+        from starlette.requests import Request as StarletteRequest
+        from sellbird.dashboard import brain_probe
+
+        live = bool(getattr(args, "live", False)) and not bool(getattr(args, "dry_run", False))
+        role = getattr(args, "role", "writer") or "writer"
+        prompt_txt = getattr(args, "prompt", "Reply with the single word OK.") or "OK"
+        body_bytes = __import__("json").dumps({
+            "live": live,
+            "dry_run": not live,
+            "role": role,
+            "prompt": prompt_txt,
+        }).encode("utf-8")
+
+        async def _receive():
+            return {"type": "http.request", "body": body_bytes, "more_body": False}
+
+        scope = {
+            "type": "http",
+            "method": "POST",
+            "path": "/api/brain/probe",
+            "headers": [(b"content-type", b"application/json")],
+            "query_string": b"",
+        }
+        req = StarletteRequest(scope, _receive)
+        resp = await brain_probe(req)
+        if hasattr(resp, "body"):
+            data = __import__("json").loads(resp.body.decode("utf-8"))
+        else:
+            data = resp
+
+        ok = bool(data.get("ok"))
+        mode_lbl = data.get("mode", "live" if live else "dry_run")
+        print(f"\n  AI Brain Probe ({mode_lbl}, role={role})")
+        print("  " + "=" * 54)
+        if ok:
+            prov_info = " / ".join(x for x in (data.get("provider"), data.get("model")) if x)
+            lat = f" ({data['latency_ms']} ms)" if data.get("latency_ms") is not None else ""
+            detail = data.get("reply") or data.get("summary") or "OK"
+            print(f"  READY{': ' + prov_info if prov_info else ''}{lat} — {detail}\n")
+            return 0
+        err = data.get("error") or data.get("summary") or "Probe failed."
+        print(f"  FAILED: {err}\n")
+        return 1
+
+    code = asyncio.run(_probe() if action == "probe" else _doctor())
+    if code:
+        sys.exit(code)
+
+
 def main():
     from sellbird.textio import utf8_stdio
     utf8_stdio()
@@ -1151,8 +1532,8 @@ def main():
         help="Max pages to crawl (default: 100)",
     )
     sub.add_argument(
-        "--provider", choices=["claude", "codex"], default=None,
-        help="Subscription to think with (default: the one in your config, else claude)",
+        "--provider", choices=["claude", "codex", "openrouter"], default=None,
+        help="Provider to think with (claude, codex, or openrouter; default: config)",
     )
     sub.add_argument("--model", default=None, help="Model for this provider (default: provider default)")
     sub.add_argument(
@@ -1299,9 +1680,32 @@ def main():
     sub.set_defaults(func=cmd_precleared_key)
 
     # sellbird usage
-    sub = subparsers.add_parser("usage", help="Show brain usage and quota (Claude or Codex)")
+    sub = subparsers.add_parser("usage", help="Show brain usage, quota, or AI Router USD spend")
     sub.add_argument("--days", type=int, default=30, help="Breakdown window (default: 30)")
     sub.set_defaults(func=cmd_usage)
+
+    # sellbird research
+    sub = subparsers.add_parser(
+        "research", help="Run deep AI research across companies or a specific domain"
+    )
+    sub.add_argument("--limit", type=int, default=5, help="Max companies to research (default: 5)")
+    sub.add_argument("--company", default="", help="Specific company domain or name to research")
+    sub.set_defaults(func=cmd_research)
+
+    # sellbird brain [doctor|probe]
+    sub = subparsers.add_parser(
+        "brain", help="Check AI Brain router health (doctor) or run a dry-run / 1-token probe"
+    )
+    sub.add_argument(
+        "brain_action", nargs="?", default="doctor", choices=["doctor", "probe"],
+        help="doctor: verify brain.yaml & API keys; probe: dry-run or live 1-token check",
+    )
+    sub.add_argument("--network", action="store_true", help="Doctor: test live HTTP connectivity")
+    sub.add_argument("--live", action="store_true", help="Probe: send a live 1-token completion")
+    sub.add_argument("--dry-run", action="store_true", help="Probe: check config & keys only (no tokens)")
+    sub.add_argument("--role", default="writer", help="Probe: agent role profile (default: writer)")
+    sub.add_argument("--prompt", default="Reply with the single word OK.", help="Probe prompt")
+    sub.set_defaults(func=cmd_brain)
 
     sub = subparsers.add_parser(
         "mcp", help="MCP server for your coding agent (launched by it, over stdio)")
@@ -1351,11 +1755,23 @@ def main():
         reason = (e.strerror if isinstance(e, OSError) else None) or type(e).__name__
         print(f"  Could not prepare the home folder {home_root}: {reason}", file=sys.stderr)
 
+    banner = r"""
+  ███████╗███████╗██╗     ██╗     ██████╗ ██╗██████╗ ██████╗ 
+  ██╔════╝██╔════╝██║     ██║     ██╔══██╗██║██╔══██╗██╔══██╗
+  ███████╗█████╗  ██║     ██║     ██████╔╝██║██████╔╝██║  ██║
+  ╚════██║██╔══╝  ██║     ██║     ██╔══██╗██║██╔══██╗██║  ██║
+  ███████║███████╗███████╗███████╗██████╔╝██║██║  ██║██████╔╝
+  ╚══════╝╚══════╝╚══════╝╚══════╝╚═════╝ ╚═╝╚═╝  ╚═╝╚═════╝ 
+  ── AI AGENTIC GTM & AUTONOMOUS OUTREACH SYSTEM ────────────
+"""
+
     if args.command is None:
+        print(banner)
         parser.print_help()
         print("\n  Quick start:")
         print("    sellbird install   — Install dependencies")
         print("    sellbird setup     — Configure Sellbird (first time)")
+        print("    sellbird brain     — Inspect and test AI Brain router")
         print("    sellbird run       — Start closing deals")
         print("    sellbird dashboard — Open the web dashboard")
         print()

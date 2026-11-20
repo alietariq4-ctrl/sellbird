@@ -315,9 +315,11 @@ def _main_zone_only(code: str, point=None) -> bool:
 
 
 def _parts(location: str) -> list[str]:
-    """Comma-separated parts, last first, with postcodes dropped."""
+    """Comma/semicolon/slash-separated parts, last first, with postcodes dropped."""
     parts = []
-    for raw in reversed(str(location or "").split(",")):
+    normalized = re.sub(r"\s*[;/|]\s*|\s+[-–—]\s+", ",", str(location or ""))
+    for raw in reversed(normalized.split(",")):
+        raw = re.sub(r"[()\[\]]", " ", raw)
         part = re.sub(r"\b[\dA-Z]*\d[\dA-Z-]*\b", " ", raw)  # 78701, 2000, EC1A
         part = " ".join(part.split())
         if part:
@@ -333,24 +335,55 @@ REGION_COUNTRY = {
     **{code: "AU" for code in AU_STATES},
 }
 
+_ALL_REGION_NAMES = tuple(
+    sorted(
+        {name for name, _ in (*US_STATES.values(), *CA_PROVINCES.values(), *AU_STATES.values())}
+        | set(REGION_ALIASES),
+        key=len,
+        reverse=True,
+    )
+)
+
 
 def _codes(part: str) -> list[str]:
-    """Upper-case words in a part, dots dropped: "D.C." -> "DC"."""
-    return [w.replace(".", "") for w in part.split() if w.isupper()]
+    """Upper-case words in a part, dots/punctuation dropped: "D.C." -> "DC"."""
+    out = []
+    for w in part.split():
+        stripped = w.strip(".,;:()[]{}")
+        cleaned = stripped.replace(".", "")
+        if cleaned and cleaned.isalpha() and cleaned.isupper():
+            out.append(cleaned)
+    return out
+
+
+def _ends_with_phrase(text: str, phrase: str) -> bool:
+    """True when multi-word ``text`` has at least one city word followed by ``phrase``."""
+    return len(text) > len(phrase) and text.endswith(" " + phrase)
 
 
 def _country_in(parts: list[str]) -> str:
     """A country the location names without doubt, or ""."""
     names = _country_names()
+    sorted_cnames = sorted(names, key=len, reverse=True)
     for part in parts:
         name = _clean(part)
         if name in names:
             return names[name]
-        # A code that is also a state or province is left to _ambiguous_code.
-        if len(part) == 2 and part.isupper() and part not in REGION_COUNTRY:
-            found = country_code(part)
-            if found:
-                return found
+        codes = _codes(part)
+        # Trailing unambiguous 2/3-letter country code ("London UK", "Austin USA", "Oslo, NO")
+        if (len(part) == 2 and part.isupper() and part not in REGION_COUNTRY) or (
+            codes and codes[-1] in ("UK", "USA", "GB") and part.split()[-1].strip(".,()").upper() == codes[-1]
+        ):
+            cand = codes[-1] if codes else part
+            if cand not in REGION_COUNTRY:
+                found = country_code(cand)
+                if found:
+                    return found
+        # Commaless "City Country" ("London England", "Oslo Norway"), guarded against "New Mexico" -> "Mexico"
+        if not any(_ends_with_phrase(name, rname) for rname in _ALL_REGION_NAMES):
+            for cname in sorted_cnames:
+                if len(cname) >= 4 and _ends_with_phrase(name, cname):
+                    return names[cname]
     return ""
 
 
@@ -380,6 +413,9 @@ def _region(parts: list[str], text_country: str, hint: str) -> str:
     """
     context = text_country or hint
     us_names = {name: zone for name, zone in US_STATES.values()}
+    us_sorted = sorted(us_names.items(), key=lambda kv: len(kv[0]), reverse=True)
+    ca_sorted = sorted(CA_PROVINCES.items(), key=lambda kv: len(kv[1][0]), reverse=True)
+    au_sorted = sorted(AU_STATES.items(), key=lambda kv: len(kv[1][0]), reverse=True)
     for part in parts:
         name = _clean(part)
         codes = _codes(part)
@@ -388,19 +424,23 @@ def _region(parts: list[str], text_country: str, hint: str) -> str:
                 return us_names[name]
             if name.replace(" ", "") == "dc":  # "D.C.", "d.c."
                 return US_STATES["DC"][1]
+            for sname, szone in us_sorted:
+                if sname != "washington" and _ends_with_phrase(name, sname):
+                    return szone
             for code in codes:
                 if code in US_STATES and not (
                         hint and hint != "US" and country_code(code) == hint):
                     return US_STATES[code][1]
         if context in ("", "CA"):
             code = REGION_ALIASES.get(name, "")
-            for key, (full, zone) in CA_PROVINCES.items():
-                if name == full or code == key or (
+            for key, (full, zone) in ca_sorted:
+                if name == full or code == key or _ends_with_phrase(name, full) or (
                         key in codes and (context == "CA" or key in CA_CODES_ALONE)):
                     return zone
         if context in ("", "AU"):
-            for key, (full, zone) in AU_STATES.items():
-                if name == full or (key in codes and (context == "AU" or key in AU_CODES_ALONE)):
+            for key, (full, zone) in au_sorted:
+                if name == full or _ends_with_phrase(name, full) or (
+                        key in codes and (context == "AU" or key in AU_CODES_ALONE)):
                     return zone
     return ""
 

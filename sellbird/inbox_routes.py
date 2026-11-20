@@ -39,7 +39,8 @@ def _refuse(message: str, code: int = 400):
 
 def _store() -> MailboxStore:
     from sellbird import dashboard
-    return MailboxStore(db_path=str(dashboard.DB_PATH))
+    db_path = dashboard._db_path() if hasattr(dashboard, "_db_path") else dashboard.DB_PATH
+    return MailboxStore(db_path=str(db_path))
 
 
 def _secrets() -> SecretStore:
@@ -50,14 +51,27 @@ def _secrets() -> SecretStore:
 MAIN_CONNECT_HINTS = {
     "gmail": "Sign in with Google below as this address (or run `sellbird gmail auth`).",
     "microsoft": "Sign in with Microsoft below as this address (or run `sellbird microsoft auth`).",
-    "smtp": "Fill in the SMTP settings under channels.email in sellbird.yaml and the "
-            "password in .env, then run `sellbird doctor`.",
+    "smtp": "Set SMTP_HOST, SMTP_PORT, SMTP_USERNAME, and SMTP_PASSWORD in .env "
+            "(or on the Settings tab), then run `sellbird status --check`.",
 }
 
 
 def _config_env():
     from sellbird.config import load_config, load_env
     return load_config(), load_env()
+
+
+def _safe_env():
+    from types import SimpleNamespace
+    from pydantic import ValidationError
+    from sellbird.config import ConfigError, load_env
+    try:
+        return load_env()
+    except (ConfigError, ValidationError):
+        return SimpleNamespace(
+            gmail_client_id="", gmail_client_secret="",
+            m365_client_id="", m365_tenant_id="",
+        )
 
 
 async def _body(request: Request) -> dict:
@@ -75,11 +89,34 @@ async def _row(store: MailboxStore, mailbox_id: str) -> dict | None:
 
 @router.get("/api/inboxes")
 async def list_inboxes():
+    from pydantic import ValidationError
+    from sellbird.config import ConfigError
     from sellbird.integrations.mail_provider import NATIVE_PROVIDERS, get_mail_provider
 
     store = _store()
     await store.init_db()
-    config, env = _config_env()
+    paused = await store.get_setting("sending_paused") or ""
+    try:
+        config, env = _config_env()
+    except (ConfigError, ValidationError) as err:
+        env = _safe_env()
+        return {
+            "inboxes": [],
+            "several": False,
+            "native": False,
+            "max_daily_sends": 0,
+            "per_inbox_daily_cap": 30,
+            "pools": {cid: sorted(MAIN_PATH if m == MAIN else m for m in ids)
+                      for cid, ids in (await store.campaign_pools()).items()},
+            "campaigns": await store._rows(
+                "SELECT id, name, status FROM campaigns ORDER BY created_at DESC LIMIT 200"),
+            "sending_paused": paused,
+            "connect_command": "sellbird inboxes connect gmail|microsoft|smtp --address you@domain",
+            "can_connect": _can_connect(env),
+            "connect_problems": _connect_problems(env),
+            "connecting": _connect_job_view(),
+            "config_error": str(err),
+        }
     email = config.channels.email
     native = (email.provider or "").strip().lower() in NATIVE_PROVIDERS
     main = get_mail_provider(config, env) if native else None
@@ -111,7 +148,6 @@ async def list_inboxes():
             "connect_hint": (MAIN_CONNECT_HINTS.get((email.provider or "").strip().lower(), "")
                              if inbox.main and not inbox.connected else ""),
         })
-    paused = await store.get_setting("sending_paused") or ""
     return {
         "inboxes": out,
         "several": inboxes.several,
@@ -313,8 +349,8 @@ def _sign_in(kind: str, address: str, env, main: bool = False) -> dict | None:
 
 
 async def _run_main_connect(kind: str, address: str) -> None:
-    config, env = _config_env()
     try:
+        config, env = _config_env()
         done = await asyncio.to_thread(_sign_in, kind, address, env, True)
         if done is None:
             _connect_job.update(state="failed", message=(
@@ -332,8 +368,8 @@ async def _run_main_connect(kind: str, address: str) -> None:
 
 
 async def _run_oauth_connect(kind: str, address: str, name: str, warmup: str) -> None:
-    config, env = _config_env()
     try:
+        config, env = _config_env()
         token = await asyncio.to_thread(_sign_in, kind, address, env)
         if token is None:
             _connect_job.update(state="failed", message=(
@@ -374,7 +410,12 @@ async def connect_main_mailbox():
     """Sign the main mailbox in from the dashboard: the same browser sign-in
     as `sellbird gmail auth` / `sellbird microsoft auth`."""
     global _connect_task
-    config, env = _config_env()
+    from pydantic import ValidationError
+    from sellbird.config import ConfigError
+    try:
+        config, env = _config_env()
+    except (ConfigError, ValidationError) as e:
+        return _refuse(f"Fix your Sellbird configuration first: {e}", 400)
     provider = (config.channels.email.provider or "").strip().lower()
     if provider not in ("gmail", "microsoft"):
         return _refuse("The main mailbox signs in with a browser only for Gmail or "
@@ -395,10 +436,15 @@ async def connect_main_mailbox():
 @router.post("/api/inboxes/connect/{kind}")
 async def connect_inbox(kind: str, request: Request):
     global _connect_task
+    from pydantic import ValidationError
+    from sellbird.config import ConfigError
     if kind not in ("gmail", "microsoft", "smtp"):
         return _refuse("Connect gmail, microsoft or smtp.", 404)
     body = await _body(request)
-    config, env = _config_env()
+    try:
+        config, env = _config_env()
+    except (ConfigError, ValidationError) as e:
+        return _refuse(f"Fix your Sellbird configuration first: {e}", 400)
     try:
         check_provider_allows_inboxes(config)
         address, name, warmup = _connect_fields(body)
@@ -459,11 +505,16 @@ async def _connect_smtp(body, address, name, warmup, config, env):
 
 @router.post("/api/inboxes/{mailbox_id}/test")
 async def test_inbox(mailbox_id: str):
+    from pydantic import ValidationError
+    from sellbird.config import ConfigError
     store = _store()
     await store.init_db()
     row = await _row(store, mailbox_id)
     if row is None:
         return _refuse("No connected inbox with that id.", 404)
-    config, env = _config_env()
+    try:
+        config, env = _config_env()
+    except (ConfigError, ValidationError) as e:
+        return _refuse(f"Fix your Sellbird configuration first: {e}", 400)
     ok, detail = await _test(row, config, env, _secrets())
     return {"success": True, "ok": ok, "detail": detail}

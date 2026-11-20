@@ -13,12 +13,14 @@ from typing import Iterator
 import yaml
 
 from sellbird.textio import read_user_text
-from dotenv import load_dotenv
+from dotenv import dotenv_values, load_dotenv
 from pydantic import (
-    BaseModel, PrivateAttr, TypeAdapter, ValidationError, field_validator, model_validator,
+    BaseModel, Field, PrivateAttr, TypeAdapter, ValidationError, field_validator, model_validator,
 )
 
 from sellbird.paths import PROJECT_ROOT
+
+ENV_FILE = PROJECT_ROOT / ".env"
 
 logger = logging.getLogger("sellbird.config")
 
@@ -678,6 +680,11 @@ class QuietHoursConfig(BaseModel):
 
 class UsageConfig(BaseModel):
     max_daily_claude_percent: float = 80.0
+    # A per-token transport is billed per call, so its limit is real money:
+    # today's recorded spend (usage_events.cost_usd) must stay under this.
+    # Ignored by the Claude and Codex CLI paths, which are subscription-
+    # backed and capped by max_daily_claude_percent instead.
+    max_daily_usd: float = 5.0
     heartbeat_interval_minutes: int = 15
     quiet_hours: QuietHoursConfig = QuietHoursConfig()
 
@@ -688,6 +695,13 @@ class UsageConfig(BaseModel):
             raise ValueError("max_daily_claude_percent must be between 0 and 100")
         return v
 
+    @field_validator("max_daily_usd")
+    @classmethod
+    def _valid_usd(cls, v: float) -> float:
+        if not v > 0:
+            raise ValueError("max_daily_usd must be greater than 0")
+        return v
+
     @field_validator("heartbeat_interval_minutes")
     @classmethod
     def _valid_interval(cls, v: int) -> int:
@@ -696,7 +710,11 @@ class UsageConfig(BaseModel):
         return v
 
 
-BRAIN_PROVIDERS = ("claude", "codex")
+# The providers a usage row may name. "openrouter" is the label the host
+# writes for a config-supplied transport (see brain.TRANSPORT_USAGE_PROVIDER):
+# it is a per-token API, not a subscription, and its `model` column says which
+# actual model charged the call.
+BRAIN_PROVIDERS = ("claude", "codex", "openrouter")
 CODEX_REASONING_EFFORTS = ("minimal", "low", "medium", "high", "xhigh")
 
 # Model names are passed to a CLI, so they must look like a model name and
@@ -711,17 +729,25 @@ class BrainConfig(BaseModel):
     ``codex`` runs Codex on your ChatGPT plan. There is never an automatic
     fallback between them, and an explicit ``model`` only affects Sellbird —
     your own Claude Code / Codex settings are never read or changed.
+
+    ``transport_factory`` is orthogonal to ``provider``: it names a callable
+    that builds a transport, and when one loads neither CLI is used at all.
+    Leave it empty and Sellbird behaves exactly as before. It is not a third
+    provider, so ``provider`` stays whatever it already says.
     """
 
     provider: str = "claude"
     model: str = ""  # empty = the provider's own default
     reasoning_effort: str = ""  # codex only; empty = model default
+    # "pkg.module:callable", or "pkg.module" (then its `build`). Empty = the
+    # CLI for `provider`. See sellbird/brain.py:_resolve_transport.
+    transport_factory: str = ""
 
     @field_validator("provider", mode="before")
     @classmethod
     def _valid_provider(cls, v) -> str:
         v = str(v or "claude").strip().lower()
-        if v not in BRAIN_PROVIDERS:
+        if v not in (*BRAIN_PROVIDERS, "openai_compat"):
             raise ValueError(
                 f"'{v}' is not a supported brain provider. "
                 f"Use one of: {', '.join(BRAIN_PROVIDERS)}."
@@ -746,6 +772,17 @@ class BrainConfig(BaseModel):
                 f"Use one of: {', '.join(CODEX_REASONING_EFFORTS)}."
             )
         return v
+
+    @field_validator("transport_factory", mode="before")
+    @classmethod
+    def _valid_transport_factory(cls, v) -> str:
+        """A dotted path to the callable that builds a transport.
+
+        Deliberately loose: an unresolvable path must not make the config
+        invalid, because every command would then fail to start. Brain
+        logs it once and runs on ``provider`` instead.
+        """
+        return str(v or "").strip()
 
 
 class WriterConfig(BaseModel):
@@ -830,6 +867,120 @@ class HandoffConfig(BaseModel):
     arguments: dict = {}
 
 
+FETCH_BACKENDS = ("auto", "stealth", "http", "playwright", "firecrawl")
+RESEARCH_PROVIDERS = ("auto", "ddgs", "searxng", "tavily", "exa", "serper")
+CALENDAR_PROVIDERS = ("", "calcom", "google", "microsoft")
+CRM_PROVIDERS = ("", "twenty", "webhook")
+
+
+class FetchConfig(BaseModel):
+    backend: str = "auto"
+    render_js: bool = True
+    fallback_to_http: bool = True
+    max_pages_per_company: int = 6
+
+    @field_validator("backend", mode="before")
+    @classmethod
+    def _valid_backend(cls, v) -> str:
+        v = str(v or "auto").strip().lower()
+        if v not in FETCH_BACKENDS:
+            raise ValueError(
+                f"'{v}' is not a supported fetch backend. "
+                f"Use one of: {', '.join(FETCH_BACKENDS)}."
+            )
+        return v
+
+    @field_validator("max_pages_per_company")
+    @classmethod
+    def _valid_max_pages(cls, v: int) -> int:
+        if v < 1:
+            raise ValueError("max_pages_per_company must be at least 1")
+        return v
+
+
+class ResearchConfig(BaseModel):
+    enabled: bool = True
+    search_provider: str = "auto"
+    max_queries_per_company: int = 3
+
+    @field_validator("search_provider", mode="before")
+    @classmethod
+    def _valid_search_provider(cls, v) -> str:
+        v = str(v or "auto").strip().lower()
+        if v not in RESEARCH_PROVIDERS:
+            raise ValueError(
+                f"'{v}' is not a supported research search_provider. "
+                f"Use one of: {', '.join(RESEARCH_PROVIDERS)}."
+            )
+        return v
+
+    @field_validator("max_queries_per_company")
+    @classmethod
+    def _valid_max_queries(cls, v: int) -> int:
+        if v < 0:
+            raise ValueError("max_queries_per_company must be >= 0")
+        return v
+
+
+class CalendarConfig(BaseModel):
+    provider: str = ""
+    event_type_id: int = 0
+    slot_days_ahead: int = 7
+    slots_to_offer: int = 3
+    auto_book: bool = False
+
+    @field_validator("provider", mode="before")
+    @classmethod
+    def _valid_calendar_provider(cls, v) -> str:
+        v = "" if v is None else str(v).strip().lower()
+        if v not in CALENDAR_PROVIDERS:
+            raise ValueError(
+                f"'{v}' is not a supported calendar provider. "
+                f"Use one of: {', '.join(p for p in CALENDAR_PROVIDERS if p)} (or leave empty)."
+            )
+        return v
+
+    @field_validator("event_type_id", mode="before")
+    @classmethod
+    def _coerce_event_type_id(cls, v) -> int:
+        if v in (None, ""):
+            return 0
+        return int(v)
+
+    @field_validator("slot_days_ahead", "slots_to_offer")
+    @classmethod
+    def _positive_slots(cls, v: int) -> int:
+        if v < 1:
+            raise ValueError("calendar slot settings must be >= 1")
+        return v
+
+
+class CrmConfig(BaseModel):
+    provider: str = ""
+    sync_on: list[str] = Field(
+        default_factory=lambda: ["replied", "accepted_offer", "meeting_booked"]
+    )
+
+    @field_validator("provider", mode="before")
+    @classmethod
+    def _valid_crm_provider(cls, v) -> str:
+        v = "" if v is None else str(v).strip().lower()
+        if v not in CRM_PROVIDERS:
+            raise ValueError(
+                f"'{v}' is not a supported CRM provider. "
+                f"Use one of: {', '.join(p for p in CRM_PROVIDERS if p)} (or leave empty)."
+            )
+        return v
+
+
+class CopilotConfig(BaseModel):
+    telegram_enabled: bool = False
+    slack_enabled: bool = False
+    notify_on: list[str] = Field(
+        default_factory=lambda: ["hot_reply", "meeting_booked", "outbox_queued", "paused"]
+    )
+
+
 class SellbirdConfig(BaseModel):
     persona: PersonaConfig
     product: ProductConfig
@@ -840,14 +991,44 @@ class SellbirdConfig(BaseModel):
     compliance: ComplianceConfig = ComplianceConfig()
     writer: WriterConfig = WriterConfig()
     handoff: HandoffConfig = HandoffConfig()
+    fetch: FetchConfig = Field(default_factory=FetchConfig)
+    research: ResearchConfig = Field(default_factory=ResearchConfig)
+    calendar: CalendarConfig = Field(default_factory=CalendarConfig)
+    crm: CrmConfig = Field(default_factory=CrmConfig)
+    copilot: CopilotConfig = Field(default_factory=CopilotConfig)
     # The file it was loaded from, so a running Sellbird can re-read the
     # sending mode from that same file (refresh_sending_mode).
     _source_path: str | None = PrivateAttr(default=None)
 
+    @field_validator("fetch", mode="before")
+    @classmethod
+    def _blank_fetch(cls, v):
+        return FetchConfig() if v is None else v
+
+    @field_validator("research", mode="before")
+    @classmethod
+    def _blank_research(cls, v):
+        return ResearchConfig() if v is None else v
+
+    @field_validator("calendar", mode="before")
+    @classmethod
+    def _blank_calendar(cls, v):
+        return CalendarConfig() if v is None else v
+
+    @field_validator("crm", mode="before")
+    @classmethod
+    def _blank_crm(cls, v):
+        return CrmConfig() if v is None else v
+
+    @field_validator("copilot", mode="before")
+    @classmethod
+    def _blank_copilot(cls, v):
+        return CopilotConfig() if v is None else v
+
 
 class EnvConfig(BaseModel):
     instantly_api_key: str = ""
-    # Discovery providers
+    # Discovery & research providers
     dataforseo_login: str = ""
     dataforseo_password: str = ""
     dataforseo_sandbox: str = ""   # any truthy value routes to the free sandbox
@@ -857,6 +1038,10 @@ class EnvConfig(BaseModel):
     serper_api_key: str = ""
     scavio_api_key: str = ""
     tinyfish_api_key: str = ""
+    firecrawl_api_key: str = ""
+    tavily_api_key: str = ""
+    exa_api_key: str = ""
+    searxng_url: str = ""
     reoon_api_key: str = ""
     zerobounce_api_key: str = ""
     # Native mail providers (channels.email.provider: gmail | smtp)
@@ -875,6 +1060,29 @@ class EnvConfig(BaseModel):
     m365_tenant_id: str = ""
     # Optional: only used when compliance.precleared.enabled is true.
     precleared_api_key: str = ""
+    # Per-token AI providers for a transport (brain.transport_factory).
+    # None of these is read by the Claude or Codex CLI paths.
+    openrouter_api_key: str = ""   # per token; many models, one key
+    xai_api_key: str = ""          # per token (Grok)
+    gemini_api_key: str = ""       # per token, free tier available
+    openai_api_key: str = ""       # per token
+    openai_base_url: str = ""      # custom OpenAI-compatible base URL
+    openai_model: str = ""         # custom OpenAI-compatible default model
+    deepseek_api_key: str = ""     # per token, cheapest capable tier
+    groq_api_key: str = ""         # per token, free tier available
+    mistral_api_key: str = ""      # per token
+    together_api_key: str = ""     # per token
+    fireworks_api_key: str = ""    # per token
+    cerebras_api_key: str = ""     # per token
+    # Calendar, CRM & Copilot integrations
+    calcom_api_key: str = ""
+    calcom_event_type_id: str = ""
+    twenty_api_key: str = ""
+    twenty_base_url: str = ""
+    webhook_url: str = ""
+    telegram_bot_token: str = ""
+    telegram_chat_id: str = ""
+    slack_webhook_url: str = ""
 
 
 def _format_validation_error(e: ValidationError) -> str:
@@ -989,9 +1197,50 @@ def load_brain_config(config_path: str | None = None) -> BrainConfig:
         )
 
 
+def _sync_dotenv_file(path: Path) -> bool:
+    """Load missing or empty vars from ``path`` without clobbering non-empty env vars."""
+    if not path.is_file():
+        return False
+    try:
+        parsed = dotenv_values(path)
+    except OSError:
+        return False
+    for k, v in parsed.items():
+        if not k:
+            continue
+        val = (v or "").strip()
+        if k not in os.environ or (not os.environ[k] and val):
+            os.environ[k] = val
+    return True
+
+
 def load_env() -> EnvConfig:
     """Load environment variables from .env file."""
-    load_dotenv()
+    candidates: list[Path] = [Path.cwd() / ".env"]
+    try:
+        from sellbird.workspace_home import current_home
+        home_root = getattr(current_home(), "root", None)
+        if home_root is not None:
+            candidates.append(Path(home_root) / ".env")
+    except Exception:
+        pass
+    candidates.append(ENV_FILE)
+
+    loaded_any = False
+    seen_paths: set[Path] = set()
+    for candidate in candidates:
+        try:
+            resolved = candidate.resolve()
+        except OSError:
+            resolved = candidate
+        if resolved in seen_paths:
+            continue
+        seen_paths.add(resolved)
+        if _sync_dotenv_file(candidate):
+            loaded_any = True
+    if not loaded_any:
+        load_dotenv(override=False)
+
     env = EnvConfig(
         instantly_api_key=os.getenv("INSTANTLY_API_KEY", "").strip(),
         dataforseo_login=os.getenv("DATAFORSEO_LOGIN", "").strip(),
@@ -1003,6 +1252,10 @@ def load_env() -> EnvConfig:
         serper_api_key=os.getenv("SERPER_API_KEY", "").strip(),
         scavio_api_key=os.getenv("SCAVIO_API_KEY", "").strip(),
         tinyfish_api_key=os.getenv("TINYFISH_API_KEY", "").strip(),
+        firecrawl_api_key=os.getenv("FIRECRAWL_API_KEY", "").strip(),
+        tavily_api_key=os.getenv("TAVILY_API_KEY", "").strip(),
+        exa_api_key=os.getenv("EXA_API_KEY", "").strip(),
+        searxng_url=os.getenv("SEARXNG_URL", "").strip(),
         reoon_api_key=os.getenv("REOON_API_KEY", "").strip(),
         zerobounce_api_key=os.getenv("ZEROBOUNCE_API_KEY", "").strip(),
         gmail_client_id=os.getenv("GMAIL_CLIENT_ID", "").strip(),
@@ -1018,6 +1271,26 @@ def load_env() -> EnvConfig:
         m365_client_id=os.getenv("M365_CLIENT_ID", "").strip(),
         m365_tenant_id=os.getenv("M365_TENANT_ID", "").strip(),
         precleared_api_key=os.getenv("PRECLEARED_API_KEY", "").strip(),
+        openrouter_api_key=os.getenv("OPENROUTER_API_KEY", "").strip(),
+        xai_api_key=os.getenv("XAI_API_KEY", "").strip(),
+        gemini_api_key=os.getenv("GEMINI_API_KEY", "").strip(),
+        openai_api_key=os.getenv("OPENAI_API_KEY", "").strip(),
+        openai_base_url=os.getenv("OPENAI_BASE_URL", "").strip(),
+        openai_model=os.getenv("OPENAI_MODEL", "").strip(),
+        deepseek_api_key=os.getenv("DEEPSEEK_API_KEY", "").strip(),
+        groq_api_key=os.getenv("GROQ_API_KEY", "").strip(),
+        mistral_api_key=os.getenv("MISTRAL_API_KEY", "").strip(),
+        together_api_key=os.getenv("TOGETHER_API_KEY", "").strip(),
+        fireworks_api_key=os.getenv("FIREWORKS_API_KEY", "").strip(),
+        cerebras_api_key=os.getenv("CEREBRAS_API_KEY", "").strip(),
+        calcom_api_key=os.getenv("CALCOM_API_KEY", "").strip(),
+        calcom_event_type_id=os.getenv("CALCOM_EVENT_TYPE_ID", "").strip(),
+        twenty_api_key=os.getenv("TWENTY_API_KEY", "").strip(),
+        twenty_base_url=os.getenv("TWENTY_BASE_URL", "").strip(),
+        webhook_url=os.getenv("WEBHOOK_URL", "").strip(),
+        telegram_bot_token=os.getenv("TELEGRAM_BOT_TOKEN", "").strip(),
+        telegram_chat_id=os.getenv("TELEGRAM_CHAT_ID", "").strip(),
+        slack_webhook_url=os.getenv("SLACK_WEBHOOK_URL", "").strip(),
     )
     return env
 

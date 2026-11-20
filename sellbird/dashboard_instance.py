@@ -44,6 +44,8 @@ def write(data_dir: Path, *, host: str, port: int, instance: str) -> None:
 
 def read(data_dir: Path) -> DashboardInfo | None:
     """The published address, or None when there's no readable, well-formed file."""
+    from sellbird import dashboard_auth
+
     try:
         raw = json.loads((Path(data_dir) / INFO_NAME).read_text(encoding="utf-8"))
         info = DashboardInfo(host=str(raw["host"]), port=int(raw["port"]),
@@ -51,6 +53,8 @@ def read(data_dir: Path) -> DashboardInfo | None:
     except (OSError, ValueError, KeyError, TypeError):
         return None
     if not (0 < info.port < 65536) or not info.instance or not info.host:
+        return None
+    if not dashboard_auth.is_loopback(info.host):
         return None
     return info
 

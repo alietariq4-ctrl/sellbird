@@ -9,10 +9,14 @@ from pathlib import Path
 
 import yaml
 
+from datetime import time as _time
+
 from pydantic import ValidationError
 
 from sellbird.brain import Brain
-from sellbird.config import COUNTRY_ALIASES, BrainConfig, normalize_prospect_country
+from sellbird.config import (
+    COUNTRY_ALIASES, BrainConfig, QuietHoursConfig, normalize_prospect_country,
+)
 from sellbird.integrations.precleared import GET_KEY_URL, SENDER_COUNTRIES, create_free_key
 from sellbird.state import StateManager
 
@@ -183,13 +187,17 @@ async def _test_claude(brain: Brain) -> bool:
     return "SELLBIRD_READY" in response
 
 
-def _ask_brain_config() -> BrainConfig:
-    """Ask which subscription Sellbird thinks with. Claude is the default."""
-    _print_sellbird("I think with an AI subscription you already pay for:")
-    print("    claude — your Claude plan, via Claude Code (default)")
-    print("    codex  — your ChatGPT plan, via the Codex CLI")
+def _ask_brain_config(env_vars: dict[str, str] | None = None) -> BrainConfig:
+    """Ask which AI subscription or API Sellbird thinks with."""
+    _print_sellbird("I can think with a CLI subscription or any OpenAI-compatible API:")
+    print("    claude     — your Claude plan, via Claude Code (default)")
+    print("    codex      — your ChatGPT plan, via the Codex CLI")
+    print("    openrouter — OpenRouter API (many models, one key, no CLI needed)")
+    print("    custom     — any OpenAI-compatible URL (Ollama, vLLM, LM Studio, OpenAI...)")
     while True:
-        provider = _ask("Which one? (claude/codex)", default="claude").lower()
+        provider = _ask(
+            "Which one? (claude/codex/openrouter/custom)", default="claude"
+        ).lower()
         if provider == "codex":
             from sellbird.codex import CodexError, require_supported_platform
             try:
@@ -197,9 +205,90 @@ def _ask_brain_config() -> BrainConfig:
             except CodexError as e:
                 print(f"    ({e})")
                 continue
-        if provider in ("claude", "codex"):
+        if provider in ("claude", "codex", "openrouter", "custom", "openai_compat", "openai", "api"):
             break
-        print("    (type claude or codex)")
+        print("    (type claude, codex, openrouter, or custom)")
+
+    if provider == "openrouter":
+        existing_key = (
+            _read_env_file().get("OPENROUTER_API_KEY", "").strip("'\" ")
+            or os.getenv("OPENROUTER_API_KEY", "").strip()
+        )
+        key = _ask(
+            "OpenRouter API key (input hidden; Enter keeps current key)"
+            if existing_key
+            else "OpenRouter API key (from https://openrouter.ai/keys; input hidden)",
+            required=not bool(existing_key),
+            secret=True,
+        )
+        final_key = key or existing_key
+        if final_key:
+            os.environ["OPENROUTER_API_KEY"] = final_key
+            if env_vars is not None:
+                env_vars["OPENROUTER_API_KEY"] = final_key
+        while True:
+            model = _ask(
+                "Model", default="anthropic/claude-sonnet-5.5", required=False
+            )
+            try:
+                return BrainConfig(
+                    provider="openrouter",
+                    model=model,
+                    transport_factory="harvey_brain.router_factory:build",
+                )
+            except ValidationError:
+                print("    (that doesn't look like a model name — try again or leave blank)")
+
+    if provider in ("custom", "openai_compat", "openai", "api"):
+        default_url = (
+            os.getenv("OPENAI_BASE_URL", "").strip()
+            or _read_env_file().get("OPENAI_BASE_URL", "").strip("'\" ")
+            or "https://api.openai.com/v1"
+        )
+        base_url = _ask(
+            "OpenAI-compatible Base URL (e.g. http://localhost:11434/v1 or https://api.openai.com/v1)",
+            default=default_url,
+            required=True,
+        )
+        existing_key = (
+            _read_env_file().get("OPENAI_API_KEY", "").strip("'\" ")
+            or os.getenv("OPENAI_API_KEY", "").strip()
+        )
+        api_key = _ask(
+            "API key (input hidden; leave blank for keyless local servers like Ollama/vLLM)",
+            required=False,
+            secret=True,
+        )
+        final_key = api_key or existing_key
+        default_model = (
+            os.getenv("OPENAI_MODEL", "").strip()
+            or _read_env_file().get("OPENAI_MODEL", "").strip("'\" ")
+            or "gpt-4o-mini"
+        )
+        while True:
+            model = _ask("Model name", default=default_model, required=False)
+            try:
+                cfg = BrainConfig(
+                    provider="openrouter",
+                    model=model,
+                    transport_factory="harvey_brain.router_factory:build",
+                )
+                break
+            except ValidationError:
+                print("    (that doesn't look like a model name — try again)")
+        os.environ["OPENAI_BASE_URL"] = base_url
+        if model:
+            os.environ["OPENAI_MODEL"] = model
+        if final_key:
+            os.environ["OPENAI_API_KEY"] = final_key
+        if env_vars is not None:
+            env_vars["OPENAI_BASE_URL"] = base_url
+            if model:
+                env_vars["OPENAI_MODEL"] = model
+            if final_key:
+                env_vars["OPENAI_API_KEY"] = final_key
+        return cfg
+
     if provider == "codex":
         from sellbird.codex import SUGGESTED_MODEL
         print(f"    {SUGGESTED_MODEL} is the Codex model Sellbird has verified as text-only")
@@ -294,12 +383,44 @@ class SetupWizard:
         await self._print_summary()
 
     async def _check_prerequisites(self):
-        """Pick the brain provider and verify its CLI is installed and working."""
-        self.brain_config = _ask_brain_config()
-        if self.brain_config.provider == "codex":
+        """Pick the brain provider and verify its CLI or API endpoint is ready."""
+        try:
+            self.brain_config = _ask_brain_config(self.env_vars)
+        except TypeError:
+            self.brain_config = _ask_brain_config()
+        if (
+            self.brain_config.transport_factory
+            or self.brain_config.provider in ("openrouter", "openai_compat")
+        ):
+            await self._check_api_brain()
+        elif self.brain_config.provider == "codex":
             await self._check_codex()
         else:
             await self._check_claude()
+
+    async def _check_api_brain(self):
+        """Verify the OpenAI-compatible API transport without requiring claude.exe."""
+        print("\n  Testing OpenAI-compatible API brain...", end=" ", flush=True)
+        state = StateManager()
+        await state.init_db()
+        brain = Brain(state, self.brain_config)
+        try:
+            ok = brain.is_transport_active and await _test_claude(brain)
+        finally:
+            await brain.aclose()
+        if ok:
+            print("✓ Working")
+        else:
+            print("✗ Failed")
+            _print_sellbird(
+                "Couldn't reach the configured API endpoint or verify your API key."
+            )
+            _print_sellbird(
+                "Check your key / base URL in .env (or start your local model server)."
+            )
+            if not _ask_yes_no("Continue anyway?", default=False):
+                raise SystemExit(1)
+        self._check_python_packages()
 
     async def _check_claude(self):
         # Check Claude CLI
@@ -665,11 +786,29 @@ class SetupWizard:
             print("    (didn't catch that — using 15)")
             interval = 15
 
-        # Quiet hours
+        # Quiet hours (validated before saving so sellbird.yaml stays valid)
         print("\n  I won't send emails or do outreach during quiet hours.")
-        quiet_start = _ask("Quiet hours start (24h format)", default="22:00")
-        quiet_end = _ask("Quiet hours end (24h format)", default="07:00")
-        timezone = _ask("Your timezone", default="America/New_York")
+        while True:
+            quiet_start = _ask("Quiet hours start (24h format)", default="22:00")
+            try:
+                _time.fromisoformat(quiet_start)
+                break
+            except ValueError:
+                print("    (invalid time — use 24h HH:MM format, e.g. '22:00')")
+        while True:
+            quiet_end = _ask("Quiet hours end (24h format)", default="07:00")
+            try:
+                _time.fromisoformat(quiet_end)
+                break
+            except ValueError:
+                print("    (invalid time — use 24h HH:MM format, e.g. '07:00')")
+        while True:
+            timezone = _ask("Your timezone", default="America/New_York")
+            try:
+                QuietHoursConfig(start=quiet_start, end=quiet_end, timezone=timezone)
+                break
+            except ValidationError:
+                print("    (invalid timezone — use an IANA name like 'America/New_York' or 'UTC')")
 
         # Daily send limit
         daily_sends = _ask(
@@ -874,6 +1013,9 @@ class SetupWizard:
         config_file = _config_file()
         if self.config:
             self.config["brain"] = brain_section(self.brain_config)
+            usage_block = self.config.get("usage")
+            if isinstance(usage_block, dict) and isinstance(usage_block.get("quiet_hours"), dict):
+                QuietHoursConfig(**usage_block["quiet_hours"])
         if self.config and not config_file.exists():
             if self.precleared:
                 _save_precleared(self.config, self.precleared)
@@ -892,8 +1034,25 @@ class SetupWizard:
                             if not isinstance(existing.get(section), dict):
                                 existing[section] = {}
                             _merge_answers(existing[section], self.config[section])
-                existing["usage"] = self.config.get("usage", existing.get("usage", {}))
-                existing["brain"] = self.config["brain"]
+                existing_usage = (
+                    dict(existing["usage"])
+                    if isinstance(existing.get("usage"), dict)
+                    else {}
+                )
+                if isinstance(self.config.get("usage"), dict):
+                    existing_usage.update(self.config["usage"])
+                existing["usage"] = existing_usage
+
+                existing_brain = (
+                    dict(existing["brain"])
+                    if isinstance(existing.get("brain"), dict)
+                    else {}
+                )
+                new_brain = dict(self.config["brain"])
+                if existing_brain.get("transport_factory") and "transport_factory" not in new_brain:
+                    new_brain["transport_factory"] = existing_brain["transport_factory"]
+                existing["brain"] = new_brain
+
                 if "LINKEDIN_EMAIL" in self.env_vars:
                     existing.setdefault("channels", {}).setdefault("linkedin", {})["enabled"] = bool(
                         self.env_vars["LINKEDIN_EMAIL"]
@@ -926,10 +1085,17 @@ class SetupWizard:
 """)
 
         # Show what's configured
+        if (
+            self.brain_config.transport_factory
+            or self.brain_config.provider in ("openrouter", "openai_compat")
+        ):
+            brain_label, brain_ok = "API Brain (OpenAI-compatible)", True
+        elif self.brain_config.provider == "codex":
+            brain_label, brain_ok = "Codex CLI (ChatGPT plan)", _check_codex_cli()
+        else:
+            brain_label, brain_ok = "Claude Code CLI", _check_claude_cli()
         checks = {
-            ("Codex CLI (ChatGPT plan)" if self.brain_config.provider == "codex"
-             else "Claude Code CLI"): (_check_codex_cli() if self.brain_config.provider == "codex"
-                                      else _check_claude_cli()),
+            brain_label: brain_ok,
             "Instantly API": bool(self.env_vars.get("INSTANTLY_API_KEY")),
             "LinkedIn": bool(self.env_vars.get("LINKEDIN_EMAIL")),
             "Cloudflare Crawl": bool(self.env_vars.get("CLOUDFLARE_ACCOUNT_ID")),

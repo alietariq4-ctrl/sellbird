@@ -53,6 +53,11 @@ sellbird.local.yaml
 # Backups and in-progress writes from `sellbird train` hold the same config.
 sellbird.local.yaml.*
 sellbird.yaml.*
+# harvey_brain's provider chain (which model backs each role). Local
+# configuration, like sellbird.local.yaml: a fork must not publish its
+# model choice and per-role routing by accident.
+brain.yaml
+brain.yml
 # The same files under Harvey, Sellbird's old name, in clones from before the
 # rename (Sellbird moves them over on first run; see sellbird/legacy.py).
 harvey.local.yaml

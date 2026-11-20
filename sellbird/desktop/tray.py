@@ -102,20 +102,39 @@ def dashboard_command(port: int, platform: str = sys.platform) -> list[str]:
     return [python, "-P", "-m", "sellbird", "dashboard", "--port", str(port)]
 
 
+def scrub_token_text(text: str) -> str:
+    """Redact any #token=... unlock fragment before writing or showing logs."""
+    import re
+    return re.sub(r"#token=[^\s\"'&<>]+", "#token=[REDACTED]", text)
+
+
 def default_launcher(argv: list[str], log_path: Path) -> None:
     """Start the dashboard detached from this process (and its terminal), its
-    output appended to log_path. The dashboard prints its unlock link, so
-    that log is owner-only, like data/dashboard-token."""
+    stderr appended to log_path (owner-only). Stdout is suppressed so the
+    unlock link's #token=... fragment never lands in dashboard-start.log."""
     import os
+    from sellbird.paths import PROJECT_ROOT
     log_path.parent.mkdir(parents=True, exist_ok=True)
-    kwargs: dict = {}
+    if log_path.is_file():
+        try:
+            existing = log_path.read_text(encoding="utf-8", errors="replace")
+            scrubbed = scrub_token_text(existing)
+            if scrubbed != existing:
+                log_path.write_text(scrubbed, encoding="utf-8")
+        except OSError:
+            pass
+    kwargs: dict = {"cwd": str(PROJECT_ROOT)}
     if sys.platform == "win32":
-        kwargs["creationflags"] = subprocess.CREATE_NEW_PROCESS_GROUP | subprocess.DETACHED_PROCESS
+        kwargs["creationflags"] = (
+            subprocess.CREATE_NEW_PROCESS_GROUP
+            | subprocess.DETACHED_PROCESS
+            | getattr(subprocess, "CREATE_NO_WINDOW", 0)
+        )
     else:
         kwargs["start_new_session"] = True
     fd = os.open(log_path, os.O_WRONLY | os.O_CREAT | os.O_APPEND, 0o600)
     with os.fdopen(fd, "a", encoding="utf-8") as log:
-        subprocess.Popen(argv, stdin=subprocess.DEVNULL, stdout=log, stderr=log, **kwargs)
+        subprocess.Popen(argv, stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL, stderr=log, **kwargs)
 
 
 # ── Talking to the dashboard ──
@@ -151,13 +170,15 @@ class TrayController:
 
     def _client(self, base: str) -> httpx.Client:
         extra = {"transport": self._transport} if self._transport is not None else {}
-        return httpx.Client(base_url=base, timeout=5.0, **extra)
+        return httpx.Client(base_url=base, timeout=5.0, trust_env=False, **extra)
 
     def _base(self) -> str | None:
         """The running dashboard's address, once its instance id matches."""
         from sellbird.mcp_server import base_url
         info = dashboard_instance.read(self.data_dir)
         if info is None:
+            return None
+        if self.port != DEFAULT_PORT and info.port != self.port:
             return None
         base = base_url(info.host, info.port)
         try:
@@ -227,12 +248,11 @@ class TrayController:
         return self._post("/api/sending/resume", "Sending resumed.")
 
     def open_dashboard(self) -> bool:
-        info = dashboard_instance.read(self.data_dir)
-        if info is None or self._base() is None:
+        base = self._base()
+        if base is None:
             return False
-        from sellbird.mcp_server import base_url
         token = _read_user_token(self.data_dir)
-        self._opener(base_url(info.host, info.port) + (f"#token={token}" if token else ""))
+        self._opener(base + (f"#token={token}" if token else ""))
         return True
 
 

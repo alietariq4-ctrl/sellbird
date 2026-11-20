@@ -70,3 +70,94 @@ def test_the_homes_own_prompt_wins(tmp_path):
     (tmp_path / "prompts" / "writer.md").write_text("mine {{x}}")
     with use_home(Home.for_root(Path(tmp_path))):
         assert Brain(state=None).load_prompt("writer", x="1") == "mine 1"
+
+
+# ── A transport needs no CLI preflight (the bug that stopped the loop) ──
+
+
+@pytest.mark.asyncio
+async def test_a_transport_preflights_ok_without_any_claude_cli(monkeypatch):
+    """A transport install has no Claude CLI, and must still be ready.
+
+    The Claude path probes ``claude --help`` for its isolation flags and
+    paused the whole heartbeat when the binary was missing — even though the
+    transport, not Claude, was going to answer every call. ``check_cli``
+    raising here IS the assertion: if preflight reaches for the CLI, this
+    test fails instead of quietly passing.
+    """
+    from sellbird import claude_runtime
+
+    def _forbidden(env=None):
+        raise AssertionError("preflight probed the Claude CLI for a transport")
+
+    monkeypatch.setattr(claude_runtime, "check_cli", _forbidden)
+    brain = Brain(state=None, transport=Transport("ok"))
+    assert await brain.preflight() == ""
+
+
+@pytest.mark.asyncio
+async def test_a_transport_still_reports_its_own_pause():
+    """No CLI probe, but a paused transport is still not "ready"."""
+    brain = Brain(state=None, transport=Transport("ok", paused="budget spent"))
+    assert await brain.preflight() == ""          # not the CLI's business
+    assert brain.paused_reason == "budget spent"  # the transport's own word
+
+
+def test_an_explicit_transport_beats_the_configured_factory(monkeypatch):
+    """``transport=`` is the host seam: config never overrides it."""
+    from sellbird.config import BrainConfig
+
+    monkeypatch.setattr("sellbird.brain._resolve_transport",
+                        lambda spec: pytest.fail("factory consulted"))
+    given = Transport("x")
+    brain = Brain(state=None, transport=given,
+                  brain_config=BrainConfig(transport_factory="anywhere:build"))
+    assert brain.transport is given
+
+
+def test_a_bad_transport_spec_is_ignored_not_raised(caplog):
+    """A typo in sellbird.yaml must not take the whole CLI down."""
+    from sellbird.config import BrainConfig
+    import sellbird.brain as brain_mod
+
+    spec = "no_such_module_anywhere:build"
+    brain_mod._TRANSPORT_SPEC_REPORTED.discard(spec)
+    with caplog.at_level("ERROR", logger="sellbird.brain"):
+        brain = Brain(state=None,
+                      brain_config=BrainConfig(transport_factory=spec))
+    assert brain.transport is None
+    assert brain.provider == "claude"      # config's provider, untouched
+    assert "did not load" in caplog.text
+
+
+def test_a_factory_resolves_from_a_bare_module_path():
+    """``pkg.module`` alone calls its ``build``."""
+    from sellbird.config import BrainConfig
+
+    brain = Brain(state=None, brain_config=BrainConfig(
+        transport_factory="tests.fake_transport_module"))
+    assert brain.transport is not None and callable(brain.transport)
+
+
+def test_a_chain_that_failed_to_load_is_reported_as_failed():
+    """``status --check`` must not read healthy when the factory blew up.
+
+    The transport is None, so every real call falls through to the Claude CLI
+    — which needs a login even though this check does not test for one.
+    """
+    from sellbird.brain import _resolve_transport
+    from sellbird.cli import _transport_failure_line
+    from sellbird.config import BrainConfig
+
+    spec = "no.such.module:build"
+    brain = Brain(state=None, brain_config=BrainConfig(transport_factory=spec))
+    assert brain.transport is None
+    assert _resolve_transport(spec) is None
+    assert _transport_failure_line(spec, brain.provider_label) == (
+        "  Brain:                transport_factory no.such.module:build "
+        "FAILED to load\n"
+        "                        The configured provider chain is unusable "
+        "(usually: every provider's API key is empty, or the dotted path is "
+        "wrong). See the log line \"brain.transport_factory ... did not "
+        "load\". Falling back to Claude, which needs a CLI login."
+    )

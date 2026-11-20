@@ -25,6 +25,11 @@ function setTheme(mode) {
   applyTheme(mode);
 }
 
+function toggleOledTheme() {
+  const current = document.documentElement.getAttribute('data-theme');
+  setTheme(current === 'dark' ? 'light' : 'dark');
+}
+
 (function initTheme() {
   let saved = 'auto';
   try {
@@ -422,6 +427,8 @@ function loadCurrentTab() {
     case 'outbox': loadOutbox(); break;
     case 'conversations': loadConversations(); break;
     case 'activity': loadActivity(); break;
+    case 'brain': loadBrainStudio(); break;
+    case 'enrichment': loadEnrichment(); break;
     case 'inboxes': loadInboxes(); break;
     case 'usage': loadUsage(); break;
     case 'settings': loadSettings(); loadSendingModeCard(); break;
@@ -1314,6 +1321,92 @@ async function loadSettings() {
   tag('reoon-status', data.reoon_api_key_set, 'set');
   tag('zerobounce-status', data.zerobounce_api_key_set, 'set');
   tag('hunter-status', data.hunter_api_key_set, 'set');
+
+  // AI & Universal endpoints
+  const setVal = (id, val) => { const el = document.getElementById(id); if (el) el.value = val || ''; };
+  setVal('openai-base-url', data.openai_base_url);
+  setVal('openai-model', data.openai_model);
+  setVal('searxng-url', data.searxng_url);
+  setVal('twenty-url', data.twenty_base_url);
+  setVal('telegram-chat', data.telegram_chat_id);
+  setVal('calcom-event-type-id', data.calcom_event_type_id);
+
+  savedPh('openai-key', data.openai_api_key_set, 'API key (or sk-none)');
+  savedPh('openrouter-key', data.openrouter_api_key_set, 'sk-or-v1-...');
+  savedPh('deepseek-key', data.deepseek_api_key_set, 'sk-...');
+  savedPh('gemini-key', data.gemini_api_key_set, 'AIzaSy...');
+  savedPh('xai-key', data.xai_api_key_set, 'xai-...');
+  savedPh('groq-key', data.groq_api_key_set, 'gsk_...');
+
+  savedPh('tavily-key', data.tavily_api_key_set, 'tvly-...');
+  savedPh('firecrawl-key', data.firecrawl_api_key_set, 'fc-...');
+  savedPh('serper-key', data.serper_api_key_set, 'Enter key');
+  savedPh('calcom-key', data.calcom_api_key_set, 'cal_live_...');
+  savedPh('twenty-key', data.twenty_api_key_set, 'Enter API key');
+  savedPh('telegram-token', data.telegram_bot_token_set, 'bot123456:ABC-DEF...');
+  savedPh('slack-webhook', data.slack_webhook_url_set, 'https://hooks.slack.com/services/...');
+
+  tag('openrouter-status', data.openrouter_api_key_set, 'set');
+  tag('deepseek-status', data.deepseek_api_key_set, 'set');
+  tag('gemini-status', data.gemini_api_key_set, 'set');
+  tag('xai-status', data.xai_api_key_set, 'set');
+  tag('groq-status', data.groq_api_key_set, 'set');
+}
+
+function saveUniversalBrain() {
+  const payload = {
+    OPENAI_BASE_URL: (document.getElementById('openai-base-url') || {}).value.trim(),
+    OPENAI_MODEL: (document.getElementById('openai-model') || {}).value.trim(),
+  };
+  const key = (document.getElementById('openai-key') || {}).value;
+  if (key) payload.OPENAI_API_KEY = key;
+  saveEnv(payload, 'Universal OpenAI-compatible brain saved.').then(loadSettings);
+}
+
+function saveCloudModelKeys() {
+  const payload = {};
+  const or = (document.getElementById('openrouter-key') || {}).value;
+  const ds = (document.getElementById('deepseek-key') || {}).value;
+  const gm = (document.getElementById('gemini-key') || {}).value;
+  const xai = (document.getElementById('xai-key') || {}).value;
+  const gr = (document.getElementById('groq-key') || {}).value;
+  if (or) payload.OPENROUTER_API_KEY = or;
+  if (ds) payload.DEEPSEEK_API_KEY = ds;
+  if (gm) payload.GEMINI_API_KEY = gm;
+  if (xai) payload.XAI_API_KEY = xai;
+  if (gr) payload.GROQ_API_KEY = gr;
+  if (!Object.keys(payload).length) { showToast('No keys entered. Existing keys preserved.', 'info'); return; }
+  saveEnv(payload, 'Cloud model keys updated.').then(loadSettings);
+}
+
+function saveSearchTools() {
+  const payload = {
+    SEARXNG_URL: (document.getElementById('searxng-url') || {}).value.trim(),
+  };
+  const tv = (document.getElementById('tavily-key') || {}).value;
+  const fc = (document.getElementById('firecrawl-key') || {}).value;
+  const sp = (document.getElementById('serper-key') || {}).value;
+  if (tv) payload.TAVILY_API_KEY = tv;
+  if (fc) payload.FIRECRAWL_API_KEY = fc;
+  if (sp) payload.SERPER_API_KEY = sp;
+  saveEnv(payload, 'Search & discovery tools updated.').then(loadSettings);
+}
+
+function saveIntegrations() {
+  const payload = {
+    TWENTY_BASE_URL: (document.getElementById('twenty-url') || {}).value.trim(),
+    TELEGRAM_CHAT_ID: (document.getElementById('telegram-chat') || {}).value.trim(),
+    CALCOM_EVENT_TYPE_ID: (document.getElementById('calcom-event-type-id') || {}).value.trim(),
+  };
+  const cc = (document.getElementById('calcom-key') || {}).value;
+  const tw = (document.getElementById('twenty-key') || {}).value;
+  const tg = (document.getElementById('telegram-token') || {}).value;
+  const sl = (document.getElementById('slack-webhook') || {}).value;
+  if (cc) payload.CALCOM_API_KEY = cc;
+  if (tw) payload.TWENTY_API_KEY = tw;
+  if (tg) payload.TELEGRAM_BOT_TOKEN = tg;
+  if (sl) payload.SLACK_WEBHOOK_URL = sl;
+  saveEnv(payload, 'Integrations & alerts updated.').then(loadSettings);
 }
 
 function saveGmail() {
@@ -3131,6 +3224,8 @@ setInterval(() => {
     case 'campaigns': loadCampaigns(); break;
     case 'conversations': loadConversations(); break;
     case 'activity': loadActivity(); break;
+    case 'brain': loadBrainStudio(); break;
+    case 'enrichment': loadEnrichment(); break;
     case 'inboxes': loadInboxes(); break;
     case 'usage': loadUsage(); break;
     case 'controls': loadLogs(); break;
@@ -3365,3 +3460,329 @@ async function dismissProposedOffer() {
   d.addEventListener('close', () => { if (_inboxPoll) { clearInterval(_inboxPoll); _inboxPoll = null; } });
   d.addEventListener('click', e => { if (e.target === d) closeInboxDialog(); });
 })();
+
+
+// ═══════════════════════════════════════════════════════════════════════════
+// Brain Studio (Universal Model Router, Chain & Role Management)
+// ═══════════════════════════════════════════════════════════════════════════
+
+let _brainConfig = null;
+
+const ALL_ROLES = [
+  { id: 'scout', name: 'Scout', desc: 'Decision Maker & ICP scoring' },
+  { id: 'writer', name: 'Writer', desc: 'Personalized cold copy & sequence generation' },
+  { id: 'researcher', name: 'Deep Researcher', desc: 'OSINT web crawler & signal extractor' },
+  { id: 'enricher', name: 'Clay Enricher', desc: 'Custom AI columns & structured attributes' },
+  { id: 'critic', name: 'Copy Critic', desc: 'Hallucination, spam & deliverability review' },
+  { id: 'handler', name: 'Handler', desc: 'Reply categorization & auto-booking' },
+  { id: 'analyst', name: 'Analyst', desc: 'Campaign performance & funnel diagnostics' },
+  { id: 'trainer', name: 'Trainer', desc: 'Product knowledge & objection playbook' }
+];
+
+const KNOWN_PROVIDERS = [
+  'openai_compat', 'openrouter', 'deepseek', 'xai', 'gemini', 'groq',
+  'together', 'mistral', 'fireworks', 'cerebras', 'ollama', 'lmstudio', 'vllm', 'custom'
+];
+
+async function loadBrainStudio() {
+  const data = await api('/api/brain/config');
+  if (!data) return;
+  _brainConfig = data;
+
+  // Render budget & spend
+  const maxUsd = (data.budget && data.budget.max_usd_per_day != null) ? Number(data.budget.max_usd_per_day) : 5.0;
+  const spentUsd = (data.spend && data.spend.spend_today_usd != null) ? Number(data.spend.spend_today_usd) : 0.0;
+  
+  const spendEl = document.getElementById('brain-spend-usd');
+  if (spendEl) spendEl.textContent = '$' + spentUsd.toFixed(4);
+  const capEl = document.getElementById('brain-spend-cap');
+  if (capEl) capEl.textContent = `of $${maxUsd.toFixed(2)}/day limit`;
+  const inpEl = document.getElementById('brain-max-usd');
+  if (inpEl) inpEl.value = maxUsd;
+
+  const barEl = document.getElementById('brain-budget-bar');
+  if (barEl) {
+    const pct = Math.min(100, Math.round((spentUsd / (maxUsd || 1)) * 100));
+    barEl.style.width = pct + '%';
+    barEl.className = 'progress-fill ' + (pct >= 90 ? 'red' : pct >= 70 ? 'yellow' : 'emerald');
+  }
+
+  // Render Chain
+  renderBrainChain(data.chain || []);
+
+  // Render Roles
+  renderBrainRoles(data.profiles || {});
+}
+
+function renderBrainChain(chain) {
+  const container = document.getElementById('brain-chain-container');
+  if (!container) return;
+  if (!chain || !chain.length) {
+    container.innerHTML = '<div class="inset" style="text-align:center;color:var(--text-2);padding:14px;">No fallback chain configured. Requests will use default openai_compat.</div>';
+    return;
+  }
+  container.innerHTML = chain.map((item, idx) => `
+    <div class="chain-row" data-idx="${idx}">
+      <span class="chain-idx">${idx + 1}</span>
+      <select class="form-input chain-prov">
+        ${KNOWN_PROVIDERS.map(p => `<option value="${p}" ${p === (item.provider || '').toLowerCase() ? 'selected' : ''}>${p}</option>`).join('')}
+      </select>
+      <input type="text" class="form-input chain-model" placeholder="Model ID (e.g. deepseek-chat)" value="${escHtml(item.model || '')}">
+      <input type="text" class="form-input chain-url" placeholder="Base URL (optional)" value="${escHtml(item.base_url || '')}">
+      <input type="text" class="form-input chain-env" placeholder="API Key Env (e.g. DEEPSEEK_API_KEY)" value="${escHtml(item.api_key_env || '')}">
+      <button class="btn btn-ghost" title="Remove" onclick="removeChainRow(this)"><svg class="icon"><use href="#i-close"/></svg></button>
+    </div>
+  `).join('');
+}
+
+function addChainRow() {
+  const container = document.getElementById('brain-chain-container');
+  if (!container) return;
+  const idx = container.querySelectorAll('.chain-row').length;
+  const div = document.createElement('div');
+  div.className = 'chain-row';
+  div.dataset.idx = idx;
+  div.innerHTML = `
+    <span class="chain-idx">${idx + 1}</span>
+    <select class="form-input chain-prov">
+      ${KNOWN_PROVIDERS.map(p => `<option value="${p}">${p}</option>`).join('')}
+    </select>
+    <input type="text" class="form-input chain-model" placeholder="Model ID" value="deepseek-chat">
+    <input type="text" class="form-input chain-url" placeholder="Base URL (optional)" value="">
+    <input type="text" class="form-input chain-env" placeholder="API Key Env (e.g. DEEPSEEK_API_KEY)" value="DEEPSEEK_API_KEY">
+    <button class="btn btn-ghost" title="Remove" onclick="removeChainRow(this)"><svg class="icon"><use href="#i-close"/></svg></button>
+  `;
+  container.appendChild(div);
+}
+
+function removeChainRow(btn) {
+  const row = btn.closest('.chain-row');
+  if (row) row.remove();
+  const rows = document.querySelectorAll('#brain-chain-container .chain-row');
+  rows.forEach((r, i) => {
+    const idxEl = r.querySelector('.chain-idx');
+    if (idxEl) idxEl.textContent = i + 1;
+  });
+}
+
+async function saveBrainBudget() {
+  const val = parseFloat((document.getElementById('brain-max-usd') || {}).value || '5');
+  const res = await api('/api/brain/config', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ max_usd_per_day: val, chain: _brainConfig ? _brainConfig.chain : [] })
+  });
+  if (res && res.success) { showToast('Daily budget updated.', 'success'); loadBrainStudio(); }
+  else showToast((res && res.message) || 'Failed to update budget.', 'error');
+}
+
+async function saveBrainChain() {
+  const rows = document.querySelectorAll('#brain-chain-container .chain-row');
+  const chain = [];
+  rows.forEach(r => {
+    const prov = (r.querySelector('.chain-prov') || {}).value || 'openai_compat';
+    const model = ((r.querySelector('.chain-model') || {}).value || '').trim();
+    const url = ((r.querySelector('.chain-url') || {}).value || '').trim();
+    const env = ((r.querySelector('.chain-env') || {}).value || '').trim();
+    chain.push({
+      provider: prov,
+      model: model,
+      base_url: url,
+      api_key_env: env
+    });
+  });
+  if (!chain.length) { showToast('Add at least one provider in the chain.', 'error'); return; }
+
+  const payload = {
+    budget: { max_usd_per_day: parseFloat((document.getElementById('brain-max-usd') || {}).value || '5') },
+    chain: chain,
+    profiles: _brainConfig ? _brainConfig.profiles : {}
+  };
+  const res = await api('/api/brain/config', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(payload)
+  });
+  if (res && res.success) { showToast('Fallback chain saved.', 'success'); loadBrainStudio(); }
+  else showToast((res && res.message) || 'Failed to save chain.', 'error');
+}
+
+function renderBrainRoles(profiles) {
+  const grid = document.getElementById('brain-roles-grid');
+  if (!grid) return;
+  grid.innerHTML = ALL_ROLES.map(role => {
+    const p = profiles[role.id] || {};
+    return `
+      <div class="role-box" data-role="${role.id}">
+        <div class="role-box-head">
+          <b>${role.name}</b>
+          <span>${role.desc}</span>
+        </div>
+        <div class="role-box-inputs">
+          <input type="text" class="form-input role-model" placeholder="Model (optional)" value="${escHtml(p.model || '')}">
+          <input type="text" class="form-input role-prov" placeholder="Provider override" value="${escHtml(p.provider || '')}">
+        </div>
+      </div>
+    `;
+  }).join('');
+}
+
+async function saveBrainRoles() {
+  const boxes = document.querySelectorAll('#brain-roles-grid .role-box');
+  const profiles = {};
+  boxes.forEach(b => {
+    const roleId = b.dataset.role;
+    const model = ((b.querySelector('.role-model') || {}).value || '').trim();
+    const prov = ((b.querySelector('.role-prov') || {}).value || '').trim();
+    profiles[roleId] = {
+      model: model,
+      provider: prov
+    };
+  });
+  const chain = (_brainConfig && _brainConfig.chain) ? _brainConfig.chain : [];
+  const payload = {
+    budget: { max_usd_per_day: parseFloat((document.getElementById('brain-max-usd') || {}).value || '5') },
+    chain: chain,
+    profiles: profiles
+  };
+  const res = await api('/api/brain/config', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(payload)
+  });
+  if (res && res.success) { showToast('Role routing saved.', 'success'); loadBrainStudio(); }
+  else showToast((res && res.message) || 'Failed to save roles.', 'error');
+}
+
+async function runBrainDoctor() {
+  const statusEl = document.getElementById('brain-doctor-status');
+  const panel = document.getElementById('brain-doctor-results');
+  if (statusEl) statusEl.textContent = 'Probing endpoints...';
+  if (panel) panel.style.display = 'none';
+
+  const data = await api('/api/brain/doctor');
+  if (!data) {
+    if (statusEl) statusEl.textContent = 'Doctor check failed.';
+    return;
+  }
+  if (statusEl) statusEl.textContent = `Completed — ${data.active_providers || 0} active providers verified.`;
+  if (panel) {
+    const checks = data.checks || [];
+    panel.innerHTML = checks.map(c => `
+      <div class="doctor-row">
+        <div>
+          <b>${escHtml(c.name || c.provider || '')}</b>
+          <div class="meta" style="font-size:11px;color:var(--text-2)">${escHtml(c.model || '')} &middot; ${escHtml(c.base_url || '')}</div>
+        </div>
+        <div style="display:flex;align-items:center;gap:8px;">
+          <span class="email-tag ${c.ok ? 'verified' : 'invalid'}">${c.ok ? 'Ready' : (c.error || 'Failed')}</span>
+          ${c.latency_ms ? `<span class="meta">${c.latency_ms}ms</span>` : ''}
+        </div>
+      </div>
+    `).join('') || '<div class="meta">No provider checks returned.</div>';
+    panel.style.display = 'block';
+  }
+}
+
+async function runBrainProbe() {
+  const role = (document.getElementById('probe-role') || {}).value || 'scout';
+  const domain = (document.getElementById('probe-domain') || {}).value || 'stripe.com';
+  const out = document.getElementById('probe-output');
+  if (out) { out.style.display = 'block'; out.textContent = 'Sending probe via ' + role + '...'; }
+
+  const data = await api('/api/brain/probe', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ agent: role, domain: domain })
+  });
+  if (out) {
+    out.textContent = JSON.stringify(data, null, 2);
+  }
+}
+
+// ═══════════════════════════════════════════════════════════════════════════
+// Clay AI Custom Columns
+// ═══════════════════════════════════════════════════════════════════════════
+
+async function loadEnrichment() {
+  const list = document.getElementById('clay-column-list');
+  if (!list) return;
+  const data = await api('/api/enrichment/columns');
+  if (!data || !data.columns || !data.columns.length) {
+    list.innerHTML = `
+      <div class="inset" style="text-align: center; color: var(--text-2); padding: 24px;">
+        No custom columns added yet. Click <b>+ Add AI Column</b> to define a new signal.
+      </div>
+    `;
+    return;
+  }
+  list.innerHTML = data.columns.map(col => `
+    <div class="clay-col-item">
+      <div>
+        <h4>${escHtml(col.name)} <span class="tag" style="text-transform:none;font-weight:normal">${escHtml(col.key)}</span> <span class="tag accent">${escHtml(col.output_type || 'text')}</span></h4>
+        <p>${escHtml(col.prompt || 'No instruction prompt.')}</p>
+      </div>
+      <button class="btn btn-ghost" title="Delete Column" onclick="deleteEnrichmentCol('${escHtml(col.id || col.key)}')">
+        <svg class="icon"><use href="#i-close"/></svg>
+      </button>
+    </div>
+  `).join('');
+}
+
+function openAddColumnModal() {
+  const d = document.getElementById('enrichment-dialog');
+  if (d && d.showModal) d.showModal();
+}
+
+function closeAddColumnModal() {
+  const d = document.getElementById('enrichment-dialog');
+  if (d && d.close) d.close();
+}
+
+function autoSlugColKey(val) {
+  const keyEl = document.getElementById('col-key');
+  if (keyEl) keyEl.value = String(val || '').toLowerCase().replace(/[^a-z0-9]+/g, '_').replace(/^_+|_+$/g, '');
+}
+
+async function submitAddColumn() {
+  const name = ((document.getElementById('col-name') || {}).value || '').trim();
+  const key = ((document.getElementById('col-key') || {}).value || '').trim();
+  const prompt = ((document.getElementById('col-prompt') || {}).value || '').trim();
+  const type = ((document.getElementById('col-type') || {}).value || 'text').trim();
+
+  if (!name || !key || !prompt) { showToast('Please enter Name, Key, and AI Prompt.', 'error'); return; }
+
+  const res = await api('/api/enrichment/columns', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ name: name, key: key, prompt: prompt, output_type: type })
+  });
+
+  if (res && res.success) {
+    showToast('Custom column added.', 'success');
+    closeAddColumnModal();
+    loadEnrichment();
+  } else {
+    showToast((res && res.message) || 'Failed to add column.', 'error');
+  }
+}
+
+async function deleteEnrichmentCol(colId) {
+  if (!confirm('Delete this AI column?')) return;
+  const res = await api('/api/enrichment/columns/' + encodeURIComponent(colId), { method: 'DELETE' });
+  if (res && res.success) { showToast('Column deleted.', 'success'); loadEnrichment(); }
+  else showToast((res && res.message) || 'Failed to delete column.', 'error');
+}
+
+async function triggerEnrichmentRun() {
+  const statusEl = document.getElementById('enrichment-run-status');
+  if (statusEl) statusEl.textContent = 'Enrichment started in background...';
+  const res = await api('/api/enrichment/run', { method: 'POST' });
+  if (res && res.success) {
+    showToast('Batch enrichment running.', 'success');
+    if (statusEl) statusEl.textContent = 'Enriched: ' + (res.enriched_count || 0) + ' items processed.';
+  } else {
+    showToast((res && res.message) || 'Enrichment trigger failed.', 'error');
+    if (statusEl) statusEl.textContent = 'Ready';
+  }
+}

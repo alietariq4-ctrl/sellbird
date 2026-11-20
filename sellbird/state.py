@@ -10,11 +10,14 @@ upgrade cleanly in place.
 """
 
 import json
+import sqlite3
 import uuid
+import weakref
 from collections.abc import Awaitable, Callable
 from contextlib import asynccontextmanager
 from datetime import datetime, date, timedelta, timezone
 from pathlib import Path
+from typing import Any
 
 import aiosqlite
 
@@ -558,10 +561,56 @@ MIGRATIONS: list[str] = [
     ALTER TABLE conversations ADD COLUMN mailbox_id TEXT DEFAULT '';
     CREATE INDEX IF NOT EXISTS idx_outbox_mailbox_sent ON outbox(mailbox_id, status, sent_at);
     """,
+    # ── v17: a per-token transport's daily call counter ──
+    # Claude and Codex calls are capped by their plan's quota, so a count
+    # per day is all their budget needs. A transport is billed per token and
+    # capped in dollars (usage.max_daily_usd, read from usage_events
+    # .cost_usd), which already exists; this column only keeps the call
+    # count that `sellbird status` and the dashboard report alongside the
+    # other two providers'.
+    """
+    ALTER TABLE usage_log ADD COLUMN openrouter_calls INTEGER DEFAULT 0;
+    """,
+    # ── v18: Clay-style custom AI enrichment columns & per-entity values ──
+    """
+    CREATE TABLE IF NOT EXISTS enrichment_columns (
+        id TEXT PRIMARY KEY,
+        name TEXT NOT NULL,
+        entity_type TEXT DEFAULT 'company',
+        prompt TEXT NOT NULL DEFAULT '',
+        value_type TEXT DEFAULT 'text',
+        model TEXT DEFAULT '',
+        enabled INTEGER DEFAULT 1,
+        created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+        updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+    );
+
+    CREATE UNIQUE INDEX IF NOT EXISTS uq_enrichment_columns_entity_name
+        ON enrichment_columns(entity_type, LOWER(name));
+
+    CREATE TABLE IF NOT EXISTS enrichment_values (
+        id TEXT PRIMARY KEY,
+        column_id TEXT NOT NULL REFERENCES enrichment_columns(id) ON DELETE CASCADE,
+        entity_type TEXT DEFAULT 'company',
+        entity_id TEXT NOT NULL,
+        value TEXT DEFAULT '',
+        confidence REAL DEFAULT 1.0,
+        source_url TEXT DEFAULT '',
+        status TEXT DEFAULT 'completed',
+        error TEXT DEFAULT '',
+        updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+    );
+
+    CREATE UNIQUE INDEX IF NOT EXISTS uq_enrichment_values_col_entity
+        ON enrichment_values(column_id, entity_id);
+    CREATE INDEX IF NOT EXISTS idx_enrichment_values_entity
+        ON enrichment_values(entity_type, entity_id);
+    """,
 ]
 
-BRAIN_PROVIDERS = ("claude", "codex")
-_USAGE_LOG_COLUMN = {"claude": "claude_calls", "codex": "codex_calls"}
+BRAIN_PROVIDERS = ("claude", "codex", "openrouter")
+_USAGE_LOG_COLUMN = {"claude": "claude_calls", "codex": "codex_calls",
+                     "openrouter": "openrouter_calls"}
 
 # When a company was last profiled: the newer of the explicit check stamp
 # (set on every attempt, reachable or not) and its latest profile observation
@@ -596,6 +645,18 @@ class StateManager:
             home = _HOME.get()
             db_path = str(home.db_path) if home is not None else str(DB_PATH)
         self.db_path = db_path
+        self._mem_anchor: sqlite3.Connection | None = None
+        if str(db_path) == ":memory:":
+            # Each StateManager(":memory:") gets its own shared-cache in-memory
+            # SQLite URI with an open anchor connection so tables survive across
+            # _connect() calls without leaking between test instances.
+            self._sqlite_locator = f"file:sellbird_mem_{uuid.uuid4().hex}?mode=memory&cache=shared"
+            anchor = sqlite3.connect(self._sqlite_locator, uri=True, check_same_thread=False)
+            self._mem_anchor = anchor
+            weakref.finalize(self, anchor.close)
+            weakref.finalize(self, storage._MEM_LOCKS.pop, self._sqlite_locator, None)
+        else:
+            self._sqlite_locator = str(db_path)
 
     @asynccontextmanager
     async def _connect(self):
@@ -605,21 +666,28 @@ class StateManager:
         (e.g. while the dashboard holds a read) instead of erroring. The
         locator may also name a registered storage backend (sellbird.storage).
         """
-        async with storage.connect(self.db_path, timeout=BUSY_TIMEOUT_SECONDS) as db:
+        async with storage.connect(self._sqlite_locator, timeout=BUSY_TIMEOUT_SECONDS) as db:
             yield db
 
     async def init_db(self):
         """Create/upgrade the schema. Safe to call on every startup."""
-        if storage.manages_schema(self.db_path):
+        if storage.manages_schema(self._sqlite_locator):
             # A backend that owns its schema is only checked, never migrated here.
-            await storage.check_schema(self.db_path)
+            await storage.check_schema(self._sqlite_locator)
             return
-        Path(self.db_path).parent.mkdir(parents=True, exist_ok=True)
+        is_mem = (
+            str(self.db_path) == ":memory:"
+            or (self._sqlite_locator.startswith("file:") and "mode=memory" in self._sqlite_locator)
+        )
+        if not is_mem:
+            Path(self.db_path).parent.mkdir(parents=True, exist_ok=True)
         async with self._connect() as db:
-            # WAL is persistent in the DB file: readers (dashboard) never
-            # block the writer (agent) and vice versa.
-            await db.execute("PRAGMA journal_mode=WAL")
+            if not is_mem:
+                # WAL is persistent in the DB file: readers (dashboard) never
+                # block the writer (agent) and vice versa.
+                await db.execute("PRAGMA journal_mode=WAL")
             await db.execute("PRAGMA synchronous=NORMAL")
+            await db.execute("PRAGMA busy_timeout=5000")
 
             async with db.execute("PRAGMA user_version") as cursor:
                 (version,) = await cursor.fetchone()
@@ -2256,13 +2324,220 @@ class StateManager:
             await db.commit()
 
     async def increment_setting(self, key: str, by: int = 1) -> int:
-        current = await self.get_setting(key, "0")
-        try:
-            value = int(current) + by
-        except ValueError:
-            value = by
-        await self.set_setting(key, str(value))
-        return value
+        delta = int(by)
+        async with self._connect() as db:
+            async with db.execute(
+                """INSERT INTO settings (key, value, updated_at)
+                   VALUES (?, ?, CURRENT_TIMESTAMP)
+                   ON CONFLICT(key) DO UPDATE SET
+                       value = CAST(
+                           CAST(COALESCE(NULLIF(settings.value, ''), '0') AS INTEGER)
+                           + CAST(excluded.value AS INTEGER)
+                           AS TEXT
+                       ),
+                       updated_at = CURRENT_TIMESTAMP
+                   RETURNING CAST(value AS INTEGER)""",
+                (key, str(delta)),
+            ) as cursor:
+                row = await cursor.fetchone()
+            await db.commit()
+            return int(row[0]) if row else delta
+
+    # ── Custom AI Enrichment Columns & Values (v18) ──
+
+    async def add_enrichment_column(
+        self,
+        name: str,
+        prompt: str = "",
+        value_type: str = "text",
+        entity_type: str = "company",
+        *,
+        column_type: str = "",
+        model: str = "",
+        enabled: bool = True,
+        column_id: str = "",
+    ) -> str:
+        """Create or update a custom AI enrichment column. Returns its id."""
+        clean_name = (name or "").strip()
+        if not clean_name:
+            raise ValueError("enrichment column name cannot be empty")
+        eff_entity = (entity_type or "company").strip().lower()
+        eff_type = (column_type or value_type or "text").strip().lower()
+        col_id = column_id or _new_id()
+        async with self._connect() as db:
+            await db.execute(
+                """INSERT INTO enrichment_columns
+                       (id, name, entity_type, prompt, value_type, model, enabled,
+                        created_at, updated_at)
+                   VALUES (?, ?, ?, ?, ?, ?, ?, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)
+                   ON CONFLICT(entity_type, LOWER(name)) DO UPDATE SET
+                       name = excluded.name,
+                       prompt = excluded.prompt,
+                       value_type = excluded.value_type,
+                       model = excluded.model,
+                       enabled = excluded.enabled,
+                       updated_at = CURRENT_TIMESTAMP""",
+                (
+                    col_id, clean_name, eff_entity, (prompt or "").strip(),
+                    eff_type, (model or "").strip(), 1 if enabled else 0,
+                ),
+            )
+            await db.commit()
+            async with db.execute(
+                "SELECT id FROM enrichment_columns WHERE entity_type = ? AND LOWER(name) = LOWER(?)",
+                (eff_entity, clean_name),
+            ) as cur:
+                row = await cur.fetchone()
+                return str(row[0]) if row else col_id
+
+    async def get_enrichment_columns(
+        self,
+        entity_type: str | None = None,
+        *,
+        enabled_only: bool = False,
+    ) -> list[dict]:
+        """List custom enrichment columns."""
+        where: list[str] = []
+        params: list[Any] = []
+        if entity_type:
+            where.append("entity_type = ?")
+            params.append(entity_type.strip().lower())
+        if enabled_only:
+            where.append("enabled = 1")
+        sql = "SELECT * FROM enrichment_columns"
+        if where:
+            sql += " WHERE " + " AND ".join(where)
+        sql += " ORDER BY created_at ASC, name ASC"
+        async with self._connect() as db:
+            db.row_factory = aiosqlite.Row
+            async with db.execute(sql, params) as cursor:
+                rows = [dict(r) for r in await cursor.fetchall()]
+                for r in rows:
+                    r["enabled"] = bool(r.get("enabled", 1))
+                return rows
+
+    async def delete_enrichment_column(self, column_id: str) -> bool:
+        """Delete a custom enrichment column (by id or name) and its stored values."""
+        target = (column_id or "").strip()
+        if not target:
+            return False
+        async with self._connect() as db:
+            async with db.execute(
+                "SELECT id FROM enrichment_columns WHERE id = ?", (target,)
+            ) as cur:
+                row = await cur.fetchone()
+            if not row:
+                async with db.execute(
+                    "SELECT id FROM enrichment_columns WHERE LOWER(name) = LOWER(?)",
+                    (target,),
+                ) as cur:
+                    row = await cur.fetchone()
+            if not row:
+                return False
+            real_id = row[0]
+            await db.execute(
+                "DELETE FROM enrichment_values WHERE column_id = ?", (real_id,)
+            )
+            cursor = await db.execute(
+                "DELETE FROM enrichment_columns WHERE id = ?", (real_id,)
+            )
+            await db.commit()
+            return cursor.rowcount > 0
+
+    async def set_enrichment_value(
+        self,
+        column_id: str,
+        entity_id: str = "",
+        value: Any = "",
+        *,
+        entity_type: str = "company",
+        company_id: str = "",
+        prospect_id: str = "",
+        confidence: float = 1.0,
+        source_url: str = "",
+        status: str = "completed",
+        error: str = "",
+    ) -> str:
+        """Upsert one enrichment cell value for a company or prospect."""
+        eff_entity_id = entity_id
+        eff_entity_type = entity_type
+        if not eff_entity_id:
+            if prospect_id:
+                eff_entity_id = prospect_id
+                eff_entity_type = "prospect"
+            elif company_id:
+                eff_entity_id = company_id
+                eff_entity_type = "company"
+        if not eff_entity_id:
+            raise ValueError("entity_id (or company_id / prospect_id) is required")
+        if isinstance(value, (dict, list)):
+            stored_val = json.dumps(value)
+        elif value is None:
+            stored_val = ""
+        else:
+            stored_val = str(value)
+        val_id = _new_id()
+        async with self._connect() as db:
+            await db.execute(
+                """INSERT INTO enrichment_values
+                       (id, column_id, entity_type, entity_id, value, confidence,
+                        source_url, status, error, updated_at)
+                   VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, CURRENT_TIMESTAMP)
+                   ON CONFLICT(column_id, entity_id) DO UPDATE SET
+                       entity_type = excluded.entity_type,
+                       value = excluded.value,
+                       confidence = excluded.confidence,
+                       source_url = excluded.source_url,
+                       status = excluded.status,
+                       error = excluded.error,
+                       updated_at = CURRENT_TIMESTAMP""",
+                (
+                    val_id, column_id, eff_entity_type, eff_entity_id,
+                    stored_val, float(confidence), source_url or "",
+                    status or "completed", (error or "")[:500],
+                ),
+            )
+            await db.commit()
+            async with db.execute(
+                "SELECT id FROM enrichment_values WHERE column_id = ? AND entity_id = ?",
+                (column_id, eff_entity_id),
+            ) as cur:
+                row = await cur.fetchone()
+                return str(row[0]) if row else val_id
+
+    async def get_enrichment_values(
+        self,
+        entity_id: str | None = None,
+        *,
+        column_id: str | None = None,
+        entity_type: str | None = None,
+        company_id: str | None = None,
+        prospect_id: str | None = None,
+    ) -> list[dict]:
+        """Fetch enrichment cell values joined with column metadata."""
+        eff_entity_id = entity_id or prospect_id or company_id
+        where: list[str] = []
+        params: list[Any] = []
+        if eff_entity_id:
+            where.append("v.entity_id = ?")
+            params.append(eff_entity_id)
+        if column_id:
+            where.append("v.column_id = ?")
+            params.append(column_id)
+        if entity_type:
+            where.append("v.entity_type = ?")
+            params.append(entity_type.strip().lower())
+        sql = """SELECT v.*, c.name AS column_name, c.value_type AS value_type,
+                        c.prompt AS column_prompt
+                 FROM enrichment_values v
+                 LEFT JOIN enrichment_columns c ON c.id = v.column_id"""
+        if where:
+            sql += " WHERE " + " AND ".join(where)
+        sql += " ORDER BY v.updated_at DESC"
+        async with self._connect() as db:
+            db.row_factory = aiosqlite.Row
+            async with db.execute(sql, params) as cursor:
+                return [dict(r) for r in await cursor.fetchall()]
 
     async def prospect_exists(
         self, email: str = "", linkedin_url: str = "",
@@ -2630,6 +2905,22 @@ class StateManager:
             )
             await db.commit()
 
+    async def spend_today_usd(self) -> float:
+        """Today's recorded model spend, in dollars, from usage_events.
+
+        This is the number ``usage.max_daily_usd`` caps. It is deliberately
+        the raw ledger total across every provider: a day's recorded spend
+        is a day's spend, and the transport is the only writer that puts a
+        non-zero cost_usd there today.
+        """
+        async with self._connect() as db:
+            async with db.execute(
+                "SELECT COALESCE(SUM(cost_usd), 0) FROM usage_events "
+                "WHERE date(created_at) = date('now')"
+            ) as cursor:
+                row = await cursor.fetchone()
+                return float((row[0] if row else 0.0) or 0.0)
+
     # ── Per-call usage accounting (usage_events) ──
 
     async def record_usage_event(
@@ -2781,11 +3072,13 @@ class StateManager:
             ) as cursor:
                 auto_reply_handoffs = (await cursor.fetchone())[0]
             async with db.execute(
-                "SELECT claude_calls, codex_calls FROM usage_log WHERE date = ?", (today,)
+                "SELECT claude_calls, codex_calls, openrouter_calls FROM usage_log WHERE date = ?",
+                (today,),
             ) as cursor:
                 usage_row = await cursor.fetchone()
                 usage_today = (usage_row[0] or 0) if usage_row else 0
                 codex_today = (usage_row[1] or 0) if usage_row else 0
+                openrouter_today = (usage_row[2] or 0) if usage_row else 0
 
         return {
             "prospects": prospect_counts,
@@ -2803,7 +3096,12 @@ class StateManager:
             "open_conversations": open_conversations,
             "auto_reply_handoffs": auto_reply_handoffs,
             "usage_today": usage_today,  # Claude calls (kept for compatibility)
-            "usage_today_by_provider": {"claude": usage_today, "codex": codex_today},
+            "openrouter_calls": openrouter_today,
+            "usage_today_by_provider": (
+                {"claude": usage_today, "codex": codex_today, "openrouter": openrouter_today}
+                if openrouter_today
+                else {"claude": usage_today, "codex": codex_today}
+            ),
             # Companies discovered but not yet read. The heartbeat profiles
             # these every cycle — it is free, so it never competes with the
             # Claude budget the rest of the loop is rationing.

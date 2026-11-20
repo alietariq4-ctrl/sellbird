@@ -6,9 +6,11 @@ Falls back to manual scraping if no Cloudflare credentials are configured.
 
 import asyncio
 import copy
+import ipaddress
 import logging
 import os
 import shutil
+import socket
 import time
 from pathlib import Path
 from urllib.parse import urljoin, urlparse
@@ -18,10 +20,12 @@ import yaml
 from bs4 import BeautifulSoup
 from dotenv import load_dotenv
 
+from sellbird import public_http
 from sellbird.brain import Brain
 from sellbird.config import BrainConfig, load_brain_config
 from sellbird.public_http import UnsafeURLError, public_http_client
 from sellbird.state import StateManager
+from sellbird.workspace_home import current_home
 
 logger = logging.getLogger("sellbird.trainer")
 
@@ -55,12 +59,62 @@ CRAWL_TIMEOUT = 600  # 10 minutes
 POLL_INTERVAL = 10   # check every 10 seconds
 
 
+async def _validate_public_url(url: str) -> None:
+    """Ensure ``url`` targets a public HTTP(S) host before handing it to Cloudflare."""
+    parsed = urlparse(url)
+    if parsed.scheme not in ("http", "https"):
+        raise UnsafeURLError(f"Unsupported URL scheme: {parsed.scheme!r}")
+    host = (parsed.hostname or "").strip().lower().rstrip(".")
+    if not host:
+        raise UnsafeURLError("URL has no hostname")
+    if (
+        host == "localhost"
+        or host.endswith((".localhost", ".local", ".internal"))
+    ):
+        raise UnsafeURLError(f"Blocked non-public host: {host}")
+
+    # Direct IP literal check (catches 127.0.0.1, ::1, 10.x, 169.254.169.254, etc. offline)
+    try:
+        ipaddress.ip_address(host)
+        is_ip_literal = True
+    except ValueError:
+        is_ip_literal = False
+
+    if is_ip_literal:
+        try:
+            public_http._public_address(host)
+        except ValueError as exc:
+            raise UnsafeURLError(str(exc)) from exc
+        return
+
+    port = parsed.port or (443 if parsed.scheme == "https" else 80)
+    try:
+        infos = await asyncio.to_thread(
+            socket.getaddrinfo, host, port, type=socket.SOCK_STREAM
+        )
+    except socket.gaierror:
+        # Offline environments / mocked HTTP tests may not resolve external DNS.
+        return
+
+    for info in infos:
+        addr = info[4][0]
+        # Strip IPv6 scope id if present
+        clean_ip = addr.split("%", 1)[0]
+        try:
+            public_http._public_address(clean_ip)
+        except ValueError as exc:
+            raise UnsafeURLError(str(exc)) from exc
+
+
 class CloudflareCrawler:
     """Cloudflare Browser Rendering /crawl API client."""
+
+    blocked = False
 
     def __init__(self, account_id: str, api_token: str):
         self.account_id = account_id
         self.api_token = api_token
+        self.blocked = False
         self.base_url = f"{CF_API_BASE}/{account_id}/browser-rendering/crawl"
         self.headers = {
             "Authorization": f"Bearer {api_token}",
@@ -83,6 +137,14 @@ class CloudflareCrawler:
         - Respects robots.txt
         - Can crawl up to 100,000 pages
         """
+        self.blocked = False
+        try:
+            await _validate_public_url(url)
+        except UnsafeURLError as exc:
+            logger.warning(f"Blocked non-public URL for Cloudflare crawl ({url}): {exc}")
+            self.blocked = True
+            return {}
+
         async with httpx.AsyncClient(timeout=60, headers=self.headers) as client:
             # 1. Start the crawl job
             payload = {
@@ -330,6 +392,8 @@ def brain_section(brain_config: BrainConfig) -> dict:
         section["model"] = brain_config.model
     if brain_config.reasoning_effort:
         section["reasoning_effort"] = brain_config.reasoning_effort
+    if getattr(brain_config, "transport_factory", ""):
+        section["transport_factory"] = brain_config.transport_factory
     return section
 
 
@@ -649,7 +713,12 @@ Extract the following and return as JSON:
 
 Be thorough — you have access to the full website. Extract everything relevant."""
 
-        result = await self.brain.think_json(prompt, session_id="sellbird-trainer")
+        result = await self.brain.think_json(
+            prompt,
+            session_id="sellbird-trainer",
+            agent="trainer",
+            task="extract_product",
+        )
         return result if isinstance(result, dict) else {}
 
     async def _extract_icp(self) -> dict:
@@ -702,7 +771,12 @@ an extra one costs nothing.
 
 Be specific — don't guess generically. Base this on what the website actually says about their customers."""
 
-        result = await self.brain.think_json(prompt, session_id="sellbird-trainer")
+        result = await self.brain.think_json(
+            prompt,
+            session_id="sellbird-trainer",
+            agent="trainer",
+            task="extract_icp",
+        )
         return result if isinstance(result, dict) else {
             "industries": ["Technology"],
             "company_size": "10-200 employees",
@@ -743,8 +817,57 @@ Return as JSON:
 
 If the website doesn't mention specific competitors, infer the most likely ones based on the product category."""
 
-        result = await self.brain.think_json(prompt, session_id="sellbird-trainer")
+        result = await self.brain.think_json(
+            prompt,
+            session_id="sellbird-trainer",
+            agent="trainer",
+            task="extract_competitors",
+        )
         return result if isinstance(result, dict) else {"competitors": []}
+
+    @staticmethod
+    def _normalize_objections(result: object) -> dict[str, str] | None:
+        """Unwrap nested dict/list objection shapes and validate non-empty str pairs."""
+        candidate = result
+        if isinstance(candidate, dict) and len(candidate) == 1:
+            only_key, only_val = next(iter(candidate.items()))
+            if (
+                isinstance(only_key, str)
+                and only_key.strip().lower()
+                in ("objections", "objection_responses", "playbook", "items", "responses", "data")
+                and isinstance(only_val, (dict, list))
+            ):
+                candidate = only_val
+
+        if isinstance(candidate, list) and candidate:
+            mapped: dict[str, str] = {}
+            for item in candidate:
+                if not isinstance(item, dict):
+                    return None
+                obj = item.get("objection") or item.get("question") or item.get("concern")
+                resp = item.get("response") or item.get("answer") or item.get("reply")
+                if not (isinstance(obj, str) and obj.strip() and isinstance(resp, str) and resp.strip()):
+                    return None
+                mapped[obj.strip()] = resp.strip()
+            return mapped or None
+
+        if isinstance(candidate, dict) and candidate:
+            cleaned: dict[str, str] = {}
+            for objection, response in candidate.items():
+                if not isinstance(objection, str) or not objection.strip():
+                    return None
+                if isinstance(response, dict):
+                    response = (
+                        response.get("response")
+                        or response.get("answer")
+                        or response.get("reply")
+                    )
+                if not isinstance(response, str) or not response.strip():
+                    return None
+                cleaned[objection.strip()] = response.strip()
+            return cleaned or None
+
+        return None
 
 
     async def _generate_objections(
@@ -792,6 +915,8 @@ Return a JSON object where keys are objections and values are non-empty response
             result = await self.brain.think_json(
                 prompt,
                 session_id="sellbird-trainer",
+                agent="trainer",
+                task="generate_objections",
             )
 
             # A provider outage is different from malformed model output.
@@ -801,24 +926,12 @@ Return a JSON object where keys are objections and values are non-empty response
                 )
                 return None
 
-            # Accept only a non-empty dictionary of non-empty string pairs.
-            if isinstance(result, dict) and result:
-                valid = all(
-                    isinstance(objection, str)
-                    and objection.strip()
-                    and isinstance(response, str)
-                    and response.strip()
-                    for objection, response in result.items()
+            cleaned = self._normalize_objections(result)
+            if cleaned:
+                logger.info(
+                    "Generated %s valid objection responses.", len(cleaned)
                 )
-                if valid:
-                    cleaned = {
-                        objection.strip(): response.strip()
-                        for objection, response in result.items()
-                    }
-                    logger.info(
-                        "Generated %s valid objection responses.", len(cleaned)
-                    )
-                    return cleaned
+                return cleaned
 
             if attempt < MAX_OBJECTION_ATTEMPTS - 1:
                 logger.warning(
@@ -899,7 +1012,9 @@ Do NOT pursue prospects who:
 {product_info.get('tone', 'professional, consultative, confident')}
 """
 
-        skills_path = PROJECT_ROOT / "skills" / "product_knowledge.md"
+        skills_dir = current_home().skills_dir
+        skills_dir.mkdir(parents=True, exist_ok=True)
+        skills_path = skills_dir / "product_knowledge.md"
         skills_path.write_text(knowledge, encoding="utf-8")
         print(f"      Generated: skills/product_knowledge.md")
 
@@ -947,7 +1062,9 @@ What prospects do instead of buying a solution like ours:
 ---
 """
 
-        skills_path = PROJECT_ROOT / "skills" / "competitive_intel.md"
+        skills_dir = current_home().skills_dir
+        skills_dir.mkdir(parents=True, exist_ok=True)
+        skills_path = skills_dir / "competitive_intel.md"
         skills_path.write_text(cards, encoding="utf-8")
         print(f"      Generated: skills/competitive_intel.md")
 

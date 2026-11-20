@@ -20,6 +20,10 @@ from urllib.parse import urljoin, urlparse
 
 import httpx
 
+from sellbird.integrations.tech_detect import (
+    FINGERPRINTS as _UNIFIED_TECH_FINGERPRINTS,
+    detect_tech as _detect_tech_unified,
+)
 from sellbird.public_http import public_http_client
 from sellbird.startups import funding_text
 
@@ -74,28 +78,9 @@ DESCRIPTIVE_CREDIT = re.compile(
     r"agency|web\s*development)\b", re.I)
 RECORD_FLOOR = 0.75
 
-# ── Tech / platform fingerprints (name -> regexes over raw HTML) ──
+# ── Tech / platform fingerprints (unified with sellbird.integrations.tech_detect) ──
 TECH_FINGERPRINTS: dict[str, tuple[str, ...]] = {
-    "WordPress": (r"wp-content/", r"wp-includes/"),
-    "Shopify": (r"cdn\.shopify\.com", r"myshopify\.com"),
-    "Wix": (r"static\.parastorage\.com",),
-    "Squarespace": (r"static1\.squarespace\.com",),
-    "Webflow": (r"assets\.website-files\.com", r"data-wf-domain"),
-    "Duda": (r"irp\.cdn-website\.com", r"d1\.awsstatic"),
-    "GoDaddy Website Builder": (r"img1\.wsimg\.com",),
-    "HubSpot": (r"js\.hs-scripts\.com", r"js\.hsforms\.net"),
-    "Google Analytics": (r"googletagmanager\.com/gtag", r"google-analytics\.com"),
-    "Google Tag Manager": (r"googletagmanager\.com/gtm\.js",),
-    "Intercom": (r"widget\.intercom\.io",),
-    "Drift": (r"js\.driftt\.com",),
-    "Podium": (r"connect\.podium\.com",),
-    "Birdeye": (r"birdeye\.com",),
-    "Calendly": (r"assets\.calendly\.com",),
-    "ServiceTitan": (r"servicetitan",),
-    "Jobber": (r"getjobber\.com",),
-    "Housecall Pro": (r"housecallpro",),
-    "CallRail": (r"cdn\.callrail\.com",),
-    "Stripe": (r"js\.stripe\.com",),
+    name: tuple(patterns) for name, patterns in _UNIFIED_TECH_FINGERPRINTS.items()
 }
 
 GOOGLE_ADS = (r"googleadservices\.com", r"gtag/js\?id=AW-", r"google_conversion",
@@ -949,15 +934,17 @@ class ProfileCollector:
             board = detect_board(chtml, domain)
         postings = await read_board(self._client, board) if board else None
         if postings is not None:
-            add("OPEN_ROLES", num=len(postings), text=board.label, url=board.page_url)
-            keywords = getattr(self, "role_keywords", None) or []
-            matched = matching_roles(postings, keywords)[:MAX_BOARD_ROLES]
-            for post in matched:
-                add("HIRING_ROLE", text=post.summary(), url=post.url or board.page_url)
-            if not matched:
-                # The board answered and lists nothing relevant: say so, so
-                # last month's (now closed) roles stop being the current view.
-                add("HIRING_ROLE", num=0, url=board.page_url)
+            if self.wants("OPEN_ROLES"):
+                add("OPEN_ROLES", num=len(postings), text=board.label, url=board.page_url)
+            if self.wants("HIRING_ROLE"):
+                keywords = getattr(self, "role_keywords", None) or []
+                matched = matching_roles(postings, keywords)[:MAX_BOARD_ROLES]
+                for post in matched:
+                    add("HIRING_ROLE", text=post.summary(), url=post.url or board.page_url)
+                if not matched:
+                    # The board answered and lists nothing relevant: say so, so
+                    # last month's (now closed) roles stop being the current view.
+                    add("HIRING_ROLE", num=0, url=board.page_url)
             return
         if board and not chtml:
             curl, chtml = await self._careers_page(site, home, domain)
@@ -1039,11 +1026,7 @@ class ProfileCollector:
         return best
 
     def detect_tech(self, html: str) -> list[str]:
-        found = []
-        for name, patterns in TECH_FINGERPRINTS.items():
-            if any(re.search(p, html, re.I) for p in patterns):
-                found.append(name)
-        return sorted(found)
+        return _detect_tech_unified(html)
 
     @staticmethod
     def _any(html: str, patterns) -> bool:
@@ -1159,21 +1142,26 @@ class ProfileCollector:
         self.site_names[company_id] = site_name_from_html(home, domain)
 
         # Ads (they are spending TODAY — the strongest budget signal here)
-        add("RUNNING_GOOGLE_ADS", num=1 if self._any(home, GOOGLE_ADS) else 0)
-        add("RUNNING_META_ADS", num=1 if self._any(home, META_PIXEL) else 0)
+        if self.wants("RUNNING_GOOGLE_ADS"):
+            add("RUNNING_GOOGLE_ADS", num=1 if self._any(home, GOOGLE_ADS) else 0)
+        if self.wants("RUNNING_META_ADS"):
+            add("RUNNING_META_ADS", num=1 if self._any(home, META_PIXEL) else 0)
 
         # Platform + tooling
-        tech = self.detect_tech(home)
-        if tech:
-            add("TECH_STACK", text=", ".join(tech))
+        if self.wants("TECH_STACK"):
+            tech = self.detect_tech(home)
+            if tech:
+                add("TECH_STACK", text=", ".join(tech))
 
         # Structured data gap
-        has_schema = bool(re.search(r'application/ld\+json', home, re.I)
-                          and re.search(r'"@type"', home))
-        add("NO_SCHEMA_MARKUP", num=0 if has_schema else 1)
+        if self.wants("NO_SCHEMA_MARKUP"):
+            has_schema = bool(re.search(r'application/ld\+json', home, re.I)
+                              and re.search(r'"@type"', home))
+            add("NO_SCHEMA_MARKUP", num=0 if has_schema else 1)
 
         # Booking gap
-        add("NO_ONLINE_BOOKING", num=0 if self._any(home, BOOKING_HINTS) else 1)
+        if self.wants("NO_ONLINE_BOOKING"):
+            add("NO_ONLINE_BOOKING", num=0 if self._any(home, BOOKING_HINTS) else 1)
 
         # The About page, fetched once for the startup signals below.
         about_page: list[tuple[str, str]] = []
@@ -1237,9 +1225,10 @@ class ProfileCollector:
                 add("FUNDING_ROUND", num=0, url=site)
 
         # Incumbent agency — the compounding signal
-        agency = self.detect_agency(home, domain)
-        if agency:
-            add("INCUMBENT_AGENCY", text=agency[0], conf=agency[1], url=agency[2])
+        if self.wants("INCUMBENT_AGENCY"):
+            agency = self.detect_agency(home, domain)
+            if agency:
+                add("INCUMBENT_AGENCY", text=agency[0], conf=agency[1], url=agency[2])
 
         # robots.txt → AI crawler policy
         if self.wants("BLOCKS_AI_CRAWLERS"):
@@ -1252,24 +1241,45 @@ class ProfileCollector:
             add("BLOCKS_AI_CRAWLERS", num=1 if blocked else 0,
                 url=f"{site}/robots.txt")
 
-        # sitemap.xml → size + content freshness
+        # sitemap.xml → size + content freshness (handles <sitemapindex> cleanly)
         if self.wants("SITE_PAGE_COUNT") or self.wants("BLOG_STALE"):
             sm = await self._get(f"{site}/sitemap.xml")
             if sm:
-                locs = re.findall(r"<loc>\s*([^<]+)\s*</loc>", sm)
-                if self.wants("SITE_PAGE_COUNT") and locs:
-                    add("SITE_PAGE_COUNT", num=len(locs), url=f"{site}/sitemap.xml")
-                if self.wants("BLOG_STALE"):
-                    dates = re.findall(r"<lastmod>\s*(\d{4}-\d{2}-\d{2})", sm)
-                    if dates:
-                        newest = max(dates)
-                        try:
-                            age = (datetime.now(timezone.utc).date()
-                                   - datetime.strptime(newest, "%Y-%m-%d").date()).days
-                            add("BLOG_STALE", num=age, text=f"newest content {newest}",
-                                url=f"{site}/sitemap.xml")
-                        except ValueError:
-                            pass
+                is_index = "<sitemapindex" in sm.lower()
+                raw_locs = [u.strip() for u in re.findall(r"<loc>\s*([^<]+)\s*</loc>", sm) if u.strip()]
+                dates = list(re.findall(r"<lastmod>\s*(\d{4}-\d{2}-\d{2})", sm))
+                if is_index:
+                    page_locs: list[str] = []
+                    for child_url in raw_locs[:3]:
+                        if child_url.lower().endswith(".gz"):
+                            continue
+                        parsed_child = urlparse(child_url)
+                        child_host = (parsed_child.hostname or "").lower().removeprefix("www.")
+                        if parsed_child.scheme not in ("http", "https") or not (
+                            child_host == domain or child_host.endswith("." + domain)
+                        ):
+                            continue
+                        child_sm = await self._get(child_url)
+                        if child_sm and "<sitemapindex" not in child_sm.lower():
+                            page_locs.extend(
+                                u.strip() for u in re.findall(r"<loc>\s*([^<]+)\s*</loc>", child_sm) if u.strip()
+                            )
+                            dates.extend(re.findall(r"<lastmod>\s*(\d{4}-\d{2}-\d{2})", child_sm))
+                    # Never emit a false-positive thin-site count (<= 5) from a partial/gzipped sitemap index.
+                    if self.wants("SITE_PAGE_COUNT") and len(page_locs) > 5:
+                        add("SITE_PAGE_COUNT", num=len(page_locs), url=f"{site}/sitemap.xml")
+                else:
+                    if self.wants("SITE_PAGE_COUNT") and raw_locs:
+                        add("SITE_PAGE_COUNT", num=len(raw_locs), url=f"{site}/sitemap.xml")
+                if self.wants("BLOG_STALE") and dates:
+                    newest = max(dates)
+                    try:
+                        age = (datetime.now(timezone.utc).date()
+                               - datetime.strptime(newest, "%Y-%m-%d").date()).days
+                        add("BLOG_STALE", num=age, text=f"newest content {newest}",
+                            url=f"{site}/sitemap.xml")
+                    except ValueError:
+                        pass
 
         # contact form — reaches the business without needing an email at all
         if self.wants("CONTACT_FORM_URL"):
@@ -1297,14 +1307,58 @@ class ProfileCollector:
                 for person in self.detect_people(thtml, domain=domain,
                                                  site_name=self.site_names.get(company_id, "")):
                     label = f"{person['first_name']} {person['last_name']}"
-                    add("CONTACT_FOUND",
-                        text=f"{label} — {person['title']}" if person["title"] else label,
-                        url=turl)
-                    if person["is_decision_maker"]:
+                    if self.wants("CONTACT_FOUND"):
+                        add("CONTACT_FOUND",
+                            text=f"{label} — {person['title']}" if person["title"] else label,
+                            url=turl)
+                    if person["is_decision_maker"] and self.wants("DECISION_MAKER_TITLE"):
                         add("DECISION_MAKER_TITLE",
                             text=f"{label} — {person['title']}", url=turl)
 
+        await self._sync_company_signals(company_id, obs)
         return obs
+
+    async def _sync_company_signals(self, company_id: str, obs: list[dict]) -> None:
+        """Mirror confirmed profile observations onto companies.tech_stack & companies.signals."""
+        state = getattr(self, "state", None)
+        updater = getattr(state, "update_company_signals", None) if state is not None else None
+        if updater is None or not company_id or not obs:
+            return
+        today = datetime.now(timezone.utc).date().isoformat()
+        tech_stack: list[str] = []
+        new_signals: list[dict] = []
+        for row in obs:
+            code = row.get("signal_code")
+            num = row.get("value_num")
+            txt = (row.get("value_text") or "").strip()
+            if code == "TECH_STACK" and txt:
+                tech_stack.extend(t.strip() for t in txt.split(",") if t.strip())
+            elif code == "RUNNING_GOOGLE_ADS" and num == 1:
+                new_signals.append({"type": "ads", "detail": "Running Google Ads", "found_at": today})
+            elif code == "RUNNING_META_ADS" and num == 1:
+                new_signals.append({"type": "ads", "detail": "Running Meta/Facebook Ads", "found_at": today})
+            elif code == "INCUMBENT_AGENCY" and txt:
+                new_signals.append({"type": "incumbent_agency", "detail": f"Agency credit: {txt}", "found_at": today})
+            elif code == "HIRING_ROLE" and txt and num != 0:
+                new_signals.append({"type": "hiring", "detail": txt, "found_at": today})
+            elif code == "OPEN_ROLES" and num and num > 0:
+                board_lbl = f" on {txt}" if txt else ""
+                new_signals.append({"type": "open_roles", "detail": f"{int(num)} open roles{board_lbl}", "found_at": today})
+            elif code == "YC_BACKED" and num == 1:
+                new_signals.append({"type": "yc_backed", "detail": f"YC {txt}".strip(), "found_at": today})
+            elif code == "ACCELERATOR" and num == 1 and txt:
+                new_signals.append({"type": "accelerator", "detail": txt, "found_at": today})
+            elif code == "FUNDING_ROUND" and num == 1 and txt:
+                new_signals.append({"type": "funding", "detail": txt, "found_at": today})
+            elif code == "NO_SCHEMA_MARKUP" and num == 1:
+                new_signals.append({"type": "seo_gap", "detail": "Missing JSON-LD schema markup", "found_at": today})
+            elif code == "BLOCKS_AI_CRAWLERS" and num == 1:
+                new_signals.append({"type": "ai_crawlers", "detail": "robots.txt blocks AI crawlers", "found_at": today})
+        if tech_stack or new_signals:
+            try:
+                await updater(company_id, tech_stack=tech_stack or None, new_signals=new_signals or None)
+            except Exception as exc:
+                logger.debug("update_company_signals failed for %s: %s", company_id, exc)
 
     async def _improve_name(self, company: dict, domain: str):
         """Replace a name the domain doesn't back up ("Denver, CO | HOA

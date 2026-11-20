@@ -1,0 +1,108 @@
+# brain.yaml — which models Sellbird thinks with, in order of preference.
+# Copy this to brain.yaml beside sellbird.yaml, then set the keys in .env.
+# Wire it in with:  brain: { provider: openrouter }
+#   or:             brain: { transport_factory: "harvey_brain.router_factory:build" }
+
+# Optional. Prepended as a system message to every prompt. Leave empty: the
+# host already builds one flat prompt and appends its own JSON instruction.
+system_prefix: ""
+
+budget:
+  # Hard daily cap in USD. Every call's cost comes from the provider's own
+  # `usage.cost` when it reports one, else from pricing.py. null = no cap.
+  max_usd_per_day: 5.0
+
+# Tried strictly in this order. Deterministic: no shuffling, no model picking.
+# A provider with an empty API key is skipped at startup, not at call time.
+# Set OPENAI_BASE_URL (+ OPENAI_API_KEY / OPENAI_MODEL) in .env to auto-append
+# any custom OpenAI-compatible endpoint (Ollama, vLLM, LM Studio, LiteLLM...).
+chain:
+  - provider: openrouter
+    model: anthropic/claude-sonnet-5.5
+    # json_mode: auto uses strict json_schema for fixed-shape tasks, json_object
+    # for open-ended dicts, and prompt-only for array tasks, downgrading on 400.
+    json_mode: auto
+    max_output_tokens: 4096
+
+  - provider: xai
+    model: grok-4.7
+    reasoning_effort: high
+
+  - provider: gemini
+    model: gemini-4-hydrogen
+
+  - provider: openai
+    model: gpt-6-luna
+
+  - provider: deepseek
+    model: deepseek-flash
+
+  - provider: groq
+    model: llama-3.3-70b-versatile
+
+  - provider: mistral
+    model: mistral-large-latest
+
+  - provider: together
+    model: deepseek-ai/DeepSeek-V4.1-Flash-1017
+
+  - provider: fireworks
+    model: accounts/fireworks/models/llama-v3p3-70b-instruct
+
+  - provider: cerebras
+    model: llama-3.3-70b
+
+  # Uncomment for zero-key local inference:
+  # - provider: ollama
+  #   model: llama3.2
+  # - provider: lmstudio
+  #   model: local-model
+  # - provider: vllm
+  #   model: local-model
+
+# Optional per-role routing: the host labels every call with agent=/task=, so
+# each job can use a model sized for it. Delete this block (or set
+# `profiles: false`) and every call walks the chain above instead.
+profiles:
+  scout:                                  # scores contacts: cheap + deterministic
+    provider: openrouter
+    model: anthropic/claude-haiku-5.5
+    max_output_tokens: 1024
+    temperature: 0
+    json_mode: auto
+  researcher:                             # web research dossier synthesis
+    provider: openrouter
+    model: anthropic/claude-haiku-5.5
+    max_output_tokens: 2048
+    temperature: 0.1
+    json_mode: auto
+  enricher:                               # Clay-style custom enrichment columns
+    provider: openrouter
+    model: anthropic/claude-haiku-5.5
+    max_output_tokens: 1024
+    temperature: 0
+    json_mode: auto
+  writer:                                 # first emails: quality is the point
+    provider: openrouter
+    model: anthropic/claude-sonnet-5.5
+    max_output_tokens: 2048
+    temperature: 0.7
+    json_mode: auto
+  critic:                                 # self-critique / QA pass on drafts
+    provider: openrouter
+    model: anthropic/claude-haiku-5.5
+    max_output_tokens: 1024
+    temperature: 0.1
+    json_mode: auto
+  handler:                                # reply judgment: short, needs taste
+    provider: openrouter
+    model: anthropic/claude-haiku-5.5
+    max_output_tokens: 1024
+    temperature: 0.2
+    json_mode: auto
+  analyst:
+    provider: openrouter
+    model: anthropic/claude-sonnet-5.5
+    max_output_tokens: 4096
+    json_mode: json_object
+  # trainer: false                        # switch one role back to the chain

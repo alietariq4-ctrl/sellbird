@@ -498,7 +498,12 @@ class GmailProvider(MailProvider):
         if not from_email:
             return None
         subject = headers.get("subject", "")
+        is_bounce = looks_like_bounce(from_email, subject)
         body = GmailProvider._extract_text(payload) or data.get("snippet", "")
+        if is_bounce:
+            dsn = GmailProvider._extract_dsn(payload)
+            if dsn and dsn not in body:
+                body = f"{body}\n{dsn}".strip()
         return InboundMessage(
             provider_id=data.get("id", ""),
             from_email=from_email,
@@ -508,9 +513,28 @@ class GmailProvider(MailProvider):
             in_reply_to=headers.get("in-reply-to", ""),
             thread_ref=data.get("threadId", ""),
             date=headers.get("date", ""),
-            is_bounce=looks_like_bounce(from_email, subject),
+            is_bounce=is_bounce,
             headers=headers,
         )
+
+    @staticmethod
+    def _extract_dsn(payload: dict) -> str:
+        """Extract delivery-status headers from multipart/report bounce parts."""
+        chunks: list[str] = []
+        mime = str(payload.get("mimeType") or "").lower()
+        if mime in ("message/delivery-status", "text/rfc822-headers"):
+            raw_b64 = (payload.get("body") or {}).get("data", "")
+            if raw_b64:
+                try:
+                    chunks.append(base64.urlsafe_b64decode(raw_b64 + "===").decode("utf-8", errors="replace"))
+                except Exception:
+                    pass
+        for part in payload.get("parts", []) or []:
+            if isinstance(part, dict):
+                sub = GmailProvider._extract_dsn(part)
+                if sub:
+                    chunks.append(sub)
+        return "\n".join(chunks)
 
     @staticmethod
     def _extract_text(payload: dict) -> str:

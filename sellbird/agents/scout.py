@@ -678,6 +678,9 @@ class Scout:
                     continue
 
                 await self.state.add_prospect(prospect)
+                await self._observe_email_signals(
+                    company["id"], domain, email=prospect.email, status=email_status
+                )
                 self._remember_prospect(prospect)
                 count += 1
                 logger.info(
@@ -810,9 +813,14 @@ class Scout:
                         email = ""
                         email_status = ""
                         if domain and first_name and last_name:
-                            email, email_status = await self._resolve_email(
-                                first_name, last_name, domain
-                            )
+                            try:
+                                email, email_status = await self._resolve_email(
+                                    first_name, last_name, domain, company_id=company_id
+                                )
+                            except TypeError:
+                                email, email_status = await self._resolve_email(
+                                    first_name, last_name, domain
+                                )
 
                         prospect = Prospect(
                             first_name=first_name,
@@ -1208,8 +1216,55 @@ class Scout:
                 out.append(q)
         return out[:3]
 
+    async def _observe_email_signals(
+        self,
+        company_id: str,
+        domain: str,
+        *,
+        email: str = "",
+        status: str = "",
+        pattern: str = "",
+    ) -> None:
+        """Emit EMAIL_PATTERN and EMAIL_STATUS observations when confirmed by the user."""
+        if not company_id or getattr(self, "state", None) is None:
+            return
+        try:
+            confirmed = await self.state.confirmed_signal_codes()
+        except Exception:
+            return
+        if not confirmed:
+            return
+        obs = []
+        ev_url = f"https://{self._host(domain)}" if domain else ""
+        if pattern and "EMAIL_PATTERN" in confirmed:
+            obs.append({
+                "signal_code": "EMAIL_PATTERN",
+                "company_id": company_id,
+                "collector": "verify",
+                "value_num": None,
+                "value_text": pattern,
+                "confidence": 0.85,
+                "evidence_url": ev_url,
+            })
+        if email and status and "EMAIL_STATUS" in confirmed:
+            conf_map = {"verified": 1.0, "risky": 0.65, "guess": 0.35, "invalid": 0.95}
+            obs.append({
+                "signal_code": "EMAIL_STATUS",
+                "company_id": company_id,
+                "collector": "verify",
+                "value_num": 1.0 if status == "verified" else 0.0,
+                "value_text": f"{email} ({status})",
+                "confidence": conf_map.get(status, 0.5),
+                "evidence_url": ev_url,
+            })
+        if obs:
+            try:
+                await self.state.add_observations(obs)
+            except Exception as e:
+                logger.debug(f"EMAIL observation write failed for {company_id}: {e}")
+
     async def _resolve_email(
-        self, first_name: str, last_name: str, domain: str
+        self, first_name: str, last_name: str, domain: str, *, company_id: str = ""
     ) -> tuple[str, str]:
         """Find an email and return (address, honest_status).
 
@@ -1234,7 +1289,27 @@ class Scout:
         except Exception as e:
             logger.debug(f"find_email failed for {domain}: {e}")
             return "", "invalid"
+        if company_id:
+            await self._observe_email_signals(
+                company_id,
+                domain,
+                email=result.email,
+                status=result.status,
+                pattern=getattr(result, "pattern", "") or "",
+            )
         return result.email, result.status
+
+    @staticmethod
+    def _coerce_int(value, default: int | None = None) -> int | None:
+        if value is None or isinstance(value, bool):
+            return default
+        try:
+            return int(value)
+        except (TypeError, ValueError):
+            try:
+                return int(float(str(value).strip()))
+            except (TypeError, ValueError):
+                return default
 
     async def _score_contacts(self, contacts: list[Prospect]) -> list[Prospect]:
         """Use Claude to score and add personalization notes to found contacts.
@@ -1258,13 +1333,35 @@ class Scout:
                 f"Seniority: {c.seniority or 'unknown'}."
             )
 
-        prompt = f"""You are analyzing a batch of sales prospects that have already been found and verified.
+        base_prompt = ""
+        load_prompt = getattr(self.brain, "load_prompt", None)
+        if callable(load_prompt):
+            try:
+                base_prompt = load_prompt(
+                    "scout",
+                    industries=", ".join(self.config.icp.industries or []),
+                    company_size=self.config.icp.company_size or "any",
+                    geography=", ".join(getattr(self.config.icp, "geography", None) or []),
+                    titles=", ".join(self.config.icp.titles or []),
+                ) or ""
+            except Exception:
+                base_prompt = ""
+
+        if not base_prompt:
+            base_prompt = f"""You are analyzing a batch of sales prospects that have already been found and verified.
 Your job is to score each one (1-100) based on how well they match the ICP, and add a short personalization note.
 
-Our product: {self.config.product.description}
 Target industries: {', '.join(self.config.icp.industries)}
 Target titles: {', '.join(self.config.icp.titles)}
-Target company size: {self.config.icp.company_size}
+Target company size: {self.config.icp.company_size}"""
+
+        skills_text = getattr(self, "skills", "") or ""
+        prompt = base_prompt
+        if skills_text:
+            prompt += f"\n\n{skills_text}"
+        prompt += f"""
+
+Our product: {self.config.product.description}
 
 Here are the prospects to score, as found on the web:
 {fence(chr(10).join(contact_summaries), "found prospects")}
@@ -1273,12 +1370,6 @@ Here are the prospects to score, as found on the web:
 
 Return a JSON array with one object per prospect, in the same order:
 [{{"index": 1, "score": 75, "personalization": "Short angle for outreach"}}, ...]
-
-Score criteria:
-- 80-100: Perfect ICP match, right title, right industry, right company size
-- 60-79: Good match, close to ICP
-- 40-59: Partial match, might be worth a shot
-- 1-39: Poor match, probably skip
 
 Respond ONLY with the JSON array."""
 
@@ -1291,18 +1382,25 @@ Respond ONLY with the JSON array."""
             logger.warning(f"Scout: Claude scoring errored ({e}); using heuristic scores.")
             result = None
 
+        if isinstance(result, dict):
+            for key in ("scores", "results", "prospects", "contacts", "items"):
+                if isinstance(result.get(key), list):
+                    result = result[key]
+                    break
+            else:
+                result = next((v for v in result.values() if isinstance(v, list)), None)
+
         if isinstance(result, list):
             for item in result:
                 if not isinstance(item, dict):
                     continue
-                try:
-                    idx = int(item.get("index", 0)) - 1
-                except (TypeError, ValueError):
+                raw_idx = self._coerce_int(item.get("index"), None)
+                if raw_idx is None:
                     continue
+                idx = raw_idx - 1
                 if 0 <= idx < len(contacts):
-                    try:
-                        score = int(item.get("score", contacts[idx].score))
-                    except (TypeError, ValueError):
+                    score = self._coerce_int(item.get("score"), contacts[idx].score)
+                    if score is None:
                         score = contacts[idx].score
                     contacts[idx].score = max(1, min(100, score))
                     note = item.get("personalization", "")
@@ -1674,9 +1772,14 @@ Respond ONLY with the JSON array."""
                 break
             considered += 1
 
-            email, email_status = await self._resolve_email(
-                first_name, last_name, domain
-            )
+            try:
+                email, email_status = await self._resolve_email(
+                    first_name, last_name, domain, company_id=company_id
+                )
+            except TypeError:
+                email, email_status = await self._resolve_email(
+                    first_name, last_name, domain
+                )
 
             prospect = Prospect(
                 first_name=first_name,
@@ -1773,6 +1876,7 @@ Respond ONLY with the JSON array."""
         except Exception as e:
             logger.debug(f"Inbox verification failed for {email}: {e}")
             status = "guess"
+        await self._observe_email_signals(company_id, domain, email=email, status=status)
         prospect = Prospect(
             email=email,
             email_status=status,
@@ -2006,7 +2110,7 @@ Respond ONLY with the JSON array."""
 
         signals: list[dict] = []
         try:
-            hiring_roles = await self._scrape_hiring_signals(domain)
+            hiring_roles = await self._scrape_hiring_signals(domain, homepage_html=homepage_html)
         except Exception as e:
             logger.debug(f"Hiring scan failed for {domain}: {e}")
             hiring_roles = []
@@ -2035,12 +2139,33 @@ Respond ONLY with the JSON array."""
     _CAREERS_PATHS = ("/careers", "/jobs", "/careers/", "/join-us", "/join",
                       "/about/careers", "/company/careers", "/work-with-us")
 
-    async def _scrape_hiring_signals(self, domain: str) -> list[str]:
-        """Scan the company's careers page for open roles matching our
-        signal keywords. Returns matched role titles (deduped, capped)."""
+    async def _scrape_hiring_signals(self, domain: str, homepage_html: str = "") -> list[str]:
+        """Scan the company's public ATS job board or careers page for open roles
+        matching our signal keywords. Returns matched role titles (deduped, capped)."""
+        from sellbird.collectors.ats import detect_board, matching_roles, read_board
+
         keywords = self._signal_role_keywords()
         if not keywords:
             return []
+
+        async def _roles_from_board(board) -> list[str] | None:
+            if board is None:
+                return None
+            try:
+                async with public_http_client(timeout=httpx.Timeout(SCRAPE_TIMEOUT)) as client:
+                    postings = await read_board(client, board)
+            except Exception as exc:
+                logger.debug("ATS board read failed for %s: %s", domain, exc)
+                return None
+            if postings is None:
+                return None
+            matched = matching_roles(postings, keywords)[:3]
+            return [post.summary()[:80] for post in matched]
+
+        if homepage_html:
+            board_roles = await _roles_from_board(detect_board(homepage_html, domain))
+            if board_roles is not None:
+                return board_roles
 
         for path in self._CAREERS_PATHS:
             resp = await self._fetch(
@@ -2048,6 +2173,11 @@ Respond ONLY with the JSON array."""
             )
             if resp is None:
                 continue
+
+            board_roles = await _roles_from_board(detect_board(resp.text, domain))
+            if board_roles is not None:
+                return board_roles
+
             soup = self._safe_soup(resp.text)
             if soup is None:
                 continue

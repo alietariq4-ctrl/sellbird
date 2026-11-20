@@ -15,8 +15,8 @@ icp:          { industries, titles, company_size, geography, hiring_signals, geo
 channels:
   email:      { provider: gmail | microsoft | smtp | instantly, max_daily_sends, per_inbox_daily_cap,
                 require_approval, send_to_risky, min_write_score, max_bounce_rate, follow_ups, warmup, send_window, signature }
-usage:        { max_daily_claude_percent, heartbeat_interval_minutes, quiet_hours }
-brain:        { provider: claude | codex, model, reasoning_effort }   # optional; claude by default
+usage:        { max_daily_claude_percent, max_daily_usd, heartbeat_interval_minutes, quiet_hours }
+brain:        { provider: claude | codex, model, reasoning_effort, transport_factory }   # optional; claude by default
 writer:       { humanizer, site_facts, require_tip }   # optional; humanizer true adds one editing pass per batch using ~/.claude/skills/humanizer/SKILL.md
               # site_facts (default true): the Writer sees what the free homepage signals found (no structured data,
               # a stale or very small site, AI crawlers blocked) so an email can name one concrete thing to change.
@@ -36,6 +36,45 @@ sequence, so Claude calls and sends go to the best matches first.
 `follow_ups` (default true) set to `false` makes a campaign stage only its first email on Gmail, Microsoft and SMTP. Steps 2 and 3 are never prepared, so none can go out to someone who has not answered. A reply is still read, and the answer waits in the Outbox for you as usual. The Writer still drafts the whole sequence; the Sender just doesn't stage the later steps.
 
 `max_daily_claude_percent` caps whichever subscription `brain.provider` uses (the name predates Codex support).
+
+
+### A transport instead of a subscription
+
+`brain.transport_factory` names a callable that builds Sellbird's model
+transport, and then no `claude` or `codex` CLI is used at all — so an install
+needs no subscription and no login:
+
+```yaml
+brain:
+  transport_factory: harvey_brain.transport:build   # pkg.module:callable
+  model: openrouter/anthropic/claude-sonnet-4.5     # the transport reads this
+usage:
+  max_daily_usd: 5.0    # today's recorded spend; a transport is billed per token
+```
+
+The value is `pkg.module:callable`, or `pkg.module` to call its `build`. The
+callable returns the transport object: an `async transport(prompt, *,
+agent, task, timeout, expect_json) -> str` that returns the model's text (`""`
+on failure), optionally with a `paused_reason` attribute and an `on_usage=`
+attribute the host fills with its own recorder.
+
+- **It is orthogonal to `provider`.** `provider: claude` stays valid config on
+  a machine with no Claude CLI: the transport is checked first in `think` and
+  `preflight`, so neither the CLI nor its `--safe-mode` preflight runs.
+- **A bad path never breaks the CLI.** An unresolvable `transport_factory` is
+  logged once and ignored; Sellbird falls back to `provider`. That keeps
+  `status`, `dashboard` and the rest working while you fix the typo.
+- **The spend is capped in dollars.** Every call the transport reports lands
+  in the usage ledger with its real `cost_usd`, and `usage.max_daily_usd`
+  (default `5.0`, must be > 0) stops the cycle when today's total reaches it.
+  The `max_daily_claude_percent` quota gate is subscription-only and is not
+  consulted while a transport is active.
+- **The keys are in `.env`** — `OPENROUTER_API_KEY`, `XAI_API_KEY`,
+  `GEMINI_API_KEY`, `OPENAI_API_KEY`, `DEEPSEEK_API_KEY`, `GROQ_API_KEY` —
+  all optional and all blank by default.
+- **Leave `transport_factory` empty** and nothing above applies: Sellbird runs
+  the CLI for `provider`, exactly as before.
+
 
 If `sellbird.local.yaml` exists it wins. It's gitignored, so a fork can carry real product configuration while the tracked `sellbird.yaml` stays a template — nobody publishes their positioning and pricing by accident.
 

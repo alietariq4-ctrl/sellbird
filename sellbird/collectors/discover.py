@@ -21,6 +21,7 @@ already learned.
 """
 
 import asyncio
+import os
 import time
 import base64
 import logging
@@ -1459,14 +1460,296 @@ class ScavioSearch(ScavioProvider):
         return out
 
 
+class DuckDuckGoSearch(DiscoveryProvider):
+    """Keyless, zero-cost web search via DuckDuckGo (ddgs).
+
+    Works out of the box for B2B SaaS, agencies, startups, and global companies
+    without any API key, credit card, or signup.
+    """
+
+    key = "ddgs"
+    label = "DuckDuckGo Search (ddgs)"
+    kind = "serp"
+    rank_codes = ()
+    blurb = ("Free keyless web search for B2B SaaS, agencies, startups and "
+             "global companies — zero API keys or setup required.")
+    cost_note = "Free (keyless DuckDuckGo search via ddgs)"
+    free_tier = "Unlimited free searches with polite pacing; no account or API key"
+    signup_url = "https://pypi.org/project/ddgs/"
+    env_keys = ()
+    caveat = ("Uses DuckDuckGo organic web search rather than Google, so "
+              "SERP_RANK is not recorded; ideal for zero-cost B2B discovery.")
+
+    def estimate(self, queries: list[DiscoveryQuery]) -> float:
+        return 0.0
+
+    @staticmethod
+    def _run_ddgs(keyword: str, max_results: int) -> list[dict]:
+        from ddgs import DDGS
+
+        with DDGS() as ddgs:
+            results = ddgs.text(keyword, max_results=max_results)
+            return list(results or [])
+
+    async def fetch(self, client: httpx.AsyncClient, env: dict,
+                    query: DiscoveryQuery) -> list[Business]:
+        keyword = query.keyword()
+        max_results = max(1, min(query.depth, 50))
+        items = await asyncio.to_thread(self._run_ddgs, keyword, max_results)
+        out: list[Business] = []
+        for item in items:
+            if not isinstance(item, dict):
+                continue
+            url = str(item.get("href") or item.get("url") or item.get("link") or "").strip()
+            domain = normalize_domain(url)
+            if not domain:
+                continue
+            title = str(item.get("title") or "").strip()
+            out.append(Business(
+                name=business_name(title, domain),
+                raw_title=title,
+                domain=domain,
+                website=url,
+                location=query.location,
+                rank=None,
+                has_website=True,
+                source_url=url,
+                provider=self.key,
+                keyword=keyword,
+            ))
+        return out
+
+
+class SearXNGSearch(DiscoveryProvider):
+    """Self-hosted SearXNG metasearch instance."""
+
+    key = "searxng"
+    label = "SearXNG (Self-Hosted)"
+    kind = "serp"
+    rank_codes = ()
+    blurb = ("Query your own self-hosted SearXNG metasearch instance across "
+             "Google, Bing, Brave and DuckDuckGo with zero per-query fees.")
+    cost_note = "Free (self-hosted SearXNG instance)"
+    free_tier = "Unlimited on your own SearXNG server"
+    signup_url = "https://docs.searxng.org"
+    env_keys = ("searxng_url",)
+    caveat = "Requires SEARXNG_URL pointing to an instance with JSON format enabled."
+
+    def estimate(self, queries: list[DiscoveryQuery]) -> float:
+        return 0.0
+
+    async def fetch(self, client: httpx.AsyncClient, env: dict,
+                    query: DiscoveryQuery) -> list[Business]:
+        base = str(env.get("searxng_url") or "").strip().rstrip("/")
+        if not base:
+            raise RuntimeError("SearXNG needs SEARXNG_URL in .env")
+        if not base.startswith(("http://", "https://")):
+            base = "http://" + base
+
+        keyword = query.keyword()
+        r = await client.get(
+            f"{base}/search",
+            params={"q": keyword, "format": "json"},
+            headers={"Accept": "application/json"},
+        )
+        if r.status_code in (401, 403, 429):
+            raise ProviderExhausted(f"SearXNG {r.status_code}: request refused or rate limited")
+        r.raise_for_status()
+        data = r.json()
+        if not isinstance(data, dict):
+            raise RuntimeError("SearXNG returned non-object JSON")
+
+        out: list[Business] = []
+        for item in (data.get("results") or [])[:max(1, min(query.depth, 50))]:
+            if not isinstance(item, dict):
+                continue
+            url = str(item.get("url") or "").strip()
+            domain = normalize_domain(url)
+            if not domain:
+                continue
+            title = str(item.get("title") or "").strip()
+            out.append(Business(
+                name=business_name(title, domain),
+                raw_title=title,
+                domain=domain,
+                website=url,
+                location=query.location,
+                rank=None,
+                has_website=True,
+                source_url=url,
+                provider=self.key,
+                keyword=keyword,
+            ))
+        return out
+
+
+class TavilySearch(DiscoveryProvider):
+    """Tavily AI-native web search API."""
+
+    key = "tavily"
+    label = "Tavily AI Search"
+    kind = "serp"
+    rank_codes = ()
+    blurb = ("AI-optimized web search built for agents, returning high-signal "
+             "B2B company pages and clean snippets.")
+    cost_note = "$0.008 per search after free tier (1,000 free credits/month)"
+    free_tier = "1,000 searches/month free, no credit card required"
+    signup_url = "https://tavily.com"
+    env_keys = ("tavily_api_key",)
+    caveat = "Returns up to 20 relevance-ranked results per query; does not measure Google SERP_RANK."
+
+    COST_PER_QUERY = 0.008
+
+    def estimate(self, queries: list[DiscoveryQuery]) -> float:
+        return self.COST_PER_QUERY * len(queries)
+
+    async def fetch(self, client: httpx.AsyncClient, env: dict,
+                    query: DiscoveryQuery) -> list[Business]:
+        api_key = str(env.get("tavily_api_key") or "").strip()
+        if not api_key:
+            raise RuntimeError("Tavily needs TAVILY_API_KEY in .env")
+
+        keyword = query.keyword()
+        r = await client.post(
+            "https://api.tavily.com/search",
+            headers={
+                "Authorization": f"Bearer {api_key}",
+                "Content-Type": "application/json",
+            },
+            json={
+                "api_key": api_key,
+                "query": keyword,
+                "max_results": max(1, min(query.depth, 20)),
+                "search_depth": "basic",
+            },
+        )
+        if r.status_code in (401, 402, 403, 429):
+            raise ProviderExhausted(f"Tavily {r.status_code}: invalid key, quota exhausted, or rate limited")
+        r.raise_for_status()
+        self.last_cost = self.COST_PER_QUERY
+        data = r.json()
+        if not isinstance(data, dict):
+            raise RuntimeError("Tavily returned non-object JSON")
+
+        out: list[Business] = []
+        for item in data.get("results") or []:
+            if not isinstance(item, dict):
+                continue
+            url = str(item.get("url") or "").strip()
+            domain = normalize_domain(url)
+            if not domain:
+                continue
+            title = str(item.get("title") or "").strip()
+            out.append(Business(
+                name=business_name(title, domain),
+                raw_title=title,
+                domain=domain,
+                website=url,
+                location=query.location,
+                rank=None,
+                has_website=True,
+                source_url=url,
+                provider=self.key,
+                keyword=keyword,
+            ))
+        return out
+
+
+class FirecrawlSearch(DiscoveryProvider):
+    """Firecrawl v2 cloud web search endpoint."""
+
+    key = "firecrawl_search"
+    label = "Firecrawl Search"
+    kind = "serp"
+    rank_codes = ()
+    blurb = ("Cloud web search via Firecrawl v2 that discovers businesses and "
+             "pairs seamlessly with Firecrawl page scraping.")
+    cost_note = "~$0.002 per search credit"
+    free_tier = "500 free credits on signup"
+    signup_url = "https://www.firecrawl.dev"
+    env_keys = ("firecrawl_api_key",)
+    caveat = "Uses Firecrawl v2 search endpoint; does not measure Google SERP_RANK."
+
+    COST_PER_QUERY = 0.002
+
+    def estimate(self, queries: list[DiscoveryQuery]) -> float:
+        return self.COST_PER_QUERY * len(queries)
+
+    async def fetch(self, client: httpx.AsyncClient, env: dict,
+                    query: DiscoveryQuery) -> list[Business]:
+        api_key = str(env.get("firecrawl_api_key") or "").strip()
+        if not api_key:
+            raise RuntimeError("Firecrawl Search needs FIRECRAWL_API_KEY in .env")
+        base_url = str(
+            env.get("firecrawl_api_url")
+            or os.getenv("FIRECRAWL_API_URL")
+            or "https://api.firecrawl.dev"
+        ).strip().rstrip("/")
+
+        keyword = query.keyword()
+        r = await client.post(
+            f"{base_url}/v2/search",
+            headers={
+                "Authorization": f"Bearer {api_key}",
+                "Content-Type": "application/json",
+            },
+            json={
+                "query": keyword,
+                "limit": max(1, min(query.depth, 20)),
+            },
+        )
+        if r.status_code in (401, 402, 403, 429):
+            raise ProviderExhausted(f"Firecrawl Search {r.status_code}: invalid key, credits exhausted, or rate limited")
+        r.raise_for_status()
+        self.last_cost = self.COST_PER_QUERY
+        data = r.json()
+        if not isinstance(data, dict):
+            raise RuntimeError("Firecrawl Search returned non-object JSON")
+
+        raw_data = data.get("data")
+        if isinstance(raw_data, dict):
+            items = raw_data.get("web") or raw_data.get("results") or []
+        elif isinstance(raw_data, list):
+            items = raw_data
+        else:
+            items = data.get("results") or []
+
+        out: list[Business] = []
+        for item in items:
+            if not isinstance(item, dict):
+                continue
+            url = str(item.get("url") or item.get("link") or "").strip()
+            domain = normalize_domain(url)
+            if not domain:
+                continue
+            title = str(item.get("title") or "").strip()
+            out.append(Business(
+                name=business_name(title, domain),
+                raw_title=title,
+                domain=domain,
+                website=url,
+                location=query.location,
+                rank=None,
+                has_website=True,
+                source_url=url,
+                provider=self.key,
+                keyword=keyword,
+            ))
+        return out
+
+
 PROVIDERS: dict[str, DiscoveryProvider] = {
     p.key: p for p in (
         OpenStreetMap(),
+        DuckDuckGoSearch(),
+        SearXNGSearch(),
         TinyFish(),
         DataForSEOListings(),
         DataForSEOSerp(),
         DataForSEOMaps(),
         Serper(),
+        TavilySearch(),
+        FirecrawlSearch(),
         ScavioMaps(),
         ScavioSearch(),
     )
@@ -1727,7 +2010,7 @@ async def run_discovery(
     if dry_run:
         return report
 
-    env = load_env().model_dump()
+    env = _hydrate_env(load_env().model_dump())
     missing = provider.missing_keys(env)
     if missing:
         names = ", ".join(k.upper() for k in missing)
@@ -1862,9 +2145,11 @@ async def run_discovery(
                         best_ranks[rank_key] = tuple(
                             _best(old, new) for new, old in
                             zip(ranks, previous or (None,) * len(ranks)))
-                    batch.extend(_observations(biz, company_id, confirmed,
-                                               report.run_id, query=query,
-                                               ranks_only=not first))
+                    obs_rows = _observations(biz, company_id, confirmed,
+                                             report.run_id, query=query,
+                                             ranks_only=not first)
+                    batch.extend(obs_rows)
+                    await _sync_discovery_company_signals(state, company_id, obs_rows)
 
                 # A business this phrase ranked before, and that no search for
                 # it this run has found, is no longer ranked (within depth) or
@@ -1990,6 +2275,59 @@ def _observations(biz: Business, company_id: str, confirmed: set[str],
     return rows
 
 
+def _hydrate_env(env: dict) -> dict:
+    """Fill new open-source provider keys from os.environ when absent from EnvConfig."""
+    out = dict(env)
+    for extra_key in ("searxng_url", "tavily_api_key", "firecrawl_api_key", "firecrawl_api_url"):
+        if extra_key not in out:
+            out[extra_key] = os.getenv(extra_key.upper(), "")
+    return out
+
+
+async def _sync_discovery_company_signals(state, company_id: str, obs_rows: list[dict]) -> None:
+    """Mirror confirmed discovery observations onto companies.signals for Writer."""
+    updater = getattr(state, "update_company_signals", None)
+    if updater is None or not company_id or not obs_rows:
+        return
+    today = date.today().isoformat()
+    signals: list[dict] = []
+    rating_val = None
+    review_cnt = None
+    for row in obs_rows:
+        code = row.get("signal_code")
+        num = row.get("value_num")
+        txt = row.get("value_text") or ""
+        if code == "SERP_RANK" and num and num > 0:
+            detail = f"#{int(num)} on Google" + (f" for '{txt}'" if txt else "")
+            signals.append({"type": "serp_rank", "detail": detail, "found_at": today})
+        elif code == "IN_LOCAL_PACK" and num and num > 0:
+            detail = f"#{int(num)} in Google local 3-pack" + (f" for '{txt}'" if txt else "")
+            signals.append({"type": "local_pack", "detail": detail, "found_at": today})
+        elif code == "MAPS_RANK" and num and num > 0:
+            detail = f"#{int(num)} on Google Maps" + (f" for '{txt}'" if txt else "")
+            signals.append({"type": "maps_rank", "detail": detail, "found_at": today})
+        elif code == "NO_WEBSITE" and num == 1:
+            signals.append({"type": "no_website", "detail": "No website listed on business profile", "found_at": today})
+        elif code == "UNCLAIMED_LISTING" and num == 1:
+            signals.append({"type": "unclaimed_listing", "detail": "Unclaimed Google Business Profile", "found_at": today})
+        elif code == "REVIEW_RATING" and num is not None:
+            rating_val = num
+        elif code == "REVIEW_COUNT" and num is not None:
+            review_cnt = int(num)
+    if rating_val is not None or review_cnt is not None:
+        parts = []
+        if rating_val is not None:
+            parts.append(f"{rating_val:g} stars")
+        if review_cnt is not None:
+            parts.append(f"{review_cnt} reviews")
+        signals.append({"type": "reviews", "detail": ", ".join(parts), "found_at": today})
+    if signals:
+        try:
+            await updater(company_id, new_signals=signals)
+        except Exception as exc:
+            logger.debug("update_company_signals failed for %s: %s", company_id, exc)
+
+
 def provider_menu(env: dict | None = None) -> list[dict]:
     """The menu the dashboard renders: what each provider does, and its cost.
 
@@ -1998,7 +2336,7 @@ def provider_menu(env: dict | None = None) -> list[dict]:
     """
     if env is None:
         from sellbird.config import load_env
-        env = load_env().model_dump()
+        env = _hydrate_env(load_env().model_dump())
     return [
         {
             "key": p.key, "label": p.label, "kind": p.kind, "blurb": p.blurb,

@@ -1,10 +1,12 @@
 """Sellbird's main heartbeat loop."""
 
 import asyncio
+import inspect
 import logging
 import signal
 import sys
 from datetime import datetime, time, timedelta
+from pathlib import Path
 
 import pytz
 
@@ -237,16 +239,111 @@ async def _run_agents(tasks: list) -> dict:
     return outcomes
 
 
+def _stop_file() -> Path:
+    """Path to the Windows/cross-process graceful stop sentinel."""
+    from sellbird.workspace_home import current_home
+    return Path(current_home().data_dir) / "sellbird.stop"
+
+
+def _clear_stop_file() -> None:
+    try:
+        _stop_file().unlink(missing_ok=True)
+    except OSError:
+        pass
+
+
+def _check_stop_sentinel(stop_event: asyncio.Event) -> bool:
+    if stop_event.is_set():
+        return True
+    try:
+        if _stop_file().exists():
+            logger.info("Stop sentinel detected — finishing active work and shutting down...")
+            stop_event.set()
+            return True
+    except OSError:
+        pass
+    return False
+
+
+async def _sleep_or_stop(seconds: float, stop_event: asyncio.Event) -> bool:
+    """Sleep up to `seconds`, polling sellbird.stop every 1s and waking on stop_event."""
+    if _check_stop_sentinel(stop_event):
+        return True
+    remaining = max(0.0, float(seconds))
+    while remaining > 0:
+        chunk = min(1.0, remaining)
+        try:
+            await asyncio.wait_for(stop_event.wait(), timeout=chunk)
+            return True
+        except asyncio.TimeoutError:
+            pass
+        if _check_stop_sentinel(stop_event):
+            return True
+        remaining -= chunk
+    return _check_stop_sentinel(stop_event)
+
+
 async def _interruptible_sleep(seconds: float, stop_event: asyncio.Event) -> bool:
-    """Sleep up to `seconds`, waking immediately on shutdown.
+    """Sleep up to `seconds`, waking immediately on shutdown or stop sentinel.
 
     Returns True if a shutdown was requested during the sleep.
     """
+    return await _sleep_or_stop(seconds, stop_event)
+
+
+def _instantiate_optional_agent(cls, *, brain, state, config, env):
+    """Instantiate an agent class matching whichever constructor parameters it accepts."""
+    sig = inspect.signature(cls)
+    params = sig.parameters
+    if any(p.kind == inspect.Parameter.VAR_KEYWORD for p in params.values()):
+        return cls(brain=brain, state=state, config=config, env=env)
+    kwargs = {}
+    for name, val in (("brain", brain), ("state", state), ("config", config), ("env", env)):
+        if name in params:
+            kwargs[name] = val
+    if kwargs:
+        return cls(**kwargs)
+    return cls(brain, state, config, env)
+
+
+async def _has_enrichment_columns(state) -> bool:
+    for attr in ("list_enrichment_columns", "get_enrichment_columns"):
+        fn = getattr(state, attr, None)
+        if callable(fn):
+            try:
+                res = fn()
+                cols = await res if inspect.isawaitable(res) else res
+                return bool(cols)
+            except Exception:
+                return False
+    return False
+
+
+async def _spend_today_usd(state, brain) -> float:
+    for obj in (state, brain):
+        fn = getattr(obj, "spend_today_usd", None)
+        if callable(fn):
+            try:
+                res = fn()
+                val = await res if inspect.isawaitable(res) else res
+                return float(val or 0.0)
+            except Exception:
+                pass
     try:
-        await asyncio.wait_for(stop_event.wait(), timeout=seconds)
-        return True
-    except asyncio.TimeoutError:
-        return False
+        totals = await state.usage_totals()
+        return float((totals.get("today") or {}).get("cost_usd") or 0.0)
+    except Exception:
+        return 0.0
+
+
+async def _close_brain(brain) -> None:
+    if brain is not None and hasattr(brain, "aclose"):
+        try:
+            res = brain.aclose()
+            if inspect.isawaitable(res):
+                await res
+        except Exception as e:
+            logger.debug("brain.aclose failed: %s", e)
 
 
 def send_hold_reason(unread: list, paused: str, read_problem: str) -> str | None:
@@ -277,6 +374,8 @@ async def heartbeat(stop_event: asyncio.Event | None = None):
     if stop_event is None:
         stop_event = asyncio.Event()
 
+    _clear_stop_file()
+
     logger.info("=" * 60)
     logger.info("Sellbird is online.")
     logger.info("=" * 60)
@@ -291,214 +390,245 @@ async def heartbeat(stop_event: asyncio.Event | None = None):
     env = load_env()
     state = StateManager()
     brain = Brain(state, config.brain)
-    logger.info(
-        f"Thinking with {brain.provider_label}"
-        + (f" ({brain.model})" if brain.model else "")
-        + ". Change brain.provider in sellbird.yaml to switch."
-    )
-    for notice in (sending_notice(config), compliance_notice(config)):
-        if notice:
-            logger.warning("=" * 60)
-            logger.warning(notice)
-            logger.warning("=" * 60)
+    try:
+        logger.info(
+            f"Thinking with {brain.provider_label}"
+            + (f" ({brain.model})" if brain.model else "")
+            + ". Change brain.provider in sellbird.yaml to switch."
+        )
+        for notice in (sending_notice(config), compliance_notice(config)):
+            if notice:
+                logger.warning("=" * 60)
+                logger.warning(notice)
+                logger.warning("=" * 60)
 
-    await state.init_db()
-    logger.info("Database initialized.")
+        await state.init_db()
+        logger.info("Database initialized.")
 
-    # Import agents here to avoid circular imports
-    from sellbird.agents.scout import Scout
-    from sellbird.agents.writer import Writer
-    from sellbird.agents.sender import Sender
-    from sellbird.agents.handler import Handler
-    from sellbird.agents.analyst import Analyst
+        # Import agents here to avoid circular imports
+        from sellbird.agents.scout import Scout
+        from sellbird.agents.writer import Writer
+        from sellbird.agents.sender import Sender
+        from sellbird.agents.handler import Handler
+        from sellbird.agents.analyst import Analyst
 
-    scout = Scout(brain, state, config, env)
-    writer = Writer(brain, state, config, env)
-    sender = Sender(brain, state, config, env)
-    handler = Handler(brain, state, config, env)
-    analyst = Analyst(state)
+        scout = Scout(brain, state, config, env)
+        writer = Writer(brain, state, config, env)
+        sender = Sender(brain, state, config, env)
+        handler = Handler(brain, state, config, env)
 
-    interval = config.usage.heartbeat_interval_minutes * 60
-    max_calls = max(int(200 * (config.usage.max_daily_claude_percent / 100)), 1)
-    consecutive_errors = 0
+        analyst_sig = inspect.signature(Analyst)
+        analyst_kwargs = {}
+        if "config" in analyst_sig.parameters:
+            analyst_kwargs["config"] = config
+        if "brain" in analyst_sig.parameters:
+            analyst_kwargs["brain"] = brain
+        analyst = Analyst(state, **analyst_kwargs)
 
-    while not stop_event.is_set():
+        researcher = None
         try:
-            # 0. Approval or autopilot, as the config file says now: the
-            # dashboard can switch it while Sellbird runs.
-            await sync_sending_mode(config, state)
-
-            # 1. Check quiet hours. With send windows in recipients' own time
-            # zones, quiet hours only stop prospecting and writing: a cycle
-            # still reads replies and sends what's due (sends_through_quiet_hours).
-            quiet = in_quiet_hours(config)
-            send_only = quiet and sender.is_native and sends_through_quiet_hours(config)
-            if quiet and not send_only:
-                sleep_for = seconds_until_quiet_hours_end(config)
-                logger.info(f"Quiet hours. Sleeping for {sleep_for // 60} minutes.")
-                # Sleep in short polled chunks rather than one multi-hour
-                # wait: found in production that a system sleep/wake cycle
-                # during a long asyncio.wait_for left the process silently
-                # stalled for the rest of the quiet-hours window (11+ hours
-                # in one case) instead of resuming once the Mac woke up.
-                # Re-checking wall-clock quiet hours every few minutes
-                # bounds the worst case to QUIET_HOURS_POLL_SECONDS instead
-                # of however long the missed timer would have run.
-                shutting_down = False
-                while in_quiet_hours(config):
-                    if await _interruptible_sleep(QUIET_HOURS_POLL_SECONDS, stop_event):
-                        shutting_down = True
-                        break
-                if shutting_down:
-                    break
-                continue
-            # Quiet hours wake only for cold email that can go now: due,
-            # inside its recipient's window, not held by a cap or a pause.
-            # Replies wait for the operator's hours, as they always have.
-            sender.cold_only = send_only
-            if send_only and not await sender.cold_due_in_window():
-                logger.info(
-                    f"Quiet hours. No cold email can go now; checking again in "
-                    f"{config.usage.heartbeat_interval_minutes} minutes."
-                )
-                if await _interruptible_sleep(interval, stop_event):
-                    break
-                continue
-
-            # 2. Is the brain usable at all? (Codex: CLI version, isolation,
-            # login, account and model checked without a prompt.) If not, do nothing
-            # this cycle — no replies consumed, nothing written or sent —
-            # and say why, rather than running agents that would each fail.
-            problem = await brain.preflight()
-            if problem:
-                logger.error(
-                    f"Sellbird is paused: {problem} Nothing was sent or changed. "
-                    f"Re-checking in {config.usage.heartbeat_interval_minutes} minutes."
-                )
-                if await _interruptible_sleep(interval, stop_event):
-                    break
-                continue
-
-            # 3. Check usage budget (real subscription quota when readable,
-            # else Sellbird's own call counter)
-            if not await brain.is_within_budget(
-                max_calls, max_percent=config.usage.max_daily_claude_percent
-            ):
-                logger.info(
-                    f"{brain.provider_label} usage limit reached "
-                    f"({config.usage.max_daily_claude_percent}% of quota or "
-                    f"{max_calls} calls). Sleeping 1h, then re-checking."
-                )
-                if await _interruptible_sleep(3600, stop_event):
-                    break
-                continue
-
-            # 4. Decide what to do (in quiet hours: only read replies and send)
-            if send_only:
-                logger.info("Quiet hours: reading replies, then sending what's due "
-                            "in recipients' own time zones.")
-                summary = {}
-                action = "quiet_hours_send"
-            else:
-                logger.info("Checking pipeline state...")
-                summary = await state.get_state_summary()
-                action = await decide_next_action(brain, state, config, summary=summary)
-
-            # 5. Execute — run independent agents in parallel where possible
-            # Handler is always safe to run alongside other agents
-            tasks = []
-            # An auto-reply handed to you was open until now: keep reading for it.
-            has_open_convos = (summary.get("open_conversations", 0)
-                               + summary.get("auto_reply_handoffs", 0)) > 0
-
-            if action == "prospect":
-                tasks.append(("prospect", scout.run()))
-                # Analyst is cheap (no Claude calls) — keep analytics fresh
-                tasks.append(("analyze", analyst.run()))
-            elif action == "write_campaign":
-                tasks.append(("write_campaign", writer.run()))
-            elif action == "idle":
-                tasks.append(("analyze", analyst.run()))
-
-            # Sending happens in a second phase, after every agent above has
-            # finished: the handler's stop-on-reply must cancel follow-ups to
-            # people who just replied before anything is sent. Native mail
-            # providers drain the outbox every cycle, so their mailbox is
-            # read every cycle too; any provider is read while a conversation
-            # is open.
-            send_tasks = []
-            if action == "send_campaign":
-                send_tasks.append(("send_campaign", sender.run))
-            elif sender.is_native:
-                send_tasks.append(("send_outbox", sender.run))
-            if sender.is_native or has_open_convos:
-                tasks.append(("handle_replies", handler.run()))
-
-            # Profiling rides along every cycle. It is three HTTP requests per
-            # business with no model call, so it costs nothing against the
-            # Claude budget the rest of this loop is rationing — and it is what
-            # turns a name and a domain into something worth writing about.
-            if summary.get("unprofiled", 0):
-                tasks.append(("profile", run_profile_stage(state, limit=25, config=config)))
-
-            outcomes = await _run_agents(tasks)
-
-            # Phase 2: send — only after every reply-reading task this cycle
-            # finished reading and handling replies (it returns True; a
-            # failure, exception or timeout doesn't), and only if the brain
-            # didn't stop being usable meanwhile. Otherwise a reply may be
-            # unread, so its stop-on-reply hasn't run: queued emails wait.
-            if send_tasks:
-                unread = [n for n, _ in tasks
-                          if n in REPLY_READERS and outcomes.get(n) is not True]
-                paused = brain.paused_reason
-                if paused or unread:
-                    reason = paused or "replies couldn't all be read and handled."
-                    logger.error(
-                        f"Not sending this cycle: {reason} Queued emails wait "
-                        "until replies can be read again."
-                    )
-                    held = send_hold_reason(unread, paused, getattr(handler, "last_read_problem", ""))
-                    if held is not None:
-                        await record_send_phase(state, held)
-                else:
-                    await record_send_phase(state, send_hold_reason([], "", ""))
-                    await _run_agents([(name, run()) for name, run in send_tasks])
-
-            # 6. Log the action (best-effort; never kills the loop)
-            try:
-                await state.log_action(action_type=action, agent="main")
-            except Exception as e:
-                logger.warning(f"Failed to log action '{action}': {e}")
-
-            # 7. Extensions' tick steps (sellbird.extensions). Each is
-            # isolated: a failing step is logged and never stops the loop.
-            await run_tick_steps(config, state)
-
-            consecutive_errors = 0
-
-            # 8. Sleep until next heartbeat
-            logger.info(
-                f"Cycle complete. Sleeping for {config.usage.heartbeat_interval_minutes} minutes."
+            from sellbird.agents.researcher import DeepResearcher
+            researcher = _instantiate_optional_agent(
+                DeepResearcher, brain=brain, state=state, config=config, env=env
             )
-            if await _interruptible_sleep(interval, stop_event):
-                break
-
-        except (KeyboardInterrupt, asyncio.CancelledError):
-            break
+        except ImportError:
+            pass
         except Exception as e:
-            consecutive_errors += 1
-            backoff = min(
-                ERROR_BACKOFF_BASE * (2 ** (consecutive_errors - 1)),
-                ERROR_BACKOFF_CAP,
+            logger.debug("DeepResearcher unavailable: %s", e)
+
+        enricher = None
+        try:
+            from sellbird.agents.enricher import ClayEnricher
+            enricher = _instantiate_optional_agent(
+                ClayEnricher, brain=brain, state=state, config=config, env=env
             )
-            logger.error(
-                f"Error in heartbeat (failure #{consecutive_errors}): {e}",
-                exc_info=True,
-            )
-            logger.info(f"Recovering... sleeping {backoff}s before retry.")
-            if await _interruptible_sleep(backoff, stop_event):
+        except ImportError:
+            pass
+        except Exception as e:
+            logger.debug("ClayEnricher unavailable: %s", e)
+
+        interval = config.usage.heartbeat_interval_minutes * 60
+        max_calls = max(int(200 * (config.usage.max_daily_claude_percent / 100)), 1)
+        consecutive_errors = 0
+
+        while not stop_event.is_set() and not _check_stop_sentinel(stop_event):
+            try:
+                # 0. Approval or autopilot, as the config file says now: the
+                # dashboard can switch it while Sellbird runs.
+                await sync_sending_mode(config, state)
+
+                # 1. Check quiet hours. With send windows in recipients' own time
+                # zones, quiet hours only stop prospecting and writing: a cycle
+                # still reads replies and sends what's due (sends_through_quiet_hours).
+                quiet = in_quiet_hours(config)
+                send_only = quiet and sender.is_native and sends_through_quiet_hours(config)
+                if quiet and not send_only:
+                    sleep_for = seconds_until_quiet_hours_end(config)
+                    logger.info(f"Quiet hours. Sleeping for {sleep_for // 60} minutes.")
+                    shutting_down = False
+                    while in_quiet_hours(config):
+                        if await _interruptible_sleep(QUIET_HOURS_POLL_SECONDS, stop_event):
+                            shutting_down = True
+                            break
+                    if shutting_down:
+                        break
+                    continue
+                sender.cold_only = send_only
+                if send_only and not await sender.cold_due_in_window():
+                    logger.info(
+                        f"Quiet hours. No cold email can go now; checking again in "
+                        f"{config.usage.heartbeat_interval_minutes} minutes."
+                    )
+                    if await _interruptible_sleep(interval, stop_event):
+                        break
+                    continue
+
+                # 2. Is the brain usable at all?
+                problem = await brain.preflight()
+                if problem:
+                    logger.error(
+                        f"Sellbird is paused: {problem} Nothing was sent or changed. "
+                        f"Re-checking in {config.usage.heartbeat_interval_minutes} minutes."
+                    )
+                    if await _interruptible_sleep(interval, stop_event):
+                        break
+                    continue
+
+                # 3. Check usage budget
+                if not await brain.is_within_budget(
+                    max_calls, max_percent=config.usage.max_daily_claude_percent,
+                    max_usd=config.usage.max_daily_usd,
+                ):
+                    if getattr(brain, "transport", None) is not None:
+                        spent = await _spend_today_usd(state, brain)
+                        logger.info(
+                            f"{brain.provider_label} daily USD budget reached "
+                            f"(${spent:.4f} / ${config.usage.max_daily_usd:.2f}). "
+                            "Sleeping 1h, then re-checking."
+                        )
+                    else:
+                        logger.info(
+                            f"{brain.provider_label} usage limit reached "
+                            f"({config.usage.max_daily_claude_percent}% of quota or "
+                            f"{max_calls} calls). Sleeping 1h, then re-checking."
+                        )
+                    if await _interruptible_sleep(3600, stop_event):
+                        break
+                    continue
+
+                if _check_stop_sentinel(stop_event):
+                    break
+
+                # 4. Decide what to do (in quiet hours: only read replies and send)
+                if send_only:
+                    logger.info("Quiet hours: reading replies, then sending what's due "
+                                "in recipients' own time zones.")
+                    summary = {}
+                    action = "quiet_hours_send"
+                else:
+                    logger.info("Checking pipeline state...")
+                    summary = await state.get_state_summary()
+                    action = await decide_next_action(brain, state, config, summary=summary)
+
+                if _check_stop_sentinel(stop_event):
+                    break
+
+                # 5. Execute — run independent agents in parallel where possible
+                tasks = []
+                has_open_convos = (summary.get("open_conversations", 0)
+                                   + summary.get("auto_reply_handoffs", 0)) > 0
+
+                if action == "prospect":
+                    tasks.append(("prospect", scout.run()))
+                    tasks.append(("analyze", analyst.run()))
+                elif action == "write_campaign":
+                    tasks.append(("write_campaign", writer.run()))
+                elif action == "idle":
+                    tasks.append(("analyze", analyst.run()))
+
+                if action in ("prospect", "idle"):
+                    research_cfg = getattr(config, "research", None)
+                    research_enabled = getattr(research_cfg, "enabled", True) is not False
+                    if researcher is not None and research_enabled:
+                        is_cfg = getattr(researcher, "is_configured", None)
+                        if not callable(is_cfg) or is_cfg():
+                            tasks.append(("deep_research", researcher.run()))
+                    if enricher is not None and await _has_enrichment_columns(state):
+                        tasks.append(("clay_enrich", enricher.run()))
+
+                send_tasks = []
+                if action == "send_campaign":
+                    send_tasks.append(("send_campaign", sender.run))
+                elif sender.is_native:
+                    send_tasks.append(("send_outbox", sender.run))
+                if sender.is_native or has_open_convos:
+                    tasks.append(("handle_replies", handler.run()))
+
+                if summary.get("unprofiled", 0):
+                    tasks.append(("profile", run_profile_stage(state, limit=25, config=config)))
+
+                outcomes = await _run_agents(tasks)
+
+                if _check_stop_sentinel(stop_event):
+                    break
+
+                # Phase 2: send — once started, finishes active send cleanly before stopping.
+                if send_tasks:
+                    unread = [n for n, _ in tasks
+                              if n in REPLY_READERS and outcomes.get(n) is not True]
+                    paused = brain.paused_reason
+                    if paused or unread:
+                        reason = paused or "replies couldn't all be read and handled."
+                        logger.error(
+                            f"Not sending this cycle: {reason} Queued emails wait "
+                            "until replies can be read again."
+                        )
+                        held = send_hold_reason(unread, paused, getattr(handler, "last_read_problem", ""))
+                        if held is not None:
+                            await record_send_phase(state, held)
+                    else:
+                        await record_send_phase(state, send_hold_reason([], "", ""))
+                        await _run_agents([(name, run()) for name, run in send_tasks])
+
+                # 6. Log the action (best-effort; never kills the loop)
+                try:
+                    await state.log_action(action_type=action, agent="main")
+                except Exception as e:
+                    logger.warning(f"Failed to log action '{action}': {e}")
+
+                # 7. Extensions' tick steps (sellbird.extensions).
+                await run_tick_steps(config, state)
+
+                consecutive_errors = 0
+
+                if _check_stop_sentinel(stop_event):
+                    break
+
+                # 8. Sleep until next heartbeat
+                logger.info(
+                    f"Cycle complete. Sleeping for {config.usage.heartbeat_interval_minutes} minutes."
+                )
+                if await _interruptible_sleep(interval, stop_event):
+                    break
+
+            except (KeyboardInterrupt, asyncio.CancelledError):
                 break
+            except Exception as e:
+                consecutive_errors += 1
+                backoff = min(
+                    ERROR_BACKOFF_BASE * (2 ** (consecutive_errors - 1)),
+                    ERROR_BACKOFF_CAP,
+                )
+                logger.error(
+                    f"Error in heartbeat (failure #{consecutive_errors}): {e}",
+                    exc_info=True,
+                )
+                logger.info(f"Recovering... sleeping {backoff}s before retry.")
+                if await _interruptible_sleep(backoff, stop_event):
+                    break
+    finally:
+        await _close_brain(brain)
+        _clear_stop_file()
 
     logger.info("Sellbird shutting down. Deals don't close themselves, but I need a break.")
 
@@ -537,7 +667,7 @@ def _needs_setup() -> bool:
 
 
 async def _run_with_signals():
-    """Run the heartbeat with SIGINT/SIGTERM wired to a graceful shutdown."""
+    """Run the heartbeat with SIGINT/SIGTERM/SIGBREAK wired to a graceful shutdown."""
     stop_event = asyncio.Event()
     loop = asyncio.get_running_loop()
 
@@ -548,12 +678,31 @@ async def _run_with_signals():
         logger.info(f"Received {sig_name}. Finishing current work, then shutting down...")
         stop_event.set()
 
-    for sig in (signal.SIGINT, signal.SIGTERM):
+    signals_to_register = [signal.SIGINT, signal.SIGTERM]
+    if sys.platform == "win32" and hasattr(signal, "SIGBREAK"):
+        signals_to_register.append(signal.SIGBREAK)
+
+    for sig in signals_to_register:
         try:
             loop.add_signal_handler(sig, _request_shutdown, sig.name)
         except (NotImplementedError, RuntimeError):
-            # Windows / non-main-thread fallback
-            signal.signal(sig, lambda s, f: _request_shutdown(signal.Signals(s).name))
+            # Windows / non-main-thread fallback (SIGBREAK runs on a separate OS thread)
+            def _make_handler(sig_obj):
+                def _handler(s, f):
+                    name = signal.Signals(s).name if isinstance(s, int) else sig_obj.name
+                    if stop_event.is_set():
+                        logger.info("Second shutdown signal — exiting immediately.")
+                        raise SystemExit(1)
+                    try:
+                        loop.call_soon_threadsafe(_request_shutdown, name)
+                    except RuntimeError:
+                        stop_event.set()
+                return _handler
+
+            try:
+                signal.signal(sig, _make_handler(sig))
+            except (ValueError, OSError):
+                pass
 
     await heartbeat(stop_event)
 
@@ -579,12 +728,14 @@ def main():
         print(f"Sellbird is already running{f' (pid {running})' if running else ''}. "
               "Stop it first, from the dashboard or with Ctrl+C in its terminal.")
         sys.exit(1)
+    _clear_stop_file()
     write_pid_file()
     try:
         asyncio.run(_run_with_signals())
     except KeyboardInterrupt:
         logger.info("Goodbye.")
     finally:
+        _clear_stop_file()
         remove_pid_file()
         release_loop_lock(lock)
 

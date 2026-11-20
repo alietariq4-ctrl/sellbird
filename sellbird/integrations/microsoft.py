@@ -162,9 +162,10 @@ class MicrosoftProvider(MailProvider):
         if not stored:
             raise GraphError(missing_token_text(
                 self._tokens, "not authorized. Run 'sellbird microsoft auth'."))
+        tenant = (str(stored.get("tenant") or "").strip() if isinstance(stored, dict) else "") or self.tenant
         try:
             async with self._client() as client:
-                resp = await client.post(_token_url(self.tenant), data={
+                resp = await client.post(_token_url(tenant), data={
                     "client_id": self.client_id,
                     "grant_type": "refresh_token",
                     "refresh_token": stored["refresh_token"],

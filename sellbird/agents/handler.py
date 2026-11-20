@@ -23,6 +23,9 @@ from sellbird.config import (
 from sellbird.gate import autopilot_review, do_not_contact_match, pre_send_check
 from sellbird.email_style import style_problems, tidy
 from sellbird.humanize import humanize, humanizer_enabled
+from sellbird.integrations.calendar import CalendarClient, format_slots_for_reply
+from sellbird.integrations.copilot import notify_operator
+from sellbird.integrations.crm_sync import sync_lead_event
 from sellbird.integrations.instantly import InstantlyClient
 from sellbird.integrations.mail_provider import (
     NATIVE_PROVIDERS, get_mail_provider, strip_quoted_reply,
@@ -985,6 +988,17 @@ class Handler:
                     agent="handler",
                     details={"prospect_email": lead_email, "reply_preview": reply_text[:200]},
                 )
+                try:
+                    await notify_operator(
+                        "escalation",
+                        f"Escalated opt-out from {lead_email}",
+                        reply_text[:200],
+                        details={"company": prospect.company, "email": lead_email},
+                        config=self.config,
+                        env=self.env,
+                    )
+                except Exception:
+                    pass
                 logger.warning(
                     f"Handler: {lead_email} opted out with a complaint or legal threat. "
                     "Suppressed permanently and ESCALATED for human review. No reply sent."
@@ -1004,6 +1018,17 @@ class Handler:
                     "reply_preview": reply_text[:200],
                 },
             )
+            try:
+                await notify_operator(
+                    "escalation",
+                    f"Escalated reply from {lead_email}",
+                    reply_text[:200],
+                    details={"company": prospect.company, "email": lead_email},
+                    config=self.config,
+                    env=self.env,
+                )
+            except Exception:
+                pass
             logger.warning(
                 f"Handler: ESCALATED reply from {lead_email} — needs human review. No auto-reply sent."
             )
@@ -1050,6 +1075,39 @@ class Handler:
             logger.info(f"Handler: {lead_email} said yes to your offer"
                         + (f"; handed off ({'ok' if handoff.get('ok') else handoff.get('error')})."
                            if handoff else "."))
+
+        if intent in ("interested", "accepted_offer") or convo.stage == "closing":
+            event_name = "meeting_booked" if convo.stage == "closing" else intent
+            try:
+                await sync_lead_event(
+                    event_name,
+                    prospect=prospect,
+                    details={
+                        "intent": intent,
+                        "stage": convo.stage,
+                        "conversation_id": convo.id,
+                        "reply_preview": reply_text[:300],
+                    },
+                    config=self.config,
+                    env=self.env,
+                )
+            except Exception as exc:
+                logger.debug(f"Handler: CRM sync skipped: {exc}")
+            try:
+                await notify_operator(
+                    event_name,
+                    f"Positive reply ({intent}) from {prospect.full_name() or lead_email}",
+                    reply_text[:240],
+                    details={
+                        "email": lead_email,
+                        "company": prospect.company,
+                        "stage": convo.stage,
+                    },
+                    config=self.config,
+                    env=self.env,
+                )
+            except Exception as exc:
+                logger.debug(f"Handler: Copilot alert skipped: {exc}")
 
         if intent not in AUTO_REPLY_INTENTS:
             logger.warning(f"Handler: No auto-reply policy for intent '{intent}'. Skipping reply.")
@@ -1189,10 +1247,13 @@ class Handler:
                 if msg.is_bounce:
                     await self._handle_bounce(msg)
                 elif msg.body.strip():
+                    matched_outbox = await self._match_outbox_for_inbound(msg, fallback_recipient=True)
+                    matched_campaign_id = str((matched_outbox or {}).get("campaign_id") or "")
                     await self._process_reply(
                         msg.from_email,
                         msg.body.strip(),
                         reply_uuid="",
+                        campaign_id=matched_campaign_id,
                         reply_meta={
                             "thread_ref": msg.thread_ref,
                             "message_id": msg.message_id,
@@ -1226,12 +1287,104 @@ class Handler:
             provider.confirm_read()
         return complete
 
+    async def _match_outbox_for_inbound(self, msg, *, fallback_recipient: bool = False) -> dict | None:
+        """Match an inbound message or bounce back to its sent outbox row."""
+        candidates: list[str] = []
+        if getattr(msg, "in_reply_to", ""):
+            candidates.append(msg.in_reply_to.strip())
+        headers = getattr(msg, "headers", None) or {}
+        refs_raw = str(headers.get("references") or "")
+        if not refs_raw and getattr(msg, "body", ""):
+            m_ref = re.search(r"(?im)^References:\s*(.+)$", msg.body)
+            if m_ref:
+                refs_raw = m_ref.group(1)
+        if refs_raw:
+            ref_ids = re.findall(r"<[^>]+>", refs_raw) or refs_raw.split()
+            for rid in reversed(ref_ids):
+                rid = rid.strip()
+                if rid and rid not in candidates:
+                    candidates.append(rid)
+
+        for mid in candidates:
+            try:
+                found = await self.state.find_outbox_by_message_id(mid)
+            except Exception:
+                found = None
+            if found:
+                return found
+
+        if fallback_recipient and getattr(msg, "from_email", ""):
+            sender_addr = msg.from_email.strip().lower()
+            try:
+                sent_rows = await self.state.get_outbox(status="sent", limit=200)
+                for row in sent_rows or []:
+                    if (row.get("to_email") or "").strip().lower() == sender_addr and row.get("campaign_id"):
+                        return row
+            except Exception:
+                pass
+        return None
+
+    @staticmethod
+    def _extract_bounced_addresses(msg, own_email: str = "") -> list[str]:
+        """Extract candidate failed recipient emails from DSN headers and bounce body."""
+        headers = getattr(msg, "headers", None) or {}
+        body = getattr(msg, "body", "") or ""
+        raw_candidates: list[str] = []
+
+        for hname in ("x-failed-recipients", "final-recipient", "original-recipient"):
+            hval = str(headers.get(hname) or "").strip()
+            if hval:
+                raw_candidates.extend(
+                    re.findall(r"[A-Za-z0-9._%+\-]+@[A-Za-z0-9.\-]+\.[A-Za-z]{2,}", hval)
+                )
+
+        for m in re.finditer(
+            r"(?im)^(?:Final-Recipient|Original-Recipient|X-Failed-Recipients)\s*:\s*(?:rfc822\s*;\s*)?([^\r\n]+)",
+            body,
+        ):
+            raw_candidates.extend(
+                re.findall(r"[A-Za-z0-9._%+\-]+@[A-Za-z0-9.\-]+\.[A-Za-z]{2,}", m.group(1))
+            )
+
+        raw_candidates.extend(
+            re.findall(r"[A-Za-z0-9._%+\-]+@[A-Za-z0-9.\-]+\.[A-Za-z]{2,}", body)
+        )
+
+        ignore = {
+            (getattr(msg, "from_email", "") or "").strip().lower(),
+            (own_email or "").strip().lower(),
+        }
+        out: list[str] = []
+        for addr in raw_candidates:
+            low = addr.strip().lower()
+            local = low.partition("@")[0]
+            if not low or low in ignore or low in out:
+                continue
+            if local in ("mailer-daemon", "postmaster", "noreply", "no-reply", "bounce", "bounces"):
+                continue
+            out.append(low)
+        return out
+
     async def _handle_bounce(self, msg):
         """A bounce is a data bug AND a reputation threat. Fix both."""
-        outbox_item = await self.state.find_outbox_by_message_id(msg.in_reply_to)
+        outbox_item = await self._match_outbox_for_inbound(msg, fallback_recipient=False)
         prospect = None
         if outbox_item:
             prospect = await self.state.get_prospect(outbox_item["prospect_id"])
+
+        if prospect is None:
+            own_addr = str(getattr(getattr(self.config, "persona", None), "email", "") or "")
+            for addr in self._extract_bounced_addresses(msg, own_email=own_addr):
+                prospect = await self.state.get_prospect_by_email(addr)
+                if prospect is not None:
+                    break
+
+        if prospect is None and outbox_item is None:
+            logger.warning(
+                f"Handler: bounce received ({msg.subject[:60]}) for an unknown address; "
+                "ignoring so unrelated bounces do not affect bounce_count."
+            )
+            return
 
         if prospect:
             await self.state.update_prospect_email(
@@ -1246,9 +1399,12 @@ class Handler:
                 f"cancelled {cancelled} queued email(s)."
             )
         else:
+            bounced_to = str((outbox_item or {}).get("to_email") or "").strip().lower()
+            if bounced_to:
+                await self._suppress(bounced_to, "bounced", "bounce")
             logger.warning(
-                f"Handler: bounce received ({msg.subject[:60]}) but couldn't "
-                "match it to a sent email."
+                f"Handler: bounce matched outbox row ({bounced_to or msg.subject[:60]}), "
+                "prospect record no longer present."
             )
 
         bounces = await self.state.increment_setting(BOUNCE_COUNT_KEY)
@@ -1256,8 +1412,11 @@ class Handler:
         await self.state.log_action(
             action_type="bounce",
             agent="handler",
-            details={"prospect": prospect.email if prospect else "unknown",
-                     "bounces": bounces, "total_sent": total_sent},
+            details={
+                "prospect": prospect.email if prospect else (outbox_item or {}).get("to_email", "unknown"),
+                "bounces": bounces,
+                "total_sent": total_sent,
+            },
         )
 
         max_rate = getattr(self.config.channels.email, "max_bounce_rate", 0.05)
@@ -1272,6 +1431,17 @@ class Handler:
             )
             await self.state.set_setting(KILL_SWITCH_KEY, reason)
             logger.error(f"Handler: KILL SWITCH ENGAGED — {reason}")
+            try:
+                await notify_operator(
+                    "sending_paused",
+                    "Sending Paused — Bounce Kill Switch Engaged",
+                    reason,
+                    details={"bounces": bounces, "total_sent": total_sent},
+                    config=self.config,
+                    env=self.env,
+                )
+            except Exception:
+                pass
 
     async def _queue_native_reply(
         self, response: str, prospect, convo, reply_meta: dict, intent: str
@@ -1416,15 +1586,21 @@ Respond with ONLY the category label, nothing else."""
         return current_stage
 
     async def _hand_off_once(self, prospect, reply_text: str) -> dict | None:
-        """Hand an accepted offer to sellbird.handoff, once per prospect."""
+        """Hand an accepted offer to sellbird.handoff, once per prospect.
+
+        Only caches successful handoffs (ok=True) so transient MCP server or
+        network failures are retried cleanly rather than permanently stuck.
+        """
         from sellbird.handoff import hand_off
         key = HANDOFF_KEY + prospect.id
         done = await self.state.get_setting(key)
         if done:
             try:
-                return json.loads(done)
+                parsed = json.loads(done)
+                if isinstance(parsed, dict) and parsed.get("ok") is True:
+                    return parsed
             except (TypeError, ValueError):
-                return None
+                pass
         company = None
         if prospect.company_id:
             try:
@@ -1432,7 +1608,7 @@ Respond with ONLY the category label, nothing else."""
             except Exception:
                 company = None
         outcome = await hand_off(self.config, prospect, company, reply_text)
-        if outcome is not None:
+        if outcome is not None and outcome.get("ok") is True:
             await self.state.set_setting(key, json.dumps(outcome))
         return outcome
 
@@ -1462,6 +1638,15 @@ Respond with ONLY the category label, nothing else."""
             booking = booking_instruction(
                 self.config, datetime.now(timezone.utc), zone,
             )
+            try:
+                cal = CalendarClient(self.config, self.env)
+                if cal.is_configured():
+                    slots = await cal.get_available_slots("next_5_days", timezone_name=zone or "UTC")
+                    slot_text = format_slots_for_reply(slots, limit=3)
+                    if slot_text:
+                        booking = f"{booking}\nLive open calendar slots you can suggest: {slot_text}"
+            except Exception as e:
+                logger.debug(f"Handler: live calendar slot lookup skipped: {e}")
         else:
             booking = (
                 "Do not offer a meeting, a call, a trial, or a booking link. "

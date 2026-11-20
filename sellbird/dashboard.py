@@ -1,16 +1,20 @@
 """Sellbird Dashboard — local web UI to set up, control, and monitor Sellbird."""
 
 import asyncio
+import dataclasses
+import inspect
 import ipaddress
 import json
 import logging
 import os
+import re
 import shutil
 import signal
 import stat
 import subprocess
 import sys
 import tempfile
+import time
 import uuid
 from collections.abc import Sequence
 from datetime import date, datetime, timezone
@@ -23,6 +27,7 @@ from fastapi import APIRouter, FastAPI, Request
 from fastapi.responses import (
     HTMLResponse, JSONResponse, PlainTextResponse, Response,
 )
+from pydantic import BaseModel, Field
 from starlette.middleware import Middleware
 from starlette.routing import Mount
 
@@ -34,14 +39,77 @@ from sellbird.paths import PACKAGE_ROOT, PROJECT_ROOT, is_checkout  # noqa: E402
 from sellbird import storage  # noqa: E402
 from sellbird.pidfile import LOCK_FILE, loop_lock_held, pid_alive  # noqa: E402
 from sellbird.textio import read_user_text  # noqa: E402
-from sellbird.workspace_home import NotOnHosted, use_home  # noqa: E402
+from sellbird.workspace_home import NotOnHosted, current_home, default_home, use_home  # noqa: E402
 DB_PATH = PROJECT_ROOT / "data" / "sellbird.db"
 ENV_FILE = PROJECT_ROOT / ".env"
 CONFIG_FILE = PROJECT_ROOT / "sellbird.yaml"
+BRAIN_CONFIG_FILE = PROJECT_ROOT / "brain.yaml"
 PID_FILE = PROJECT_ROOT / "data" / "sellbird.pid"
 LOG_FILE = PROJECT_ROOT / "data" / "sellbird.log"
 TOKEN_FILE = PROJECT_ROOT / "data" / "dashboard-token"
 AGENT_TOKEN_FILE = PROJECT_ROOT / "data" / "agent-token"
+
+
+def _in_custom_home() -> bool:
+    """True when use_home() is active for a non-default workspace."""
+    return current_home() != default_home()
+
+
+def _home_root() -> Path:
+    if _in_custom_home():
+        return Path(current_home().root)
+    return Path(PROJECT_ROOT)
+
+
+def _db_path() -> Path:
+    if _in_custom_home():
+        return Path(current_home().db_path)
+    return Path(DB_PATH)
+
+
+def _data_dir() -> Path:
+    if _in_custom_home():
+        return Path(current_home().data_dir)
+    return Path(DB_PATH).parent
+
+
+def _env_file() -> Path:
+    if _in_custom_home():
+        return Path(current_home().env_file)
+    return Path(ENV_FILE)
+
+
+def _pid_file() -> Path:
+    if _in_custom_home():
+        return _data_dir() / "sellbird.pid"
+    return Path(PID_FILE)
+
+
+def _log_file() -> Path:
+    if _in_custom_home():
+        return _data_dir() / "sellbird.log"
+    return Path(LOG_FILE)
+
+
+def _lock_file() -> Path:
+    if _in_custom_home():
+        return _data_dir() / "sellbird.lock"
+    return Path(LOCK_FILE)
+
+
+def _brain_config_file() -> Path:
+    default_brain = PROJECT_ROOT / "brain.yaml"
+    if Path(BRAIN_CONFIG_FILE) != default_brain:
+        return Path(BRAIN_CONFIG_FILE)
+    if _in_custom_home():
+        return _home_root() / "brain.yaml"
+    if Path(ENV_FILE) != PROJECT_ROOT / ".env":
+        return Path(ENV_FILE).parent / "brain.yaml"
+    if Path(DB_PATH) != PROJECT_ROOT / "data" / "sellbird.db":
+        parent = Path(DB_PATH).parent
+        root = parent.parent if parent.name == "data" else parent
+        return root / "brain.yaml"
+    return default_brain
 
 
 def _resolve_config_file() -> Path:
@@ -49,6 +117,12 @@ def _resolve_config_file() -> Path:
     loader, so the dashboard doesn't judge setup complete against the
     tracked sellbird.yaml template while the real trained config sits in the
     gitignored local override."""
+    if _in_custom_home():
+        cfg = current_home().config_file or (_home_root() / "sellbird.yaml")
+        local = Path(cfg).with_name("sellbird.local.yaml")
+        if local.exists():
+            return local
+        return Path(cfg)
     from sellbird.config import _find_config_file, ConfigFileNotFoundError
     try:
         return Path(_find_config_file())
@@ -110,10 +184,11 @@ async def query_db(sql: str, params: tuple = ()) -> list[dict]:
     Never raises: a missing DB file, missing table, or malformed schema
     returns [] so no dashboard route can 500 on an empty install.
     """
-    if not DB_PATH.exists():
+    db_path = _db_path()
+    if not db_path.exists():
         return []
     try:
-        async with storage.connect(str(DB_PATH)) as db:
+        async with storage.connect(str(db_path)) as db:
             db.row_factory = aiosqlite.Row
             async with db.execute(sql, params) as cursor:
                 rows = await cursor.fetchall()
@@ -132,9 +207,10 @@ def _mask_key(key: str) -> str:
 
 def _read_env_file() -> dict[str, str]:
     """Read .env file and return as dict."""
+    env_file = _env_file()
     env_vars = {}
-    if ENV_FILE.exists():
-        for line in read_user_text(ENV_FILE).splitlines():
+    if env_file.exists():
+        for line in read_user_text(env_file).splitlines():
             line = line.strip()
             if line and not line.startswith("#") and "=" in line:
                 key, _, value = line.partition("=")
@@ -162,12 +238,13 @@ def _write_env_file(updates: dict[str, str]):
     result is owner-only (0600 on POSIX) whether .env existed or not. A
     symlinked .env is refused rather than replaced or followed.
     """
-    if ENV_FILE.is_symlink():
-        raise OSError(f"{ENV_FILE} is a symbolic link; edit it by hand.")
-    if ENV_FILE.exists() and not ENV_FILE.is_file():
-        raise OSError(f"{ENV_FILE} is not a regular file.")
-    lines = (read_user_text(ENV_FILE).splitlines()
-             if ENV_FILE.exists() else [])
+    env_file = _env_file()
+    if env_file.is_symlink():
+        raise OSError(f"{env_file} is a symbolic link; edit it by hand.")
+    if env_file.exists() and not env_file.is_file():
+        raise OSError(f"{env_file} is not a regular file.")
+    lines = (read_user_text(env_file).splitlines()
+             if env_file.exists() else [])
 
     out, written = [], set()
     for line in lines:
@@ -181,7 +258,8 @@ def _write_env_file(updates: dict[str, str]):
             out.append(line)
     out += [f"{k}={v}" for k, v in updates.items() if k not in written]
 
-    fd, tmp = tempfile.mkstemp(prefix=".env.", suffix=".tmp", dir=str(ENV_FILE.parent))
+    env_file.parent.mkdir(parents=True, exist_ok=True)
+    fd, tmp = tempfile.mkstemp(prefix=".env.", suffix=".tmp", dir=str(env_file.parent))
     try:
         with os.fdopen(fd, "w", encoding="utf-8", newline="\n") as f:
             if os.name != "nt":
@@ -189,14 +267,15 @@ def _write_env_file(updates: dict[str, str]):
             f.write("\n".join(out) + "\n")
             f.flush()
             os.fsync(f.fileno())
-        os.replace(tmp, ENV_FILE)
+        os.replace(tmp, env_file)
     except BaseException:
         try:
             os.unlink(tmp)
         except FileNotFoundError:
             pass
         raise
-    load_dotenv(str(ENV_FILE), override=True)
+    if not (_in_custom_home() and current_home().hosted):
+        load_dotenv(str(env_file), override=True)
 
 
 def _check_sellbird_pid() -> int | None:
@@ -204,18 +283,20 @@ def _check_sellbird_pid() -> int | None:
     global _sellbird_process, _sellbird_started_at
     if _sellbird_process and _sellbird_process.poll() is None:
         return _sellbird_process.pid
-    if PID_FILE.exists():
+    pid_file = _pid_file()
+    lock_file = _lock_file()
+    if pid_file.exists():
         try:
-            pid = int(PID_FILE.read_text(encoding="utf-8").strip())
+            pid = int(pid_file.read_text(encoding="utf-8").strip())
         except (OSError, ValueError):
             pid = None
         # pid_alive, never os.kill(pid, 0): on Windows that terminates the loop.
         # And only while a loop holds the lock: after a crash or a reboot the
         # PID can belong to an unrelated program, which Stop must not signal.
-        if pid is not None and pid_alive(pid) and loop_lock_held(LOCK_FILE):
+        if pid is not None and pid_alive(pid) and loop_lock_held(lock_file):
             return pid
         try:
-            PID_FILE.unlink(missing_ok=True)
+            pid_file.unlink(missing_ok=True)
         except OSError:
             pass
     return None
@@ -228,6 +309,10 @@ def _check_sellbird_pid() -> int | None:
 async def get_setup_status():
     """Check what's configured and what still needs setup."""
     checks = []
+    env_file = _env_file()
+    gmail_tok = current_home().gmail_token_file if _in_custom_home() else (PROJECT_ROOT / "data" / "gmail_token.json")
+    m365_tok = current_home().m365_token_file if _in_custom_home() else (PROJECT_ROOT / "data" / "m365_token.json")
+    skills_dir = current_home().skills_dir if _in_custom_home() else (PROJECT_ROOT / "skills")
 
     # 1. Venv
     checks.append({
@@ -240,7 +325,7 @@ async def get_setup_status():
 
     # 2. Env file
     env_vars = _read_env_file()
-    env_exists = ENV_FILE.exists() and bool(env_vars)
+    env_exists = env_file.exists() and bool(env_vars)
     checks.append({
         "id": "env_file", "label": "Environment file (.env)",
         "done": env_exists,
@@ -255,13 +340,11 @@ async def get_setup_status():
         return all((env_vars.get(k, "") or os.getenv(k, "")).strip() for k in keys)
 
     if provider == "gmail":
-        provider_done = _has("GMAIL_CLIENT_ID", "GMAIL_CLIENT_SECRET") and \
-            (PROJECT_ROOT / "data" / "gmail_token.json").is_file()
+        provider_done = _has("GMAIL_CLIENT_ID", "GMAIL_CLIENT_SECRET") and Path(gmail_tok).is_file()
         provider_help = ("Add your Google OAuth client ID and secret in Settings, then sign "
                          "in on the Inboxes tab (or run 'sellbird gmail auth').")
     elif provider == "microsoft":
-        provider_done = _has("M365_CLIENT_ID") and \
-            (PROJECT_ROOT / "data" / "m365_token.json").is_file()
+        provider_done = _has("M365_CLIENT_ID") and Path(m365_tok).is_file()
         provider_help = ("Add your Microsoft 365 client and tenant IDs in Settings, then sign "
                          "in on the Inboxes tab (or run 'sellbird microsoft auth').")
     elif provider == "smtp":
@@ -307,7 +390,7 @@ async def get_setup_status():
     })
 
     # 6. Product trained
-    product_trained = (PROJECT_ROOT / "skills" / "product_knowledge.md").exists()
+    product_trained = (Path(skills_dir) / "product_knowledge.md").exists()
     checks.append({
         "id": "product_trained", "label": "Product knowledge trained",
         "done": product_trained,
@@ -372,6 +455,33 @@ async def get_setup_status():
 # ── Settings ──
 
 
+ALLOWED_ENV_KEYS = (
+    # Core email, verification & LinkedIn/Cloudflare
+    "INSTANTLY_API_KEY", "LINKEDIN_EMAIL", "LINKEDIN_PASSWORD",
+    "CLOUDFLARE_ACCOUNT_ID", "CLOUDFLARE_API_TOKEN",
+    "GMAIL_CLIENT_ID", "GMAIL_CLIENT_SECRET",
+    "SMTP_HOST", "SMTP_PORT", "SMTP_USERNAME", "SMTP_PASSWORD",
+    "IMAP_HOST", "IMAP_PORT", "IMAP_USERNAME", "IMAP_PASSWORD",
+    "M365_CLIENT_ID", "M365_TENANT_ID",
+    "REOON_API_KEY", "ZEROBOUNCE_API_KEY", "HUNTER_API_KEY",
+    # AI Router & OpenAI-compatible model providers
+    "OPENAI_BASE_URL", "OPENAI_MODEL",
+    "OPENROUTER_API_KEY", "OPENAI_API_KEY", "GEMINI_API_KEY",
+    "DEEPSEEK_API_KEY", "GROQ_API_KEY", "MISTRAL_API_KEY",
+    "TOGETHER_API_KEY", "FIREWORKS_API_KEY", "CEREBRAS_API_KEY",
+    "XAI_API_KEY",
+    # Search & Scraping
+    "TAVILY_API_KEY", "EXA_API_KEY", "SEARXNG_URL",
+    "FIRECRAWL_API_KEY", "SERPER_API_KEY", "SCAVIO_API_KEY",
+    "TINYFISH_API_KEY",
+    # Calendar, CRM & Operator Copilot
+    "CALCOM_API_KEY", "CALCOM_EVENT_TYPE_ID",
+    "TWENTY_API_KEY", "TWENTY_BASE_URL",
+    "WEBHOOK_URL", "TELEGRAM_BOT_TOKEN", "TELEGRAM_CHAT_ID",
+    "SLACK_WEBHOOK_URL",
+)
+
+
 def _current_provider() -> str:
     """Read channels.email.provider from the active config (best-effort)."""
     try:
@@ -385,24 +495,15 @@ def _current_provider() -> str:
 async def get_settings():
     """Get current settings — presence flags only for secrets, never raw values."""
     env_vars = _read_env_file()
-    all_keys = [
-        "INSTANTLY_API_KEY", "LINKEDIN_EMAIL", "LINKEDIN_PASSWORD",
-        "CLOUDFLARE_ACCOUNT_ID", "CLOUDFLARE_API_TOKEN",
-        "GMAIL_CLIENT_ID", "GMAIL_CLIENT_SECRET",
-        "SMTP_HOST", "SMTP_PORT", "SMTP_USERNAME", "SMTP_PASSWORD",
-        "IMAP_HOST", "IMAP_PORT", "IMAP_USERNAME", "IMAP_PASSWORD",
-        "M365_CLIENT_ID", "M365_TENANT_ID",
-        "REOON_API_KEY", "ZEROBOUNCE_API_KEY", "HUNTER_API_KEY",
-    ]
-    for key in all_keys:
+    for key in ALLOWED_ENV_KEYS:
         if key not in env_vars:
             env_vars[key] = os.getenv(key, "")
 
     def is_set(k):
         return bool((env_vars.get(k) or "").strip())
 
-    # Gmail is authorized once sellbird gmail auth has stored a token file.
-    gmail_token = (PROJECT_ROOT / "data" / "gmail_token.json").is_file()
+    gmail_tok = current_home().gmail_token_file if _in_custom_home() else (PROJECT_ROOT / "data" / "gmail_token.json")
+    m365_tok = current_home().m365_token_file if _in_custom_home() else (PROJECT_ROOT / "data" / "m365_token.json")
 
     return {
         "provider": _current_provider(),
@@ -415,7 +516,7 @@ async def get_settings():
         "cloudflare_api_token_set": is_set("CLOUDFLARE_API_TOKEN"),
         "gmail_client_id": env_vars.get("GMAIL_CLIENT_ID", ""),
         "gmail_client_secret_set": is_set("GMAIL_CLIENT_SECRET"),
-        "gmail_authorized": gmail_token,
+        "gmail_authorized": Path(gmail_tok).is_file(),
         "smtp_host": env_vars.get("SMTP_HOST", ""),
         "smtp_port": env_vars.get("SMTP_PORT", ""),
         "smtp_username": env_vars.get("SMTP_USERNAME", ""),
@@ -424,14 +525,42 @@ async def get_settings():
         "imap_port": env_vars.get("IMAP_PORT", ""),
         "imap_username": env_vars.get("IMAP_USERNAME", ""),
         "imap_password_set": is_set("IMAP_PASSWORD"),
-        # Microsoft 365: ids aren't secret (no client secret: Sellbird signs
-        # in as a public client with PKCE); the token file means signed in.
         "m365_client_id": env_vars.get("M365_CLIENT_ID", ""),
         "m365_tenant_id": env_vars.get("M365_TENANT_ID", ""),
-        "m365_authorized": (PROJECT_ROOT / "data" / "m365_token.json").is_file(),
+        "m365_authorized": Path(m365_tok).is_file(),
         "reoon_api_key_set": is_set("REOON_API_KEY"),
         "zerobounce_api_key_set": is_set("ZEROBOUNCE_API_KEY"),
         "hunter_api_key_set": is_set("HUNTER_API_KEY"),
+        # AI Providers
+        "openai_base_url": env_vars.get("OPENAI_BASE_URL", ""),
+        "openai_model": env_vars.get("OPENAI_MODEL", ""),
+        "openrouter_api_key_set": is_set("OPENROUTER_API_KEY"),
+        "openai_api_key_set": is_set("OPENAI_API_KEY"),
+        "gemini_api_key_set": is_set("GEMINI_API_KEY"),
+        "deepseek_api_key_set": is_set("DEEPSEEK_API_KEY"),
+        "groq_api_key_set": is_set("GROQ_API_KEY"),
+        "mistral_api_key_set": is_set("MISTRAL_API_KEY"),
+        "together_api_key_set": is_set("TOGETHER_API_KEY"),
+        "fireworks_api_key_set": is_set("FIREWORKS_API_KEY"),
+        "cerebras_api_key_set": is_set("CEREBRAS_API_KEY"),
+        "xai_api_key_set": is_set("XAI_API_KEY"),
+        # Search & Scraping
+        "tavily_api_key_set": is_set("TAVILY_API_KEY"),
+        "exa_api_key_set": is_set("EXA_API_KEY"),
+        "searxng_url": env_vars.get("SEARXNG_URL", ""),
+        "firecrawl_api_key_set": is_set("FIRECRAWL_API_KEY"),
+        "serper_api_key_set": is_set("SERPER_API_KEY"),
+        "scavio_api_key_set": is_set("SCAVIO_API_KEY"),
+        "tinyfish_api_key_set": is_set("TINYFISH_API_KEY"),
+        # Calendar, CRM & Copilot
+        "calcom_api_key_set": is_set("CALCOM_API_KEY"),
+        "calcom_event_type_id": env_vars.get("CALCOM_EVENT_TYPE_ID", ""),
+        "twenty_api_key_set": is_set("TWENTY_API_KEY"),
+        "twenty_base_url": env_vars.get("TWENTY_BASE_URL", ""),
+        "webhook_url_set": is_set("WEBHOOK_URL"),
+        "telegram_bot_token_set": is_set("TELEGRAM_BOT_TOKEN"),
+        "telegram_chat_id": env_vars.get("TELEGRAM_CHAT_ID", ""),
+        "slack_webhook_url_set": is_set("SLACK_WEBHOOK_URL"),
     }
 
 
@@ -446,13 +575,7 @@ async def save_env_settings(request: Request):
         return JSONResponse({"success": False, "message": "Invalid request body."}, status_code=400)
     async with _env_lock:
         updates = {}
-        for key in ["INSTANTLY_API_KEY", "LINKEDIN_EMAIL", "LINKEDIN_PASSWORD",
-                     "CLOUDFLARE_ACCOUNT_ID", "CLOUDFLARE_API_TOKEN",
-                     "GMAIL_CLIENT_ID", "GMAIL_CLIENT_SECRET",
-                     "SMTP_HOST", "SMTP_PORT", "SMTP_USERNAME", "SMTP_PASSWORD",
-                     "IMAP_HOST", "IMAP_PORT", "IMAP_USERNAME", "IMAP_PASSWORD",
-                     "M365_CLIENT_ID", "M365_TENANT_ID",
-                     "REOON_API_KEY", "ZEROBOUNCE_API_KEY", "HUNTER_API_KEY"]:
+        for key in ALLOWED_ENV_KEYS:
             if key in data and data[key] is not None:
                 value = data[key]
                 if isinstance(value, bool) or not isinstance(value, (str, int, float)):
@@ -474,11 +597,14 @@ async def save_env_settings(request: Request):
             except Exception as e:
                 logger.warning("Failed to write .env: %s", e)
                 return {"success": False, "message": "Could not write .env file."}
-            # The sign-in clients take effect now, so the Inboxes tab can sign in
-            # without a restart (load_dotenv never overwrites a value already set).
-            for key in ("GMAIL_CLIENT_ID", "GMAIL_CLIENT_SECRET", "M365_CLIENT_ID", "M365_TENANT_ID"):
-                if key in updates:
-                    os.environ[key] = updates[key]
+            # Apply immediately to os.environ so AI Router, Search, CRM, Copilot
+            # and OAuth sign-ins work right away without restarting the server.
+            if not (_in_custom_home() and current_home().hosted):
+                for key, val in updates.items():
+                    if val:
+                        os.environ[key] = val
+                    else:
+                        os.environ.pop(key, None)
     return {"success": True}
 
 
@@ -560,7 +686,7 @@ def _offer_config_file() -> Path:
     target = _resolve_config_file()
     if target.name == "sellbird.yaml":
         local = target.with_name("sellbird.local.yaml")
-        if not local.exists():
+        if not local.exists() and target.exists():
             shutil.copyfile(target, local)
         target = local
     return target
@@ -573,6 +699,26 @@ async def _offer_brain():
     state = _state()
     await state.init_db()
     return Brain(state, config.brain), state, config
+
+
+async def _close_brain(brain) -> None:
+    if brain is not None and hasattr(brain, "aclose"):
+        try:
+            res = brain.aclose()
+            if inspect.isawaitable(res):
+                await res
+        except Exception as e:
+            logger.debug("brain.aclose failed: %s", e)
+
+
+async def _brain_within_budget(brain, config) -> bool:
+    if brain is None or not hasattr(brain, "is_within_budget"):
+        return True
+    usage = getattr(config, "usage", None)
+    pct = getattr(usage, "max_daily_claude_percent", 80)
+    max_calls = max(int(200 * (pct / 100)), 1)
+    max_usd = float(getattr(usage, "max_daily_usd", 5.0))
+    return bool(await brain.is_within_budget(max_calls, max_percent=pct, max_usd=max_usd))
 
 
 @app.get("/api/offer")
@@ -589,13 +735,21 @@ async def get_offer():
 async def suggest_offer():
     """A few offers that fit your product. One model call; nothing is saved."""
     from sellbird.offer import suggest_offers
+    brain = None
     try:
         brain, _, config = await _offer_brain()
+        if not await _brain_within_budget(brain, config):
+            return JSONResponse(
+                {"error": "Daily AI budget reached. Raise usage.max_daily_usd or try tomorrow."},
+                status_code=429,
+            )
         ideas = await suggest_offers(brain, config)
     except Exception as e:
         logger.warning(f"Offer suggestions failed: {e}")
         return JSONResponse({"error": "Sellbird couldn't come up with offers just now. Try again."},
                             status_code=502)
+    finally:
+        await _close_brain(brain)
     if not ideas:
         return JSONResponse({"error": "Sellbird couldn't come up with offers just now. Try again."},
                             status_code=502)
@@ -610,12 +764,20 @@ async def preview_offer(request: Request):
     entry = " ".join(str((body or {}).get("entry") or "").split())[:MAX_OFFER_CHARS]
     if not entry:
         return JSONResponse({"ok": False, "message": "Write an offer first."}, status_code=400)
+    brain = None
     try:
         brain, state, config = await _offer_brain()
+        if not await _brain_within_budget(brain, config):
+            return JSONResponse(
+                {"ok": False, "message": "Daily AI budget reached. Raise usage.max_daily_usd or try tomorrow."},
+                status_code=429,
+            )
         return await preview_email(brain, state, config, entry)
     except Exception as e:
         logger.warning(f"Offer preview failed: {e}")
         return JSONResponse({"ok": False, "message": "The preview failed. Try again."}, status_code=502)
+    finally:
+        await _close_brain(brain)
 
 
 @app.post("/api/offer")
@@ -651,7 +813,7 @@ async def get_company():
         await state.init_db()
         raw = await state.get_setting(PROPOSED_KEY)
         proposed = json.loads(raw) if raw else None
-        return company_view(load_config(), PROJECT_ROOT, proposed)
+        return company_view(load_config(), _home_root(), proposed)
     except Exception as e:
         return JSONResponse({"error": f"Couldn't read your config: {e}"}, status_code=500)
 
@@ -826,9 +988,10 @@ async def add_feedback(request: Request):
     if not comment:
         return {"success": False, "message": "Comment is required."}
     feedback_id = uuid.uuid4().hex[:12]
+    db_path = _db_path()
     try:
-        DB_PATH.parent.mkdir(parents=True, exist_ok=True)
-        async with storage.connect(str(DB_PATH)) as db:
+        db_path.parent.mkdir(parents=True, exist_ok=True)
+        async with storage.connect(str(db_path)) as db:
             # Ensure the table exists so feedback works even on a fresh install
             await db.execute(
                 """CREATE TABLE IF NOT EXISTS feedback (
@@ -890,8 +1053,13 @@ async def start_sellbird():
         return {"success": False,
                 "message": "Sellbird isn't set up yet. Run `sellbird setup` in a terminal first."}
 
-    # Ensure data dir exists
-    (PROJECT_ROOT / "data").mkdir(parents=True, exist_ok=True)
+    data_dir = _data_dir()
+    log_file = _log_file()
+    data_dir.mkdir(parents=True, exist_ok=True)
+    log_file.parent.mkdir(parents=True, exist_ok=True)
+
+    # Clear any stale stop sentinel before launching a new loop.
+    (data_dir / "sellbird.stop").unlink(missing_ok=True)
 
     # The native Claude CLI installer puts claude in ~/.local/bin without
     # always adding it to PATH; the heartbeat can't think without it.
@@ -900,17 +1068,26 @@ async def start_sellbird():
     if not shutil.which("claude") and local_bin.is_dir():
         env["PATH"] = str(local_bin) + os.pathsep + env.get("PATH", "")
 
+    popen_kwargs: dict = {}
+    if sys.platform == "win32":
+        popen_kwargs["creationflags"] = (
+            getattr(subprocess, "CREATE_NEW_PROCESS_GROUP", 0)
+            | getattr(subprocess, "CREATE_NO_WINDOW", 0)
+        )
+    else:
+        popen_kwargs["start_new_session"] = True
+
     try:
-        log_handle = open(LOG_FILE, "a", encoding="utf-8")
+        log_handle = open(log_file, "a", encoding="utf-8")
         try:
             _sellbird_process = subprocess.Popen(
                 [sys.executable, "-m", "sellbird", "run"],
-                cwd=str(PROJECT_ROOT),
+                cwd=str(_home_root()),
                 stdin=subprocess.DEVNULL,
                 stdout=log_handle,
                 stderr=log_handle,
-                start_new_session=True,
                 env=env,
+                **popen_kwargs,
             )
         finally:
             # Child holds its own copies of the fds; don't leak ours.
@@ -943,23 +1120,49 @@ async def stop_sellbird():
             return own.poll() is None
         return pid_alive(pid)
 
-    try:
-        os.kill(pid, signal.SIGTERM)
-        # Wait briefly for graceful shutdown
-        for _ in range(10):
+    stop_file = _data_dir() / "sellbird.stop"
+    if sys.platform == "win32":
+        # On Windows os.kill(pid, signal.SIGTERM) calls TerminateProcess immediately,
+        # which can cut off active SMTP sends mid-flight. Write sellbird.stop first
+        # so the loop exits cleanly, and only force-terminate after 10s!
+        try:
+            stop_file.parent.mkdir(parents=True, exist_ok=True)
+            stop_file.write_text(str(pid), encoding="utf-8")
+        except OSError as e:
+            logger.warning("Couldn't write stop sentinel %s: %s", stop_file, e)
+
+        for _ in range(20):
             if not alive():
                 break
             await asyncio.sleep(0.5)
         else:
-            # Force kill if still running (Windows has no SIGKILL; SIGTERM
-            # there is already TerminateProcess)
             try:
-                os.kill(pid, getattr(signal, "SIGKILL", signal.SIGTERM))
-            except OSError:
-                pass
+                os.kill(pid, signal.SIGTERM)
+            except OSError as e:
+                logger.warning("Couldn't signal Sellbird (pid %s): %s", pid, e)
             await asyncio.sleep(0.5)
-    except OSError as e:
-        logger.warning("Couldn't signal Sellbird (pid %s): %s", pid, e)
+    else:
+        try:
+            os.kill(pid, signal.SIGTERM)
+            # Wait briefly for graceful shutdown
+            for _ in range(10):
+                if not alive():
+                    break
+                await asyncio.sleep(0.5)
+            else:
+                # Force kill if still running
+                try:
+                    os.kill(pid, getattr(signal, "SIGKILL", signal.SIGTERM))
+                except OSError:
+                    pass
+                await asyncio.sleep(0.5)
+        except OSError as e:
+            logger.warning("Couldn't signal Sellbird (pid %s): %s", pid, e)
+
+    try:
+        stop_file.unlink(missing_ok=True)
+    except OSError:
+        pass
 
     if alive():
         # Started by another user, or from an elevated terminal on Windows.
@@ -968,7 +1171,7 @@ async def stop_sellbird():
 
     _sellbird_process = None
     _sellbird_started_at = None
-    PID_FILE.unlink(missing_ok=True)
+    _pid_file().unlink(missing_ok=True)
 
     return {"success": True}
 
@@ -976,11 +1179,12 @@ async def stop_sellbird():
 @app.get("/api/sellbird/logs")
 async def get_sellbird_logs():
     """Get recent log lines."""
-    if not LOG_FILE.exists():
+    log_file = _log_file()
+    if not log_file.exists():
         return {"lines": []}
     try:
         # Tail only the last 64KB so a huge log file never blocks the UI
-        with open(LOG_FILE, "rb") as f:
+        with open(log_file, "rb") as f:
             f.seek(0, os.SEEK_END)
             size = f.tell()
             f.seek(max(0, size - 65536))
@@ -1055,12 +1259,26 @@ async def get_stats():
         # usage_log rows are keyed by the LOCAL date (increment_usage /
         # get_usage_today use date.today()); SQLite's date('now') is UTC and
         # can select a different day's counts on either side of UTC midnight.
+        local_today = date.today().isoformat()
         usage = await query_db(
-            "SELECT claude_calls, codex_calls FROM usage_log WHERE date = ?",
-            (date.today().isoformat(),),
+            "SELECT * FROM usage_log WHERE date = ?",
+            (local_today,),
         )
-        usage_today = (usage[0]["claude_calls"] or 0) if usage else 0
-        codex_today = (usage[0]["codex_calls"] or 0) if usage else 0
+        usage_today = (usage[0].get("claude_calls") or 0) if usage else 0
+        codex_today = (usage[0].get("codex_calls") or 0) if usage else 0
+        openrouter_today = (usage[0].get("openrouter_calls") or 0) if usage else 0
+        if not openrouter_today:
+            ev = await query_db(
+                "SELECT COUNT(DISTINCT CASE WHEN session_id != '' THEN session_id ELSE id END) AS c "
+                "FROM usage_events WHERE date(created_at) = date('now') "
+                "AND provider NOT IN ('claude', 'codex')"
+            )
+            openrouter_today = int((ev[0].get("c") or 0) if ev else 0)
+
+        brain = _active_brain()
+        transport_active = _is_transport_mode(brain)
+        spend_today = await _spend_today_usd()
+        max_usd = _active_max_daily_usd()
 
         return {
             "prospects": {"total": prospect_total, "by_status": prospect_map},
@@ -1070,6 +1288,10 @@ async def get_stats():
             "actions_total": action_count,
             "claude_calls_today": usage_today,
             "codex_calls_today": codex_today,
+            "openrouter_calls_today": openrouter_today,
+            "transport_active": transport_active,
+            "spend_today_usd": spend_today,
+            "max_daily_usd": max_usd,
             "brain_provider": _active_provider(),
             "brain_status": await _brain_status(),
         }
@@ -1086,6 +1308,15 @@ _USAGE_SUM = (
     "ROUND(COALESCE(SUM(cost_usd), 0), 4) AS cost_usd"
 )
 
+_EMPTY_USAGE_ROW = {
+    "calls": 0,
+    "input_tokens": 0,
+    "output_tokens": 0,
+    "cache_read_tokens": 0,
+    "cache_creation_tokens": 0,
+    "cost_usd": 0.0,
+}
+
 _quota_clients: dict = {}
 
 
@@ -1096,6 +1327,74 @@ def _active_brain():
         return load_brain_config()
     except Exception:
         return None
+
+
+def _is_transport_mode(brain) -> bool:
+    """True when an OpenAI-compatible router / custom transport handles LLM calls."""
+    if brain is None:
+        return False
+    if bool((getattr(brain, "transport_factory", "") or "").strip()):
+        return True
+    return (getattr(brain, "provider", "") or "").strip().lower() in ("openrouter", "openai_compat")
+
+
+def _read_brain_yaml_raw() -> dict:
+    path = _brain_config_file()
+    if not path.exists() or not path.is_file():
+        return {}
+    try:
+        parsed = yaml.safe_load(read_user_text(path))
+        return parsed if isinstance(parsed, dict) else {}
+    except Exception:
+        return {}
+
+
+def _brain_chain_summary() -> str:
+    raw = _read_brain_yaml_raw()
+    chain = raw.get("chain")
+    if not isinstance(chain, list) or not chain:
+        return ""
+    parts = []
+    for item in chain[:4]:
+        if isinstance(item, dict):
+            prov = str(item.get("provider") or "").strip()
+            mod = str(item.get("model") or "").strip()
+            if prov and mod:
+                parts.append(f"{prov}:{mod}")
+            elif prov or mod:
+                parts.append(prov or mod)
+    return " -> ".join(parts)
+
+
+def _active_max_daily_usd() -> float:
+    try:
+        from sellbird.config import load_config
+        cfg = load_config(str(_resolve_config_file()))
+        return float(getattr(cfg.usage, "max_daily_usd", 5.0))
+    except Exception:
+        raw = _read_brain_yaml_raw()
+        budget = raw.get("budget") if isinstance(raw.get("budget"), dict) else {}
+        try:
+            return float(budget.get("max_usd_per_day", 5.0))
+        except (TypeError, ValueError):
+            return 5.0
+
+
+async def _spend_today_usd() -> float:
+    if not _db_path().exists():
+        return 0.0
+    try:
+        state = _state()
+        if hasattr(state, "spend_today_usd"):
+            val = await state.spend_today_usd()
+            return round(float(val or 0.0), 4)
+    except Exception:
+        pass
+    rows = await query_db(
+        "SELECT ROUND(COALESCE(SUM(cost_usd), 0), 4) AS cost_usd "
+        "FROM usage_events WHERE date(created_at) = date('now')"
+    )
+    return float((rows[0].get("cost_usd") or 0.0) if rows else 0.0)
 
 
 async def _brain_status() -> dict:
@@ -1110,7 +1409,12 @@ async def _brain_status() -> dict:
 
 def _active_provider() -> str:
     brain = _active_brain()
-    return brain.provider if brain else ""
+    if not brain:
+        return ""
+    if _is_transport_mode(brain):
+        prov = (getattr(brain, "provider", "") or "").strip().lower()
+        return prov if prov in ("openrouter", "openai_compat") else "openrouter"
+    return brain.provider
 
 
 def _quota_client_for(provider: str, model: str = ""):
@@ -1132,7 +1436,7 @@ def _quota_client_for(provider: str, model: str = ""):
 
 @app.get("/api/usage")
 async def get_usage():
-    """Token/cost accounting + live subscription quota for the Usage tab."""
+    """Token/cost accounting + live subscription quota or AI Router USD spend."""
 
     totals = {}
     for label, where in (
@@ -1141,7 +1445,7 @@ async def get_usage():
         ("month", "created_at >= datetime('now', '-30 days')"),
     ):
         rows = await query_db(f"SELECT {_USAGE_SUM} FROM usage_events WHERE {where}")
-        totals[label] = rows[0] if rows else {}
+        totals[label] = {**_EMPTY_USAGE_ROW, **(rows[0] if rows else {})}
 
     def grouped(expr, alias):
         return (
@@ -1161,6 +1465,37 @@ async def get_usage():
     )
 
     brain = _active_brain()
+    transport_active = _is_transport_mode(brain)
+    spend_today = await _spend_today_usd()
+    max_usd = _active_max_daily_usd()
+
+    local_today = date.today().isoformat()
+    usage_rows = await query_db("SELECT * FROM usage_log WHERE date = ?", (local_today,))
+    openrouter_today = int((usage_rows[0].get("openrouter_calls") or 0) if usage_rows else 0)
+    if not openrouter_today:
+        openrouter_today = int((totals.get("today") or {}).get("calls") or 0) if transport_active else 0
+
+    if transport_active:
+        prov = (getattr(brain, "provider", "") or "").strip().lower()
+        provider = prov if prov in ("openrouter", "openai_compat") else "openrouter"
+        return {
+            "provider": provider,
+            "transport_active": True,
+            "chain_summary": _brain_chain_summary(),
+            "spend_today_usd": spend_today,
+            "max_daily_usd": max_usd,
+            "openrouter_calls_today": openrouter_today,
+            "quota": None,
+            "quota_provider": "",
+            "quota_status": "",
+            "by_provider": by_provider,
+            "totals": totals,
+            "by_day": by_day,
+            "by_agent": by_agent,
+            "by_task": by_task,
+            "by_model": by_model,
+        }
+
     provider = brain.provider if brain else ""
     quota = None
     try:
@@ -1172,6 +1507,10 @@ async def get_usage():
 
     return {
         "provider": provider,
+        "transport_active": False,
+        "spend_today_usd": spend_today,
+        "max_daily_usd": max_usd,
+        "openrouter_calls_today": openrouter_today,
         "quota": quota,
         # Whose quota this is, even when it couldn't be read, so the UI shows
         # "unavailable" for the active provider instead of hiding the gauge.
@@ -1200,7 +1539,7 @@ async def get_prospects():
 
 def _state():
     from sellbird.state import StateManager
-    return StateManager(db_path=str(DB_PATH))
+    return StateManager(db_path=str(_db_path()))
 
 
 # What a reviewer needs next to a draft to check its claims against the facts.
@@ -1488,12 +1827,14 @@ def _extra_inboxes_connected() -> bool:
     """Whether an inbox besides the main one is connected (sellbird inboxes):
     Sellbird sends from it even while the main mailbox isn't signed in."""
     import sqlite3
-    if not Path(DB_PATH).exists():
+    db_path = _db_path()
+    if not db_path.exists():
         return False
     try:
-        with sqlite3.connect(f"file:{DB_PATH}?mode=ro", uri=True) as db:
+        uri = f"{Path(db_path).resolve().as_uri()}?mode=ro"
+        with sqlite3.connect(uri, uri=True) as db:
             row = db.execute("SELECT 1 FROM mailboxes WHERE state != 'retired' LIMIT 1").fetchone()
-    except sqlite3.Error:
+    except (sqlite3.Error, ValueError, OSError):
         return False   # no table yet: no extra inbox
     return row is not None
 
@@ -1683,10 +2024,9 @@ async def sending_toggle(action: str):
 @app.get("/api/export/prospects.csv")
 async def export_prospects(all: bool = False, min_score: int = 0, email_status: str = ""):
     """Sequencer-ready CSV download of the prospect list."""
-    from sellbird.state import StateManager
     from sellbird.export import export_prospects_csv
 
-    state = StateManager(db_path=str(DB_PATH))
+    state = _state()
     try:
         await state.init_db()
         statuses = [s.strip() for s in email_status.split(",") if s.strip()] or None
@@ -2426,7 +2766,10 @@ async def get_today():
         # Ordered by how much it blocks Sellbird from doing anything at all.
         brain = await _brain_status()
         if brain.get("status") == "paused":
-            who = "Codex" if brain.get("provider") == "codex" else "Sellbird's model"
+            prov = brain.get("provider")
+            who = ("Codex" if prov == "codex"
+                   else "AI Router" if prov in ("openrouter", "openai_compat")
+                   else "Sellbird's model")
             items.append({
                 "key": "brain-paused", "tone": "bad",
                 "title": f"{who} is paused, so Sellbird is waiting",
@@ -2947,6 +3290,1196 @@ async def get_instance():
     return {"instance": INSTANCE_ID}
 
 
+# ── AI Brain Router, Clay AI Enrichment & Deep Research API ──
+
+_agentic_router = APIRouter(tags=["AI Brain & Enrichment"])
+
+BRAIN_ROLES = ("scout", "researcher", "writer", "critic", "handler", "trainer")
+
+_PROVIDER_DEFAULTS: dict[str, tuple[str, str]] = {
+    "openrouter": ("https://openrouter.ai/api/v1", "OPENROUTER_API_KEY"),
+    "openai": ("https://api.openai.com/v1", "OPENAI_API_KEY"),
+    "openai_compat": ("", "OPENAI_API_KEY"),
+    "gemini": ("https://generativelanguage.googleapis.com/v1beta/openai", "GEMINI_API_KEY"),
+    "deepseek": ("https://api.deepseek.com/v1", "DEEPSEEK_API_KEY"),
+    "groq": ("https://api.groq.com/openai/v1", "GROQ_API_KEY"),
+    "mistral": ("https://api.mistral.ai/v1", "MISTRAL_API_KEY"),
+    "together": ("https://api.together.xyz/v1", "TOGETHER_API_KEY"),
+    "fireworks": ("https://api.fireworks.ai/inference/v1", "FIREWORKS_API_KEY"),
+    "cerebras": ("https://api.cerebras.ai/v1", "CEREBRAS_API_KEY"),
+    "xai": ("https://api.x.ai/v1", "XAI_API_KEY"),
+}
+
+_ENV_VAR_RE = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*$")
+_ROLE_NAME_RE = re.compile(r"^[a-z_][a-z0-9_-]{0,39}$")
+
+
+class _EnrichmentColumnCreate(BaseModel):
+    model_config = {"extra": "ignore"}
+
+    name: str = Field(..., min_length=1, max_length=120)
+    prompt: str = Field(..., min_length=1, max_length=4000)
+    use_web_search: bool = False
+    output_format: str = Field(default="text", max_length=40)
+
+
+def _normalize_chain_entry(item: dict) -> dict:
+    if not isinstance(item, dict):
+        raise ValueError("Each chain entry must be an object.")
+    provider = str(item.get("provider") or "").strip()
+    model = str(item.get("model") or "").strip()
+    if not provider or not model:
+        raise ValueError("Each chain entry requires both 'provider' and 'model'.")
+    if len(provider) > 80 or len(model) > 200:
+        raise ValueError("Chain provider or model name is too long.")
+
+    base_url = str(item.get("base_url") or "").strip()
+    if base_url and not base_url.startswith(("http://", "https://")):
+        raise ValueError(f"base_url for {provider!r} must start with http:// or https://.")
+
+    api_key_env = str(item.get("api_key_env") or "").strip()
+    if api_key_env and not _ENV_VAR_RE.match(api_key_env):
+        raise ValueError(f"api_key_env {api_key_env!r} must be a valid environment variable name.")
+
+    out: dict = {"provider": provider, "model": model}
+    if base_url:
+        out["base_url"] = base_url
+    if api_key_env:
+        out["api_key_env"] = api_key_env
+    for extra_key in ("timeout_s", "max_tokens", "temperature", "headers",
+                      "input_cost_per_1m", "output_cost_per_1m", "name"):
+        if extra_key in item and item[extra_key] is not None:
+            out[extra_key] = item[extra_key]
+    return out
+
+
+def _normalize_profile_entry(role: str, val) -> dict | list | str | None:
+    if val is None:
+        return None
+    if isinstance(val, str):
+        s = val.strip()
+        return s if s else None
+    if isinstance(val, list):
+        cleaned = [_normalize_chain_entry(x) for x in val if isinstance(x, dict)
+                   and (str(x.get("provider") or "").strip() or str(x.get("model") or "").strip())]
+        return cleaned or None
+    if isinstance(val, dict):
+        if isinstance(val.get("chain"), list):
+            chain_items = [
+                _normalize_chain_entry(x) for x in val["chain"]
+                if isinstance(x, dict) and (str(x.get("provider") or "").strip()
+                                            or str(x.get("model") or "").strip())
+            ]
+            if not chain_items:
+                return None
+            out_chain: dict = {"chain": chain_items}
+            for k in ("temperature", "max_tokens", "timeout_s"):
+                if k in val and val[k] is not None:
+                    out_chain[k] = val[k]
+            return out_chain
+
+        provider = str(val.get("provider") or "").strip()
+        model = str(val.get("model") or "").strip()
+        if not provider and not model:
+            return None
+        if not model:
+            raise ValueError(f"Profile {role!r} specifies a provider without a model.")
+        out: dict = {"model": model}
+        if provider:
+            out["provider"] = provider
+        base_url = str(val.get("base_url") or "").strip()
+        if base_url:
+            if not base_url.startswith(("http://", "https://")):
+                raise ValueError(f"Profile {role!r} base_url must start with http:// or https://.")
+            out["base_url"] = base_url
+        api_key_env = str(val.get("api_key_env") or "").strip()
+        if api_key_env:
+            if not _ENV_VAR_RE.match(api_key_env):
+                raise ValueError(f"Profile {role!r} api_key_env is invalid.")
+            out["api_key_env"] = api_key_env
+        for k in ("temperature", "max_tokens", "timeout_s"):
+            if k in val and val[k] is not None:
+                out[k] = val[k]
+        return out
+    raise ValueError(f"Invalid profile configuration for role {role!r}.")
+
+
+def _write_yaml_atomic(target: Path, doc: dict) -> None:
+    if target.is_symlink():
+        raise ValueError(f"Refusing to write symlinked config file: {target.name}")
+    target.parent.mkdir(parents=True, exist_ok=True)
+    rendered = yaml.safe_dump(doc, sort_keys=False, allow_unicode=True)
+    fd, tmp_name = tempfile.mkstemp(
+        prefix=f".{target.stem}-", suffix=".yaml", dir=str(target.parent)
+    )
+    try:
+        with os.fdopen(fd, "w", encoding="utf-8") as fh:
+            fh.write(rendered)
+        os.replace(tmp_name, target)
+    except BaseException:
+        try:
+            os.unlink(tmp_name)
+        except OSError:
+            pass
+        raise
+
+
+def _sync_router_in_sellbird_yaml(activate: bool | None, max_usd: float | None = None) -> None:
+    """Optionally toggle brain.transport_factory and usage.max_daily_usd in sellbird config."""
+    cfg_path = _offer_config_file()
+    if not cfg_path.exists() or cfg_path.is_symlink():
+        return
+    try:
+        parsed = yaml.safe_load(read_user_text(cfg_path))
+    except Exception:
+        return
+    if not isinstance(parsed, dict):
+        return
+    changed = False
+    if activate is True:
+        brain_sec = parsed.setdefault("brain", {})
+        if isinstance(brain_sec, dict):
+            if not (brain_sec.get("transport_factory") or "").strip():
+                brain_sec["transport_factory"] = "harvey_brain.router_factory:build"
+                changed = True
+    elif activate is False:
+        brain_sec = parsed.get("brain")
+        if isinstance(brain_sec, dict) and brain_sec.get("transport_factory"):
+            brain_sec["transport_factory"] = ""
+            changed = True
+    if max_usd is not None and max_usd > 0:
+        usage_sec = parsed.setdefault("usage", {})
+        if isinstance(usage_sec, dict) and usage_sec.get("max_daily_usd") != round(max_usd, 2):
+            usage_sec["max_daily_usd"] = round(max_usd, 2)
+            changed = True
+    if changed:
+        _write_yaml_atomic(cfg_path, parsed)
+
+
+def _validate_with_brain_settings(doc: dict) -> dict:
+    """Validate mapping via harvey_brain.config.BrainSettings.from_mapping when installed."""
+    try:
+        from harvey_brain.config import BrainSettings
+    except ImportError:
+        return doc
+    if not hasattr(BrainSettings, "from_mapping"):
+        return doc
+
+    try:
+        BrainSettings.from_mapping(doc)
+        return doc
+    except Exception as first_exc:
+        # If profiles were passed as {role: {provider, model}} and BrainSettings expects
+        # {role: {"chain": [...]}} or {role: [{provider, model}]}, try adapting cleanly.
+        profiles = doc.get("profiles")
+        if isinstance(profiles, dict) and profiles:
+            default_prov = (
+                doc["chain"][0].get("provider", "openrouter")
+                if isinstance(doc.get("chain"), list) and doc["chain"]
+                else "openrouter"
+            )
+            for wrap_kind in ("chain_dict", "chain_list"):
+                adapted_profiles = {}
+                can_adapt = True
+                for r_name, r_val in profiles.items():
+                    if isinstance(r_val, dict) and "chain" not in r_val and r_val.get("model"):
+                        entry = dict(r_val)
+                        entry.setdefault("provider", default_prov)
+                        adapted_profiles[r_name] = (
+                            {"chain": [entry]} if wrap_kind == "chain_dict" else [entry]
+                        )
+                    else:
+                        can_adapt = False
+                        break
+                if can_adapt and adapted_profiles:
+                    candidate = {**doc, "profiles": adapted_profiles}
+                    try:
+                        BrainSettings.from_mapping(candidate)
+                        return candidate
+                    except Exception:
+                        continue
+        raise ValueError(str(first_exc)) from first_exc
+
+
+def _merged_env_map() -> dict[str, str]:
+    file_env = _read_env_file()
+    merged = {k: str(v) for k, v in os.environ.items() if v is not None}
+    for k, v in file_env.items():
+        if v and not merged.get(k):
+            merged[k] = str(v)
+    return merged
+
+
+@_agentic_router.get("/api/brain/config")
+async def get_brain_config():
+    """Read brain.yaml configuration (chain, per-role profiles, daily USD budget)."""
+    path = _brain_config_file()
+    raw = _read_brain_yaml_raw()
+    env_map = _merged_env_map()
+
+    budget_raw = raw.get("budget") if isinstance(raw.get("budget"), dict) else {}
+    try:
+        max_usd = float(budget_raw.get("max_usd_per_day", _active_max_daily_usd()))
+    except (TypeError, ValueError):
+        max_usd = _active_max_daily_usd()
+
+    chain_raw = raw.get("chain") if isinstance(raw.get("chain"), list) else []
+    chain: list[dict] = []
+    for item in chain_raw:
+        if isinstance(item, dict):
+            prov = str(item.get("provider") or "").strip()
+            mod = str(item.get("model") or "").strip()
+            def_url, def_env = _PROVIDER_DEFAULTS.get(prov.lower(), ("", ""))
+            chain.append({
+                **item,
+                "provider": prov,
+                "model": mod,
+                "base_url": str(item.get("base_url") or def_url),
+                "api_key_env": str(item.get("api_key_env") or def_env),
+            })
+
+    if not chain:
+        def_base = env_map.get("OPENAI_BASE_URL", "").strip()
+        def_model = env_map.get("OPENAI_MODEL", "").strip()
+        if def_base and def_model:
+            chain = [{
+                "provider": "openai_compat",
+                "model": def_model,
+                "base_url": def_base,
+                "api_key_env": "OPENAI_API_KEY",
+            }]
+        else:
+            chain = [{
+                "provider": "openrouter",
+                "model": "openai/gpt-4o-mini",
+                "base_url": "https://openrouter.ai/api/v1",
+                "api_key_env": "OPENROUTER_API_KEY",
+            }]
+
+    profiles_raw = raw.get("profiles") if isinstance(raw.get("profiles"), dict) else {}
+    profiles: dict[str, dict] = {}
+    for role, val in profiles_raw.items():
+        if isinstance(val, dict):
+            if isinstance(val.get("chain"), list) and val["chain"] and isinstance(val["chain"][0], dict):
+                first = val["chain"][0]
+                profiles[str(role)] = {
+                    "provider": str(first.get("provider") or ""),
+                    "model": str(first.get("model") or ""),
+                    "base_url": str(first.get("base_url") or ""),
+                    "api_key_env": str(first.get("api_key_env") or ""),
+                }
+            else:
+                profiles[str(role)] = {
+                    "provider": str(val.get("provider") or ""),
+                    "model": str(val.get("model") or ""),
+                    "base_url": str(val.get("base_url") or ""),
+                    "api_key_env": str(val.get("api_key_env") or ""),
+                }
+        elif isinstance(val, list) and val and isinstance(val[0], dict):
+            first = val[0]
+            profiles[str(role)] = {
+                "provider": str(first.get("provider") or ""),
+                "model": str(first.get("model") or ""),
+                "base_url": str(first.get("base_url") or ""),
+                "api_key_env": str(first.get("api_key_env") or ""),
+            }
+        elif isinstance(val, str) and val.strip():
+            profiles[str(role)] = {"provider": "", "model": val.strip(), "base_url": "", "api_key_env": ""}
+
+    ai_env_keys = (
+        "OPENROUTER_API_KEY", "OPENAI_API_KEY", "GEMINI_API_KEY", "DEEPSEEK_API_KEY",
+        "GROQ_API_KEY", "MISTRAL_API_KEY", "TOGETHER_API_KEY", "FIREWORKS_API_KEY",
+        "CEREBRAS_API_KEY", "XAI_API_KEY",
+    )
+    brain = _active_brain()
+    return {
+        "exists": path.exists(),
+        "file": path.name,
+        "budget": {"max_usd_per_day": round(max_usd, 2)},
+        "chain": chain,
+        "profiles": profiles,
+        "roles": list(BRAIN_ROLES),
+        "transport_active": _is_transport_mode(brain),
+        "brain_provider": _active_provider(),
+        "transport_factory": (getattr(brain, "transport_factory", "") or "") if brain else "",
+        "openai_base_url": env_map.get("OPENAI_BASE_URL", ""),
+        "openai_model": env_map.get("OPENAI_MODEL", ""),
+        "env_keys_set": {k: bool(env_map.get(k, "").strip()) for k in ai_env_keys},
+    }
+
+
+@_agentic_router.post("/api/brain/config")
+async def save_brain_config(request: Request):
+    """Validate via BrainSettings.from_mapping and atomically write brain.yaml."""
+    try:
+        body = await request.json()
+    except Exception:
+        return JSONResponse({"success": False, "message": "Invalid JSON body."}, status_code=400)
+    if not isinstance(body, dict):
+        return JSONResponse({"success": False, "message": "Request body must be a JSON object."},
+                            status_code=400)
+
+    budget_in = body.get("budget") if isinstance(body.get("budget"), dict) else {}
+    raw_usd = budget_in.get("max_usd_per_day", body.get("max_usd_per_day", 5.0))
+    try:
+        if isinstance(raw_usd, bool):
+            raise ValueError("max_usd_per_day must be a number")
+        max_usd = float(raw_usd)
+    except (TypeError, ValueError):
+        return JSONResponse({"success": False, "message": "budget.max_usd_per_day must be a number."},
+                            status_code=400)
+    if max_usd != max_usd or max_usd < 0 or max_usd > 100000:
+        return JSONResponse({"success": False, "message": "budget.max_usd_per_day must be between 0 and 100000."},
+                            status_code=400)
+
+    chain_in = body.get("chain")
+    if not isinstance(chain_in, list) or not chain_in:
+        return JSONResponse({"success": False, "message": "chain must be a non-empty list of providers."},
+                            status_code=400)
+    if len(chain_in) > 20:
+        return JSONResponse({"success": False, "message": "chain cannot exceed 20 entries."},
+                            status_code=400)
+
+    try:
+        chain = [_normalize_chain_entry(item) for item in chain_in]
+    except ValueError as exc:
+        return JSONResponse({"success": False, "message": str(exc)}, status_code=400)
+
+    profiles_in = body.get("profiles") if isinstance(body.get("profiles"), dict) else {}
+    profiles: dict = {}
+    try:
+        for role_key, role_val in profiles_in.items():
+            role = str(role_key or "").strip().lower()
+            if not _ROLE_NAME_RE.match(role):
+                raise ValueError(f"Invalid role name: {role_key!r}")
+            norm = _normalize_profile_entry(role, role_val)
+            if norm is not None:
+                profiles[role] = norm
+    except ValueError as exc:
+        return JSONResponse({"success": False, "message": str(exc)}, status_code=400)
+
+    existing = _read_brain_yaml_raw()
+    doc: dict = {}
+    for k, v in existing.items():
+        if k not in ("budget", "chain", "profiles"):
+            doc[k] = v
+    existing_budget = existing.get("budget") if isinstance(existing.get("budget"), dict) else {}
+    doc["budget"] = {**existing_budget, "max_usd_per_day": round(max_usd, 4)}
+    doc["chain"] = chain
+    if profiles:
+        doc["profiles"] = profiles
+
+    try:
+        validated_doc = _validate_with_brain_settings(doc)
+    except ValueError as exc:
+        return JSONResponse(
+            {"success": False, "message": f"Invalid brain.yaml configuration: {exc}"},
+            status_code=400,
+        )
+
+    target = _brain_config_file()
+    try:
+        _write_yaml_atomic(target, validated_doc)
+        activate_flag = body.get("activate_router")
+        if isinstance(activate_flag, bool):
+            _sync_router_in_sellbird_yaml(activate_flag, max_usd=max_usd)
+    except ValueError as exc:
+        return JSONResponse({"success": False, "message": str(exc)}, status_code=400)
+    except OSError as exc:
+        logger.warning("Failed writing brain.yaml: %s", exc)
+        return JSONResponse({"success": False, "message": f"Could not write {target.name}: {exc}"},
+                            status_code=500)
+
+    return {
+        "success": True,
+        "file": target.name,
+        "budget": validated_doc["budget"],
+        "chain": validated_doc["chain"],
+        "profiles": validated_doc.get("profiles", {}),
+        "transport_active": _is_transport_mode(_active_brain()),
+    }
+
+
+def _coerce_doctor_payload(raw_res, use_network: bool) -> dict:
+    if hasattr(raw_res, "model_dump"):
+        raw_res = raw_res.model_dump()
+    elif dataclasses.is_dataclass(raw_res) and not isinstance(raw_res, type):
+        raw_res = dataclasses.asdict(raw_res)
+
+    if isinstance(raw_res, dict):
+        providers = raw_res.get("providers") or raw_res.get("checks") or raw_res.get("chain") or []
+        if isinstance(providers, list):
+            providers = [
+                p.model_dump() if hasattr(p, "model_dump")
+                else (dataclasses.asdict(p) if dataclasses.is_dataclass(p) and not isinstance(p, type) else p)
+                for p in providers
+            ]
+        ok = raw_res.get("ok")
+        if ok is None:
+            ok = bool(raw_res.get("ready", bool(providers) and any(
+                isinstance(p, dict) and (p.get("ok") or p.get("ready") or p.get("key_set"))
+                for p in providers
+            )))
+        return {
+            **raw_res,
+            "ok": bool(ok),
+            "network": use_network,
+            "providers": providers if isinstance(providers, list) else [],
+        }
+    if isinstance(raw_res, list):
+        items = [
+            p.model_dump() if hasattr(p, "model_dump")
+            else (dataclasses.asdict(p) if dataclasses.is_dataclass(p) and not isinstance(p, type) else p)
+            for p in raw_res
+        ]
+        any_ok = any(isinstance(p, dict) and (p.get("ok") or p.get("ready")) for p in items)
+        return {"ok": any_ok, "network": use_network, "providers": items, "checks": items}
+    return {"ok": bool(raw_res), "network": use_network, "providers": [], "summary": str(raw_res)}
+
+
+async def _fallback_brain_doctor(use_network: bool) -> dict:
+    cfg = await get_brain_config()
+    env_map = _merged_env_map()
+    providers_out: list[dict] = []
+    import httpx
+
+    for entry in cfg.get("chain", []):
+        prov = str(entry.get("provider") or "openrouter")
+        model = str(entry.get("model") or "")
+        def_url, def_env = _PROVIDER_DEFAULTS.get(prov.lower(), ("", ""))
+        base_url = str(entry.get("base_url") or def_url).rstrip("/")
+        key_env = str(entry.get("api_key_env") or def_env)
+        api_key = env_map.get(key_env, "").strip() if key_env else ""
+        key_present = bool(api_key) or (prov.lower() in ("ollama", "local", "openai_compat")
+                                        and base_url.startswith("http://127.0.0.1")
+                                        or base_url.startswith("http://localhost"))
+        row: dict = {
+            "provider": prov,
+            "model": model,
+            "base_url": base_url,
+            "api_key_env": key_env,
+            "key_set": bool(api_key),
+            "ok": key_present and bool(model),
+            "detail": "API key present" if api_key else (
+                f"Missing {key_env} in .env" if key_env else "No API key env configured"
+            ),
+        }
+        if use_network and row["ok"] and base_url:
+            t0 = time.perf_counter()
+            try:
+                headers = {"Authorization": f"Bearer {api_key}"} if api_key else {}
+                async with httpx.AsyncClient(timeout=6.0, trust_env=False) as client:
+                    resp = await client.get(f"{base_url}/models", headers=headers)
+                row["latency_ms"] = round((time.perf_counter() - t0) * 1000, 1)
+                row["http_status"] = resp.status_code
+                if resp.status_code in (200, 201):
+                    row["ok"] = True
+                    row["detail"] = f"Connected ({row['latency_ms']} ms)"
+                elif resp.status_code in (401, 403):
+                    row["ok"] = False
+                    row["detail"] = f"Authentication rejected (HTTP {resp.status_code})"
+                else:
+                    row["detail"] = f"Endpoint answered HTTP {resp.status_code} ({row['latency_ms']} ms)"
+            except Exception as exc:
+                row["ok"] = False
+                row["detail"] = f"Connection failed: {exc}"
+        providers_out.append(row)
+
+    any_ok = any(p.get("ok") for p in providers_out)
+    return {
+        "ok": any_ok,
+        "network": use_network,
+        "providers": providers_out,
+        "checks": providers_out,
+        "summary": (
+            f"{sum(1 for p in providers_out if p.get('ok'))}/{len(providers_out)} provider(s) ready"
+            if providers_out else "No providers configured in brain.yaml"
+        ),
+    }
+
+
+@_agentic_router.get("/api/brain/doctor")
+async def brain_doctor(request: Request, network: str = "0"):
+    """Inspect brain.yaml provider chain and optionally run network checks (?network=1)."""
+    use_network = str(network or "").strip().lower() in ("1", "true", "yes", "on")
+    cfg_path = _brain_config_file()
+    env_map = _merged_env_map()
+
+    try:
+        from harvey_brain import router_factory as rf
+    except ImportError:
+        rf = None
+
+    if rf is not None:
+        fn_async = getattr(rf, "doctor_async", None)
+        fn_sync = getattr(rf, "doctor", None)
+        target_fn = fn_async or fn_sync
+        if callable(target_fn):
+            try:
+                sig = inspect.signature(target_fn)
+                kwargs: dict = {}
+                for p_name in sig.parameters:
+                    if p_name in ("network", "check_network", "live"):
+                        kwargs[p_name] = use_network
+                    elif p_name in ("config_path", "path", "brain_yaml", "settings_path"):
+                        kwargs[p_name] = cfg_path
+                    elif p_name in ("home", "root", "project_root"):
+                        kwargs[p_name] = _home_root()
+                    elif p_name in ("env", "environ"):
+                        kwargs[p_name] = env_map
+                if fn_async is not None:
+                    res = await fn_async(**kwargs)
+                else:
+                    res = await asyncio.to_thread(fn_sync, **kwargs)
+                return _coerce_doctor_payload(res, use_network)
+            except Exception as exc:
+                logger.warning("router_factory doctor failed, falling back: %s", exc)
+
+    return await _fallback_brain_doctor(use_network)
+
+
+@_agentic_router.post("/api/brain/probe")
+async def brain_probe(request: Request):
+    """Dry-run validation or live 1-token LLM probe against the configured router/provider."""
+    try:
+        body = await request.json() if request.headers.get("content-type", "").startswith("application/json") else {}
+    except Exception:
+        body = {}
+    if not isinstance(body, dict):
+        body = {}
+
+    if "live" in body:
+        live = bool(body.get("live"))
+    elif "dry_run" in body:
+        live = not bool(body.get("dry_run"))
+    else:
+        live = False
+
+    role = str(body.get("role") or "writer").strip().lower()
+    prompt_text = str(body.get("prompt") or "Reply with the single word OK.").strip()[:500] or "OK"
+
+    if not live:
+        doc = await brain_doctor(request, network="0")
+        providers = doc.get("providers") or []
+        first_ready = next((p for p in providers if isinstance(p, dict) and p.get("ok")), None)
+        return {
+            "ok": bool(doc.get("ok")),
+            "mode": "dry_run",
+            "role": role,
+            "provider": (first_ready or {}).get("provider", ""),
+            "model": (first_ready or {}).get("model", ""),
+            "summary": doc.get("summary") or ("Ready for live calls" if doc.get("ok") else "No usable provider key set"),
+            "providers": providers,
+        }
+
+    # Live 1-token probe: enforce daily USD budget before hitting any external endpoint
+    spend = await _spend_today_usd()
+    max_usd = _active_max_daily_usd()
+    if max_usd > 0 and spend >= max_usd:
+        return JSONResponse(
+            {"ok": False, "mode": "live", "error": f"Daily AI budget reached (${spend:.4f} / ${max_usd:.2f})."},
+            status_code=429,
+        )
+
+    env_map = _merged_env_map()
+    override_model = str(body.get("model") or "").strip()
+    override_base = str(body.get("base_url") or "").strip()
+    override_prov = str(body.get("provider") or "").strip()
+    override_env = str(body.get("api_key_env") or "").strip()
+
+    # Try harvey_brain.router_factory transport when no ad-hoc endpoint override was requested
+    if not (override_model and override_base):
+        try:
+            from harvey_brain import router_factory as rf
+        except ImportError:
+            rf = None
+        if rf is not None:
+            probe_fn = getattr(rf, "probe_async", None)
+            if callable(probe_fn):
+                t0 = time.perf_counter()
+                try:
+                    sig = inspect.signature(probe_fn)
+                    p_kwargs: dict = {}
+                    for p_name in sig.parameters:
+                        if p_name in ("role", "agent_role"):
+                            p_kwargs[p_name] = role
+                        elif p_name == "prompt":
+                            p_kwargs[p_name] = prompt_text
+                        elif p_name in ("live", "network"):
+                            p_kwargs[p_name] = True
+                        elif p_name in ("config_path", "path"):
+                            p_kwargs[p_name] = _brain_config_file()
+                        elif p_name in ("env", "environ"):
+                            p_kwargs[p_name] = env_map
+                    res = await probe_fn(**p_kwargs)
+                    latency_ms = round((time.perf_counter() - t0) * 1000, 1)
+                    if isinstance(res, dict):
+                        return {"mode": "live", "latency_ms": latency_ms, **res, "ok": bool(res.get("ok", True))}
+                    return {"ok": True, "mode": "live", "latency_ms": latency_ms, "reply": str(res)[:200]}
+                except Exception as exc:
+                    return JSONResponse(
+                        {"ok": False, "mode": "live", "error": f"Probe failed: {exc}"},
+                        status_code=502,
+                    )
+
+            build_fn = getattr(rf, "build", None)
+            if callable(build_fn):
+                transport = None
+                t0 = time.perf_counter()
+                try:
+                    state = _state()
+                    await state.init_db()
+                    b_sig = inspect.signature(build_fn)
+                    b_kwargs: dict = {}
+                    for p_name in b_sig.parameters:
+                        if p_name == "state":
+                            b_kwargs[p_name] = state
+                        elif p_name in ("config_path", "path"):
+                            b_kwargs[p_name] = _brain_config_file()
+                        elif p_name in ("home", "root"):
+                            b_kwargs[p_name] = _home_root()
+                        elif p_name in ("env", "environ"):
+                            b_kwargs[p_name] = env_map
+                    transport = build_fn(**b_kwargs)
+                    if inspect.isawaitable(transport):
+                        transport = await transport
+                    if transport is not None:
+                        call_fn = (getattr(transport, "complete", None)
+                                   or getattr(transport, "ask", None)
+                                   or (transport if callable(transport) else None))
+                        if callable(call_fn):
+                            c_sig = inspect.signature(call_fn)
+                            c_kwargs: dict = {}
+                            for p_name in c_sig.parameters:
+                                if p_name == "prompt":
+                                    c_kwargs[p_name] = prompt_text
+                                elif p_name in ("system", "system_prompt"):
+                                    c_kwargs[p_name] = "Reply with OK."
+                                elif p_name in ("role", "agent", "task"):
+                                    c_kwargs[p_name] = role
+                                elif p_name == "max_tokens":
+                                    c_kwargs[p_name] = 4
+                            reply = call_fn(**c_kwargs) if c_kwargs else call_fn(prompt_text)
+                            if inspect.isawaitable(reply):
+                                reply = await reply
+                            latency_ms = round((time.perf_counter() - t0) * 1000, 1)
+                            text_out = (
+                                reply.get("text") or reply.get("content") or str(reply)
+                                if isinstance(reply, dict) else getattr(reply, "text", str(reply))
+                            )
+                            return {
+                                "ok": True,
+                                "mode": "live",
+                                "role": role,
+                                "latency_ms": latency_ms,
+                                "reply": str(text_out).strip()[:200],
+                            }
+                except Exception as exc:
+                    logger.warning("Transport live probe failed, trying direct OpenAI-compat probe: %s", exc)
+                finally:
+                    if transport is not None and hasattr(transport, "aclose"):
+                        try:
+                            res_close = transport.aclose()
+                            if inspect.isawaitable(res_close):
+                                await res_close
+                        except Exception:
+                            pass
+
+    # Direct OpenAI-compatible 1-token probe against first ready chain entry or explicit override
+    cfg = await get_brain_config()
+    chain = cfg.get("chain") or []
+    target_entry = {
+        "provider": override_prov or (chain[0].get("provider") if chain else "openrouter"),
+        "model": override_model or (chain[0].get("model") if chain else "openai/gpt-4o-mini"),
+        "base_url": override_base or (chain[0].get("base_url") if chain else ""),
+        "api_key_env": override_env or (chain[0].get("api_key_env") if chain else ""),
+    }
+    prov = str(target_entry["provider"] or "openrouter")
+    def_url, def_env = _PROVIDER_DEFAULTS.get(prov.lower(), ("https://openrouter.ai/api/v1", "OPENROUTER_API_KEY"))
+    base_url = str(target_entry["base_url"] or def_url).rstrip("/")
+    key_env = str(target_entry["api_key_env"] or def_env)
+    api_key = env_map.get(key_env, "").strip() if key_env else ""
+    model = str(target_entry["model"] or "").strip()
+
+    if not base_url or not model:
+        return JSONResponse(
+            {"ok": False, "mode": "live", "error": "Configure a provider base_url and model first."},
+            status_code=400,
+        )
+    if not api_key and not base_url.startswith(("http://127.0.0.1", "http://localhost")):
+        return JSONResponse(
+            {"ok": False, "mode": "live", "error": f"Missing API key ({key_env}) in .env."},
+            status_code=400,
+        )
+
+    import httpx
+    t0 = time.perf_counter()
+    headers = {"Content-Type": "application/json"}
+    if api_key:
+        headers["Authorization"] = f"Bearer {api_key}"
+    try:
+        async with httpx.AsyncClient(timeout=15.0, trust_env=False) as client:
+            resp = await client.post(
+                f"{base_url}/chat/completions",
+                headers=headers,
+                json={
+                    "model": model,
+                    "messages": [{"role": "user", "content": prompt_text}],
+                    "max_tokens": 4,
+                    "temperature": 0,
+                },
+            )
+        latency_ms = round((time.perf_counter() - t0) * 1000, 1)
+        if resp.status_code != 200:
+            detail = resp.text[:240]
+            return JSONResponse(
+                {
+                    "ok": False,
+                    "mode": "live",
+                    "provider": prov,
+                    "model": model,
+                    "http_status": resp.status_code,
+                    "latency_ms": latency_ms,
+                    "error": f"HTTP {resp.status_code}: {detail}",
+                },
+                status_code=502,
+            )
+        payload = resp.json()
+        choices = payload.get("choices") or []
+        reply_txt = ""
+        if choices and isinstance(choices[0], dict):
+            msg = choices[0].get("message") or {}
+            reply_txt = str(msg.get("content") or "").strip()
+        return {
+            "ok": True,
+            "mode": "live",
+            "provider": prov,
+            "model": model,
+            "latency_ms": latency_ms,
+            "reply": reply_txt[:200] or "OK",
+        }
+    except Exception as exc:
+        return JSONResponse(
+            {"ok": False, "mode": "live", "provider": prov, "model": model, "error": str(exc)},
+            status_code=502,
+        )
+
+
+async def _ensure_enrichment_tables(db) -> None:
+    await db.execute(
+        """CREATE TABLE IF NOT EXISTS enrichment_columns (
+            id TEXT PRIMARY KEY,
+            name TEXT NOT NULL,
+            prompt TEXT NOT NULL,
+            use_web_search INTEGER NOT NULL DEFAULT 0,
+            output_format TEXT NOT NULL DEFAULT 'text',
+            created_at TEXT NOT NULL DEFAULT (datetime('now'))
+        )"""
+    )
+    await db.execute(
+        """CREATE TABLE IF NOT EXISTS enrichment_values (
+            company_id TEXT NOT NULL,
+            column_id TEXT NOT NULL,
+            value TEXT NOT NULL DEFAULT '',
+            status TEXT NOT NULL DEFAULT 'done',
+            updated_at TEXT NOT NULL DEFAULT (datetime('now')),
+            PRIMARY KEY (company_id, column_id)
+        )"""
+    )
+
+
+async def _call_state_method(state, names: tuple[str, ...], *args, **kwargs):
+    for name in names:
+        fn = getattr(state, name, None)
+        if callable(fn):
+            res = fn(*args, **kwargs)
+            return (await res) if inspect.isawaitable(res) else res
+    return None
+
+
+@_agentic_router.get("/api/enrichment/columns")
+async def get_enrichment_columns():
+    """List Clay-mode AI enrichment columns and enriched cell values per company."""
+    state = _state()
+    await state.init_db()
+
+    cols = await _call_state_method(
+        state, ("list_enrichment_columns", "get_enrichment_columns")
+    )
+    raw_vals = await _call_state_method(
+        state, ("get_enrichment_values", "list_enrichment_values", "list_enrichment_cells")
+    )
+
+    db_path = _db_path()
+    if cols is None:
+        db_path.parent.mkdir(parents=True, exist_ok=True)
+        async with storage.connect(str(db_path)) as db:
+            db.row_factory = aiosqlite.Row
+            await _ensure_enrichment_tables(db)
+            await db.commit()
+            cur = await db.execute(
+                "SELECT id, name, prompt, use_web_search, output_format, created_at "
+                "FROM enrichment_columns ORDER BY created_at ASC"
+            )
+            cols = [dict(r) for r in await cur.fetchall()]
+            if raw_vals is None:
+                vcur = await db.execute(
+                    "SELECT company_id, column_id, value, status, updated_at FROM enrichment_values"
+                )
+                raw_vals = [dict(r) for r in await vcur.fetchall()]
+
+    norm_cols = []
+    for c in (cols or []):
+        if isinstance(c, dict):
+            norm_cols.append({
+                **c,
+                "id": str(c.get("id") or ""),
+                "name": str(c.get("name") or c.get("title") or ""),
+                "prompt": str(c.get("prompt") or c.get("instruction") or ""),
+                "use_web_search": bool(c.get("use_web_search") or c.get("web_search")),
+                "output_format": str(c.get("output_format") or c.get("dtype") or "text"),
+            })
+
+    values_map: dict[str, dict[str, dict]] = {}
+    if isinstance(raw_vals, dict):
+        for comp_id, inner in raw_vals.items():
+            if isinstance(inner, dict):
+                values_map[str(comp_id)] = {
+                    str(cid): (v if isinstance(v, dict) else {"value": str(v or ""), "status": "done"})
+                    for cid, v in inner.items()
+                }
+    elif isinstance(raw_vals, list):
+        for r in raw_vals:
+            if isinstance(r, dict) and r.get("company_id") is not None and r.get("column_id") is not None:
+                values_map.setdefault(str(r["company_id"]), {})[str(r["column_id"])] = {
+                    "value": str(r.get("value") or r.get("result") or ""),
+                    "status": str(r.get("status") or "done"),
+                    "updated_at": str(r.get("updated_at") or ""),
+                }
+
+    return {"columns": norm_cols, "values": values_map}
+
+
+@_agentic_router.post("/api/enrichment/columns")
+async def create_enrichment_column(request: Request):
+    """Create a custom Clay-mode AI enrichment column."""
+    from pydantic import ValidationError
+    try:
+        body = await request.json()
+    except Exception:
+        return JSONResponse({"success": False, "message": "Invalid JSON body."}, status_code=400)
+    if not isinstance(body, dict):
+        return JSONResponse({"success": False, "message": "Request body must be an object."}, status_code=400)
+
+    mapped = {
+        "name": str(body.get("name") or body.get("title") or "").strip(),
+        "prompt": str(body.get("prompt") or body.get("instruction") or "").strip(),
+        "use_web_search": bool(body.get("use_web_search", body.get("web_search", False))),
+        "output_format": str(body.get("output_format") or body.get("dtype") or "text").strip() or "text",
+    }
+    try:
+        validated = _EnrichmentColumnCreate.model_validate(mapped)
+    except ValidationError as exc:
+        return JSONResponse({"success": False, "message": str(exc.errors()[0].get("msg", "Invalid column."))},
+                            status_code=400)
+
+    state = _state()
+    await state.init_db()
+
+    for m_name in ("add_enrichment_column", "create_enrichment_column"):
+        fn = getattr(state, m_name, None)
+        if callable(fn):
+            sig = inspect.signature(fn)
+            kwargs: dict = {}
+            for p_name in sig.parameters:
+                if p_name in ("name", "title"):
+                    kwargs[p_name] = validated.name
+                elif p_name in ("prompt", "instruction"):
+                    kwargs[p_name] = validated.prompt
+                elif p_name in ("use_web_search", "web_search"):
+                    kwargs[p_name] = validated.use_web_search
+                elif p_name in ("output_format", "dtype", "kind"):
+                    kwargs[p_name] = validated.output_format
+            res = fn(**kwargs) if kwargs else fn(validated.name, validated.prompt)
+            created = (await res) if inspect.isawaitable(res) else res
+            if isinstance(created, dict):
+                col_id = str(created.get("id") or "")
+                col_obj = {
+                    **created,
+                    "id": col_id,
+                    "name": validated.name,
+                    "prompt": validated.prompt,
+                    "use_web_search": validated.use_web_search,
+                    "output_format": validated.output_format,
+                }
+            else:
+                col_id = str(created)
+                col_obj = {
+                    "id": col_id,
+                    "name": validated.name,
+                    "prompt": validated.prompt,
+                    "use_web_search": validated.use_web_search,
+                    "output_format": validated.output_format,
+                }
+            return {"success": True, "id": col_id, "column": col_obj}
+
+    col_id = "col_" + uuid.uuid4().hex[:10]
+    db_path = _db_path()
+    db_path.parent.mkdir(parents=True, exist_ok=True)
+    async with storage.connect(str(db_path)) as db:
+        await _ensure_enrichment_tables(db)
+        await db.execute(
+            "INSERT INTO enrichment_columns (id, name, prompt, use_web_search, output_format) "
+            "VALUES (?, ?, ?, ?, ?)",
+            (col_id, validated.name, validated.prompt, int(validated.use_web_search), validated.output_format),
+        )
+        await db.commit()
+
+    col_obj = {
+        "id": col_id,
+        "name": validated.name,
+        "prompt": validated.prompt,
+        "use_web_search": validated.use_web_search,
+        "output_format": validated.output_format,
+    }
+    return {"success": True, "id": col_id, "column": col_obj}
+
+
+@_agentic_router.delete("/api/enrichment/columns/{col_id}")
+async def delete_enrichment_column(col_id: str):
+    """Delete a Clay-mode AI enrichment column and its stored values."""
+    clean_id = (col_id or "").strip()
+    if not clean_id or len(clean_id) > 120:
+        return JSONResponse({"success": False, "message": "Invalid column id."}, status_code=400)
+
+    state = _state()
+    await state.init_db()
+
+    for m_name in ("delete_enrichment_column", "remove_enrichment_column"):
+        fn = getattr(state, m_name, None)
+        if callable(fn):
+            arg_id: int | str = clean_id
+            sig = inspect.signature(fn)
+            first_param = next(iter(sig.parameters.values()), None)
+            if first_param is not None and first_param.annotation is int and clean_id.isdigit():
+                arg_id = int(clean_id)
+            res = fn(arg_id)
+            deleted = (await res) if inspect.isawaitable(res) else res
+            if deleted is False:
+                return JSONResponse({"success": False, "message": "Column not found."}, status_code=404)
+            return {"success": True, "deleted": clean_id}
+
+    db_path = _db_path()
+    if not db_path.exists():
+        return JSONResponse({"success": False, "message": "Column not found."}, status_code=404)
+    async with storage.connect(str(db_path)) as db:
+        await _ensure_enrichment_tables(db)
+        cur = await db.execute("DELETE FROM enrichment_columns WHERE id = ?", (clean_id,))
+        await db.execute("DELETE FROM enrichment_values WHERE column_id = ?", (clean_id,))
+        await db.commit()
+        if cur.rowcount == 0:
+            return JSONResponse({"success": False, "message": "Column not found."}, status_code=404)
+    return {"success": True, "deleted": clean_id}
+
+
+@_agentic_router.post("/api/enrichment/run")
+async def run_enrichment_route(request: Request):
+    """Run ClayEnricher (or Brain fallback) across companies for custom AI columns."""
+    try:
+        body = await request.json() if request.headers.get("content-type", "").startswith("application/json") else {}
+    except Exception:
+        body = {}
+    if not isinstance(body, dict):
+        body = {}
+
+    col_id = str(body.get("column_id") or "").strip() or None
+    company_ids = [str(x) for x in body.get("company_ids", []) if x] if isinstance(body.get("company_ids"), list) else None
+    try:
+        limit = max(1, min(50, int(body.get("limit") or 10)))
+    except (TypeError, ValueError):
+        return JSONResponse({"success": False, "message": "limit must be an integer."}, status_code=400)
+
+    brain = None
+    try:
+        brain, state, config = await _offer_brain()
+        if not await _brain_within_budget(brain, config):
+            return JSONResponse(
+                {"success": False, "message": "Daily AI budget reached. Raise usage.max_daily_usd or try tomorrow."},
+                status_code=429,
+            )
+
+        try:
+            from sellbird.agents.enricher import ClayEnricher
+        except ImportError:
+            ClayEnricher = None
+
+        if ClayEnricher is not None:
+            from sellbird.config import load_env
+            env = load_env()
+            init_sig = inspect.signature(ClayEnricher)
+            init_kwargs: dict = {}
+            for p_name in init_sig.parameters:
+                if p_name == "brain":
+                    init_kwargs[p_name] = brain
+                elif p_name == "state":
+                    init_kwargs[p_name] = state
+                elif p_name == "config":
+                    init_kwargs[p_name] = config
+                elif p_name == "env":
+                    init_kwargs[p_name] = env
+            enricher = ClayEnricher(**init_kwargs)
+            run_sig = inspect.signature(enricher.run)
+            run_kwargs: dict = {}
+            for p_name in run_sig.parameters:
+                if p_name in ("column_id", "col_id") and col_id is not None:
+                    run_kwargs[p_name] = col_id
+                elif p_name == "company_ids" and company_ids is not None:
+                    run_kwargs[p_name] = company_ids
+                elif p_name == "limit":
+                    run_kwargs[p_name] = limit
+            outcome = await enricher.run(**run_kwargs)
+            return {
+                "success": True,
+                "result": outcome if isinstance(outcome, (dict, list, int, str, bool)) else str(outcome),
+            }
+
+        # Clean Brain fallback when ClayEnricher is not yet installed
+        cols_payload = await get_enrichment_columns()
+        columns = [c for c in cols_payload.get("columns", []) if not col_id or c["id"] == col_id]
+        if not columns:
+            return JSONResponse(
+                {"success": False, "message": "Add at least one AI column before running enrichment."},
+                status_code=400,
+            )
+        if company_ids:
+            companies = await query_db(
+                f"SELECT id, name, domain, website, industry, location, description FROM companies "
+                f"WHERE id IN ({_in(company_ids)}) LIMIT ?",
+                (*company_ids, limit),
+            )
+        else:
+            companies = await query_db(
+                "SELECT id, name, domain, website, industry, location, description FROM companies "
+                "ORDER BY created_at DESC LIMIT ?",
+                (limit,),
+            )
+
+        enriched_cells = 0
+        ask_fn = getattr(brain, "complete", None) or getattr(brain, "ask", None) or getattr(brain, "think", None)
+        if callable(ask_fn) and companies:
+            db_path = _db_path()
+            async with storage.connect(str(db_path)) as db:
+                await _ensure_enrichment_tables(db)
+                for comp in companies:
+                    for col in columns:
+                        prompt = (
+                            f"Company: {comp.get('name') or ''} ({comp.get('domain') or ''})\n"
+                            f"Industry: {comp.get('industry') or ''} | Location: {comp.get('location') or ''}\n"
+                            f"Description: {comp.get('description') or ''}\n\n"
+                            f"Task: {col['prompt']}\n"
+                            "Return a concise factual answer (max 25 words)."
+                        )
+                        ans = ask_fn(prompt)
+                        if inspect.isawaitable(ans):
+                            ans = await ans
+                        val_str = (ans.get("text") if isinstance(ans, dict) else str(ans or "")).strip()[:500]
+                        await db.execute(
+                            "INSERT INTO enrichment_values (company_id, column_id, value, status, updated_at) "
+                            "VALUES (?, ?, ?, 'done', datetime('now')) "
+                            "ON CONFLICT(company_id, column_id) DO UPDATE SET "
+                            "value = excluded.value, status = 'done', updated_at = datetime('now')",
+                            (str(comp["id"]), str(col["id"]), val_str),
+                        )
+                        enriched_cells += 1
+                await db.commit()
+
+        return {"success": True, "enriched_cells": enriched_cells, "companies": len(companies)}
+    except Exception as exc:
+        logger.warning("Enrichment run failed: %s", exc)
+        return JSONResponse({"success": False, "message": f"Enrichment failed: {exc}"}, status_code=500)
+    finally:
+        await _close_brain(brain)
+
+
+@_agentic_router.post("/api/research/run")
+async def run_deep_research_route(request: Request):
+    """Run DeepResearcher across target companies or a specific company/domain."""
+    try:
+        body = await request.json() if request.headers.get("content-type", "").startswith("application/json") else {}
+    except Exception:
+        body = {}
+    if not isinstance(body, dict):
+        body = {}
+
+    company_id = str(body.get("company_id") or "").strip() or None
+    domain = str(body.get("domain") or body.get("company") or "").strip() or None
+    try:
+        limit = max(1, min(50, int(body.get("limit") or 5)))
+    except (TypeError, ValueError):
+        return JSONResponse({"success": False, "message": "limit must be an integer."}, status_code=400)
+
+    try:
+        from sellbird.agents.researcher import DeepResearcher
+    except ImportError:
+        return JSONResponse(
+            {"success": False, "message": "DeepResearcher agent is not installed yet."},
+            status_code=501,
+        )
+
+    brain = None
+    try:
+        brain, state, config = await _offer_brain()
+        if not await _brain_within_budget(brain, config):
+            return JSONResponse(
+                {"success": False, "message": "Daily AI budget reached. Raise usage.max_daily_usd or try tomorrow."},
+                status_code=429,
+            )
+        from sellbird.config import load_env
+        env = load_env()
+
+        init_sig = inspect.signature(DeepResearcher)
+        init_kwargs: dict = {}
+        for p_name in init_sig.parameters:
+            if p_name == "brain":
+                init_kwargs[p_name] = brain
+            elif p_name == "state":
+                init_kwargs[p_name] = state
+            elif p_name == "config":
+                init_kwargs[p_name] = config
+            elif p_name == "env":
+                init_kwargs[p_name] = env
+        researcher = DeepResearcher(**init_kwargs)
+
+        run_sig = inspect.signature(researcher.run)
+        run_kwargs: dict = {}
+        for p_name in run_sig.parameters:
+            if p_name == "limit":
+                run_kwargs[p_name] = limit
+            elif p_name == "company_id" and company_id is not None:
+                run_kwargs[p_name] = company_id
+            elif p_name in ("domain", "company") and domain is not None:
+                run_kwargs[p_name] = domain
+
+        if domain and not run_kwargs and hasattr(researcher, "research_domain"):
+            outcome = await researcher.research_domain(domain)
+        elif company_id and not run_kwargs and hasattr(researcher, "research_company"):
+            outcome = await researcher.research_company(company_id)
+        else:
+            outcome = await researcher.run(**run_kwargs)
+
+        return {
+            "success": True,
+            "result": outcome if isinstance(outcome, (dict, list, int, str, bool)) else str(outcome),
+        }
+    except Exception as exc:
+        logger.warning("Deep research failed: %s", exc)
+        return JSONResponse({"success": False, "message": f"Deep research failed: {exc}"}, status_code=500)
+    finally:
+        await _close_brain(brain)
+
+
+app.include_router(_agentic_router)
+
 from sellbird.inbox_routes import router as _inbox_router  # noqa: E402
 
 app.include_router(_inbox_router)
@@ -2997,9 +4530,10 @@ def start_dashboard(host: str = "127.0.0.1", port: int = 5555):
         print("  Windows: the token file is protected by your folder's permissions,")
         print("  not POSIX file modes.\n")
     from sellbird import dashboard_instance
-    dashboard_instance.write(DB_PATH.parent, host=bind, port=port, instance=INSTANCE_ID)
+    data_dir = _data_dir()
+    dashboard_instance.write(data_dir, host=bind, port=port, instance=INSTANCE_ID)
     try:
         uvicorn.run(app, host=bind, port=port, log_level="warning",
                     proxy_headers=False, server_header=False, date_header=False)
     finally:
-        dashboard_instance.remove(DB_PATH.parent, instance=INSTANCE_ID)
+        dashboard_instance.remove(data_dir, instance=INSTANCE_ID)

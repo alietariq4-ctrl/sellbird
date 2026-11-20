@@ -1,13 +1,17 @@
-"""Analyst — tracks performance and identifies what's working."""
+"""Analyst — tracks performance, diagnoses funnel bottlenecks, and recommends strategic changes."""
+
+from __future__ import annotations
 
 import json
 import logging
-from datetime import datetime
+from datetime import datetime, timezone
 from pathlib import Path
 
 from sellbird.state import StateManager
 
 logger = logging.getLogger("sellbird.analyst")
+
+POST_SEND_STATUSES = ("contacted", "replied", "meeting_booked", "meeting", "opted_out", "lost", "closed")
 
 
 class Analyst:
@@ -16,15 +20,21 @@ class Analyst:
     Runs during idle cycles and writes a report to data/analytics.json.
     """
 
-    def __init__(self, state: StateManager):
+    def __init__(self, state: StateManager, brain=None, config=None):
         self.state = state
+        self.brain = brain
+        self.config = config
+
+    @staticmethod
+    def _total_contacted(pipeline: dict) -> int:
+        return sum(int(pipeline.get(s, 0) or 0) for s in POST_SEND_STATUSES)
 
     async def run(self):
         """Generate analytics report from current pipeline data."""
         logger.info("Analyst: Running performance analysis...")
 
         report = {
-            "generated_at": datetime.utcnow().isoformat(),
+            "generated_at": datetime.now(timezone.utc).replace(tzinfo=None).isoformat(),
             "pipeline": await self._pipeline_summary(),
             "campaigns": await self._campaign_performance(),
             "intents": await self._intent_breakdown(),
@@ -32,8 +42,14 @@ class Analyst:
             "insights": [],
         }
 
-        # Generate insights
+        # Generate deterministic insights
         report["insights"] = self._generate_insights(report)
+
+        # Optional AI strategic synthesis when Brain is supplied
+        ai_rec = await self._generate_ai_recommendation(report)
+        if ai_rec:
+            report["ai_recommendation"] = ai_rec
+            report["insights"].append(f"AI STRATEGY: {ai_rec}")
 
         # Write report atomically (temp file + rename) so a crash mid-write
         # never leaves a corrupt analytics.json for the dashboard to choke on.
@@ -51,16 +67,20 @@ class Analyst:
         # Log key metrics
         pipeline = report["pipeline"]
         total = sum(pipeline.values())
+        total_contacted = self._total_contacted(pipeline)
+        total_replied = int(pipeline.get("replied", 0) or 0) + int(pipeline.get("meeting_booked", 0) or 0) + int(pipeline.get("meeting", 0) or 0)
         if total > 0:
-            reply_rate = pipeline.get("replied", 0) / max(pipeline.get("contacted", 0), 1) * 100
+            reply_rate = total_replied / max(total_contacted, 1) * 100
             logger.info(
                 f"Analyst: {total} prospects | "
-                f"{pipeline.get('contacted', 0)} contacted | "
+                f"{total_contacted} contacted | "
                 f"Reply rate: {reply_rate:.1f}%"
             )
 
         for insight in report["insights"]:
             logger.info(f"Analyst: Insight — {insight}")
+
+        return report
 
     async def _pipeline_summary(self) -> dict:
         """Count prospects by status."""
@@ -78,6 +98,43 @@ class Analyst:
         """Count conversations by sales stage."""
         return await self.state.get_stage_distribution()
 
+    def _email_provider(self) -> str:
+        email_cfg = getattr(getattr(self.config, "channels", None), "email", None)
+        return str(getattr(email_cfg, "provider", "") or "").strip().lower()
+
+    async def _generate_ai_recommendation(self, report: dict) -> str:
+        """Ask Brain for one concise strategic recommendation when data exists."""
+        if self.brain is None:
+            return ""
+        pipeline = report.get("pipeline") or {}
+        if sum(pipeline.values()) == 0:
+            return ""
+        think = getattr(self.brain, "think", None)
+        if not callable(think):
+            return ""
+
+        prompt = (
+            "You are a B2B outbound sales strategist. Given the funnel metrics below, "
+            "provide ONE concise, actionable 1-2 sentence strategic recommendation "
+            "(no markdown bullets, no preamble).\n\n"
+            f"Pipeline: {json.dumps(pipeline)}\n"
+            f"Intents: {json.dumps(report.get('intents') or {})}\n"
+            f"Stages: {json.dumps(report.get('stages') or {})}\n"
+            f"Campaigns: {json.dumps((report.get('campaigns') or [])[:5])}"
+        )
+        try:
+            ans = await think(
+                prompt,
+                session_id="sellbird-analyst",
+                agent="analyst",
+                task="strategic_insights",
+            )
+            cleaned = " ".join(str(ans or "").strip().split())
+            return cleaned[:400] if cleaned else ""
+        except Exception as exc:
+            logger.debug("Analyst AI recommendation skipped: %s", exc)
+            return ""
+
     def _generate_insights(self, report: dict) -> list[str]:
         """Derive actionable insights from the data.
 
@@ -91,16 +148,21 @@ class Analyst:
         campaigns = report.get("campaigns") or []
         stages = report.get("stages") or {}
 
-        # Pipeline health
-        total_new = pipeline.get("new", 0)
-        total_queued = pipeline.get("queued", 0)
-        total_contacted = pipeline.get("contacted", 0)
-        total_replied = pipeline.get("replied", 0)
-        total_opted_out = pipeline.get("opted_out", 0)
-        total_interested = intents.get("interested", 0)
-        total_objections = intents.get("objection", 0)
-        total_unsubscribes = intents.get("unsubscribe", 0) + total_opted_out
-        total_escalations = intents.get("escalate", 0)
+        # Pipeline health — compute total_contacted across all post-send statuses
+        total_new = int(pipeline.get("new", 0) or 0)
+        total_queued = int(pipeline.get("queued", 0) or 0)
+        total_contacted = self._total_contacted(pipeline)
+        total_replied = (
+            int(pipeline.get("replied", 0) or 0)
+            + int(pipeline.get("meeting_booked", 0) or 0)
+            + int(pipeline.get("meeting", 0) or 0)
+        )
+        total_opted_out = int(pipeline.get("opted_out", 0) or 0)
+        total_interested = int(intents.get("interested", 0) or 0) + int(intents.get("accepted_offer", 0) or 0)
+        total_objections = int(intents.get("objection", 0) or 0)
+        # Avoid double-counting: an opt-out sets BOTH intent='unsubscribe' and status='opted_out'
+        total_unsubscribes = max(int(intents.get("unsubscribe", 0) or 0), total_opted_out)
+        total_escalations = int(intents.get("escalate", 0) or 0)
 
         if total_contacted > 10:
             reply_rate = total_replied / total_contacted * 100
@@ -171,10 +233,16 @@ class Analyst:
                 "CLOSING guidance to propose specific meeting times earlier (by message 2)."
             )
         if total_queued > 0 and total_contacted == 0:
-            insights.append(
-                f"BLOCKED: {total_queued} prospects are queued but nothing has been sent. "
-                "Check the Instantly API key and Sender logs — campaigns may be failing to deploy."
-            )
+            if self._email_provider() == "instantly":
+                insights.append(
+                    f"BLOCKED: {total_queued} prospects are queued but nothing has been sent. "
+                    "Check the Instantly API key and Sender logs — campaigns may be failing to deploy."
+                )
+            else:
+                insights.append(
+                    f"BLOCKED: {total_queued} prospects are queued in the outbox but nothing has been sent yet. "
+                    "Approve pending drafts in the Outbox tab or verify your mailbox connection and send window."
+                )
         if total_new < 10 and total_queued == 0:
             insights.append(
                 f"ACTION: Prospect pool is nearly empty ({total_new} new). Scout should run "

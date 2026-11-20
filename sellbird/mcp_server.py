@@ -82,7 +82,7 @@ class CoreClient:
 
     def _client(self, base: str, timeout: float = 15.0) -> httpx.AsyncClient:
         extra = {"transport": self._transport} if self._transport is not None else {}
-        return httpx.AsyncClient(base_url=base, timeout=timeout, **extra)
+        return httpx.AsyncClient(base_url=base, timeout=timeout, trust_env=False, **extra)
 
     async def _connection(self) -> tuple[str, str]:
         info = dashboard_instance.read(self.data_dir)

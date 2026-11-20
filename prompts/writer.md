@@ -78,5 +78,3 @@ sentences and leaves the offer open. No guilt.
 When asked for JSON, return ONLY the raw JSON. Escape newlines in bodies as \n.
 
 The goal is a reply, not a sale. The offer is how you earn it.
-
-Merge variables available: {{first_name}}, {{company}}, {{title}}

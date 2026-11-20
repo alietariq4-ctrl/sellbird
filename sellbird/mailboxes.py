@@ -297,6 +297,15 @@ class MailboxStore(StateManager):
             (campaign_id or "", prospect_id, *_STARTED))
         return row is not None
 
+    async def has_unsent_first_email(self, campaign_id: str, prospect_id: str) -> bool:
+        """Whether this thread has an unsent first email waiting in the outbox."""
+        marks = ", ".join("?" * len(_UNSENT))
+        row = await self._one(
+            "SELECT 1 FROM outbox WHERE COALESCE(campaign_id, '') = ? AND prospect_id = ?"
+            f" AND kind = 'sequence' AND step <= 1 AND status IN ({marks}) LIMIT 1",
+            (campaign_id or "", prospect_id, *_UNSENT))
+        return row is not None
+
     async def thread_mailbox(self, campaign_id: str, prospect_id: str) -> str:
         """The inbox a thread's first email is on ('' when none or the main one)."""
         row = await self._one(
@@ -535,9 +544,9 @@ class Inboxes:
 
     @property
     def several(self) -> bool:
-        """Whether sending routes by inbox: an extra inbox is connected, or
-        unsent email is on one."""
-        return self.routed_mail or any(not i.main for i in self.inboxes.values())
+        """Whether sending routes by inbox: an extra inbox is connected, a
+        campaign pool is configured, or unsent email is on another inbox."""
+        return self.routed_mail or bool(self.pools) or any(not i.main for i in self.inboxes.values())
 
     def get(self, mailbox_id: str) -> Inbox | None:
         return self.inboxes.get(mailbox_id or MAIN)
@@ -577,7 +586,7 @@ class Inboxes:
         if before != inbox.id:
             old = self.get(before) if before is not None else None
             if old is not None:
-                old.queued_first -= 1
+                old.queued_first = max(0, old.queued_first - 1)
             inbox.queued_first += 1
         return inbox.id
 
@@ -678,5 +687,5 @@ async def load_inboxes(state, config, env, main_provider: MailProvider | None, *
             sent_today=await store.sent_since(row["id"], since, kind="sequence"),
             queued_first=queued.get(row["id"], 0),
             paused_reason=row.get("paused_reason") or "")
-    pools = await store.campaign_pools() if len(inboxes) > 1 else {}
+    pools = await store.campaign_pools()
     return Inboxes(store=store, inboxes=inboxes, pools=pools, routed_mail=routed)
