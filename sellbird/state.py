@@ -606,6 +606,37 @@ MIGRATIONS: list[str] = [
     CREATE INDEX IF NOT EXISTS idx_enrichment_values_entity
         ON enrichment_values(entity_type, entity_id);
     """,
+    # ── v19: LinkedIn touchpoints between email steps ──
+    # When a sequence's first email goes out and the prospect has a LinkedIn
+    # profile, a light touch (profile view, optional connection request) is
+    # scheduled so the follow-up lands from a familiar name. One touch per
+    # prospect, ever: the unique index is the idempotence guard. The heartbeat
+    # drains due touches inside the automation's own daily caps.
+    """
+    CREATE TABLE IF NOT EXISTS linkedin_touches (
+        id TEXT PRIMARY KEY,
+        prospect_id TEXT NOT NULL,
+        linkedin_url TEXT NOT NULL,
+        action TEXT DEFAULT 'view',
+        status TEXT DEFAULT 'pending',
+        due_at TIMESTAMP,
+        done_at TIMESTAMP,
+        error TEXT DEFAULT '',
+        created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+        updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+    );
+    CREATE UNIQUE INDEX IF NOT EXISTS uq_linkedin_touches_prospect
+        ON linkedin_touches(prospect_id);
+    CREATE INDEX IF NOT EXISTS idx_linkedin_touches_due
+        ON linkedin_touches(status, due_at);
+    """,
+    # ── v20: which copywriting framework a campaign used (bandit) ──
+    # The Thompson sampler (sellbird/bandit.py) reads reply outcomes per
+    # framework from the campaigns and prospects tables; this column is the
+    # join key. '' means the built-in shape.
+    """
+    ALTER TABLE campaigns ADD COLUMN framework TEXT DEFAULT '';
+    """,
 ]
 
 BRAIN_PROVIDERS = ("claude", "codex", "openrouter")
@@ -628,7 +659,7 @@ _LAST_PROFILED = (
 # Column whitelists for dynamic UPDATEs (prevents SQL injection via kwargs).
 _CAMPAIGN_COLUMNS = frozenset({
     "name", "channel", "instantly_campaign_id",
-    "sequence_json", "prospect_ids_json", "status",
+    "sequence_json", "prospect_ids_json", "status", "framework",
 })
 _CONVERSATION_COLUMNS = frozenset({
     "prospect_id", "campaign_id", "channel",
@@ -1666,6 +1697,33 @@ class StateManager:
         async with self._connect() as db:
             async with db.execute(sql, params) as cursor:
                 return (await cursor.fetchone())[0]
+
+    async def bounce_rate_window(self, hours: int = 4) -> tuple[int, int]:
+        """(bounces, sends) in the rolling window ending now.
+
+        The bounce kill switch used to watch the all-time rate, so one bad
+        list early on kept tripping it long after the list was cleaned. The
+        window reads bounces from the actions log and sends from the outbox,
+        both by their own timestamps, so it needs no new table. Both are
+        compared through SQLite's datetime(), which normalises the two
+        timestamp styles the tables carry ('2026-11-21 09:43:46' from
+        CURRENT_TIMESTAMP, '2026-11-21T09:43:46' from Python's isoformat).
+        """
+        since = (_utcnow() - timedelta(hours=max(1, int(hours)))).isoformat()
+        async with self._connect() as db:
+            async with db.execute(
+                "SELECT COUNT(*) FROM actions WHERE action_type = 'bounce' "
+                "AND datetime(created_at) >= datetime(?)",
+                (since,),
+            ) as cursor:
+                bounces = (await cursor.fetchone())[0]
+            async with db.execute(
+                "SELECT COUNT(*) FROM outbox WHERE status = 'sent' "
+                "AND datetime(sent_at) >= datetime(?)",
+                (since,),
+            ) as cursor:
+                sends = (await cursor.fetchone())[0]
+        return bounces, sends
 
     async def get_step_delay_days(self, campaign_id: str, step: int) -> int | None:
         """The campaign's planned wait before `step` (days after the step
@@ -2714,12 +2772,13 @@ class StateManager:
             await db.execute(
                 """INSERT INTO campaigns
                    (id, name, channel, instantly_campaign_id, sequence_json,
-                    prospect_ids_json, status, created_at)
-                   VALUES (?, ?, ?, ?, ?, ?, ?, ?)""",
+                    prospect_ids_json, status, framework, created_at)
+                   VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)""",
                 (
                     campaign.id, campaign.name, campaign.channel,
                     campaign.instantly_campaign_id, campaign.sequence_json(),
                     json.dumps(campaign.prospect_ids), campaign.status,
+                    getattr(campaign, "framework", "") or "",
                     campaign.created_at.isoformat(),
                 ),
             )
@@ -3107,4 +3166,97 @@ class StateManager:
             # Claude budget the rest of the loop is rationing.
             "unprofiled": await self.count_companies_needing_profile(),
         }
+
+    # ── LinkedIn touchpoints (v19) ──
+
+    async def schedule_linkedin_touch(
+        self, prospect_id: str, linkedin_url: str, *, action: str = "view",
+        due_at: str = "",
+    ) -> bool:
+        """Queue one LinkedIn touch for a prospect. False if one already
+        exists: one touch per prospect, ever (the unique index decides)."""
+        url = str(linkedin_url or "").strip()
+        if not url:
+            return False
+        async with self._connect() as db:
+            cursor = await db.execute(
+                "INSERT OR IGNORE INTO linkedin_touches "
+                "(id, prospect_id, linkedin_url, action, status, due_at) "
+                "VALUES (?, ?, ?, ?, 'pending', ?)",
+                (uuid.uuid4().hex, prospect_id, url, action,
+                 due_at or _utcnow().isoformat()),
+            )
+            await db.commit()
+            return cursor.rowcount > 0
+
+    async def due_linkedin_touches(self, limit: int = 10) -> list[dict]:
+        """Pending touches whose due time has passed, oldest first."""
+        async with self._connect() as db:
+            db.row_factory = aiosqlite.Row
+            async with db.execute(
+                "SELECT * FROM linkedin_touches WHERE status = 'pending' "
+                "AND (due_at IS NULL OR due_at <= ?) "
+                "ORDER BY COALESCE(due_at, created_at) ASC LIMIT ?",
+                (_utcnow().isoformat(), int(limit)),
+            ) as cursor:
+                return [dict(r) for r in await cursor.fetchall()]
+
+    async def finish_linkedin_touch(self, touch_id: str, *, error: str = "") -> None:
+        """Mark a touch done (or failed with the reason, retryable by hand)."""
+        status = "failed" if error else "done"
+        async with self._connect() as db:
+            await db.execute(
+                "UPDATE linkedin_touches SET status = ?, done_at = ?, error = ?, "
+                "updated_at = ? WHERE id = ?",
+                (status, _utcnow().isoformat(), error[:300], _utcnow().isoformat(), touch_id),
+            )
+            await db.commit()
+
+    # ── Framework outcomes (v20, bandit) ──
+
+    async def framework_stats(self) -> dict[str, tuple[int, int]]:
+        """{framework: (replied, finished)} across all campaigns.
+
+        A prospect counts as finished once its sequence has run its course:
+        it replied, or it was contacted and then went quiet. Anyone still
+        'new'/'queued' (not sent yet) or parked 'no_tip' is not counted.
+        Frameworks with no history are absent — the sampler's uniform prior
+        covers them.
+
+        Campaigns carry their prospect ids as JSON, so the join is done here
+        rather than in SQL.
+        """
+        finished_states = {"replied", "contacted", "lost", "opted_out"}
+        replied_states = {"replied"}
+        stats: dict[str, list[int]] = {}
+        async with self._connect() as db:
+            db.row_factory = aiosqlite.Row
+            async with db.execute(
+                "SELECT COALESCE(framework, '') AS fw, prospect_ids_json "
+                "FROM campaigns"
+            ) as cursor:
+                campaigns = await cursor.fetchall()
+            for camp in campaigns:
+                fw = camp["fw"] or ""
+                try:
+                    ids = json.loads(camp["prospect_ids_json"] or "[]")
+                except (json.JSONDecodeError, TypeError):
+                    ids = []
+                if not ids:
+                    continue
+                marks = ",".join("?" for _ in ids)
+                async with db.execute(
+                    f"SELECT status FROM prospects WHERE id IN ({marks})",
+                    ids,
+                ) as pcursor:
+                    statuses = [r["status"] for r in await pcursor.fetchall()]
+                bucket = stats.setdefault(fw, [0, 0])
+                for st in statuses:
+                    if st in finished_states:
+                        bucket[1] += 1
+                        if st in replied_states:
+                            bucket[0] += 1
+        # A framework with no finished prospect yet is left out, so the
+        # sampler treats it as untried (uniform prior) rather than 0/0.
+        return {fw: (v[0], v[1]) for fw, v in stats.items() if v[1] > 0}
 

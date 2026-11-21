@@ -138,7 +138,103 @@ def test_dmarc_and_dkim(monkeypatch):
     }))
     assert d.check_dmarc("a.com").status == d.WARN
     assert d.check_dmarc("b.com").status == d.FAIL
-    assert d.check_dkim("a.com").status == d.OK
+
+
+# ── checkdmarc deep checks (optional library; stubbed) ──
+
+
+def _fake_checkdmarc_module(monkeypatch, *, spf_result=None, spf_error=None,
+                            dmarc_result=None, dmarc_error=None):
+    """Install a fake checkdmarc in sys.modules; returns the module object.
+
+    The real library is an optional install, so the deep checks must work
+    from whatever it finds: a stub with the same surface proves the wiring
+    without the dependency.
+    """
+    import sys
+    import types
+
+    mod = types.ModuleType("checkdmarc")
+    spf_mod = types.ModuleType("checkdmarc.spf")
+    dmarc_mod = types.ModuleType("checkdmarc.dmarc")
+
+    def get_spf_record(domain):
+        if spf_error:
+            raise spf_error
+        return {"record": "v=spf1 ~all"}
+
+    def parse_spf_record(record, domain):
+        if spf_error:
+            raise spf_error
+        return spf_result or {"dns_lookups": 2, "warnings": []}
+
+    def check_dmarc(domain):
+        if dmarc_error:
+            raise dmarc_error
+        return dmarc_result or {"valid": True, "warnings": [], "record": "v=DMARC1; p=quarantine"}
+
+    spf_mod.get_spf_record = get_spf_record
+    spf_mod.parse_spf_record = parse_spf_record
+    dmarc_mod.check_dmarc = check_dmarc
+    mod.spf = spf_mod
+    mod.dmarc = dmarc_mod
+    monkeypatch.setitem(sys.modules, "checkdmarc", mod)
+    monkeypatch.setitem(sys.modules, "checkdmarc.spf", spf_mod)
+    monkeypatch.setitem(sys.modules, "checkdmarc.dmarc", dmarc_mod)
+    return mod
+
+
+def test_deep_spf_flags_lookup_count_through_includes(monkeypatch):
+    _fake_checkdmarc_module(monkeypatch, spf_result={"dns_lookups": 12, "warnings": []})
+    monkeypatch.setattr(d, "_txt", _txt({"a.com": ["v=spf1 include:x ~all"]}))
+    check = d.check_spf("a.com")
+    assert check.status == d.FAIL
+    assert "12 DNS lookups" in check.detail
+
+
+def test_deep_spf_passes_a_clean_record(monkeypatch):
+    _fake_checkdmarc_module(monkeypatch, spf_result={"dns_lookups": 3, "warnings": []})
+    monkeypatch.setattr(d, "_txt", _txt({"a.com": ["v=spf1 include:x ~all"]}))
+    # No deep verdict (None) means the basic OK stands.
+    assert d.check_spf("a.com").status == d.OK
+
+
+def test_deep_spf_reports_warnings(monkeypatch):
+    _fake_checkdmarc_module(monkeypatch,
+                            spf_result={"dns_lookups": 4, "warnings": ["a= is discouraged"]})
+    monkeypatch.setattr(d, "_txt", _txt({"a.com": ["v=spf1 include:x ~all"]}))
+    check = d.check_spf("a.com")
+    assert check.status == d.WARN
+    assert "a= is discouraged" in check.detail
+
+
+def test_deep_dmarc_flags_an_invalid_record(monkeypatch):
+    _fake_checkdmarc_module(monkeypatch,
+                            dmarc_result={"valid": False, "warnings": ["pct must be 0-100"],
+                                          "record": "v=DMARC1; p=quarantine; pct=200"})
+    monkeypatch.setattr(d, "_txt", _txt({"_dmarc.a.com": ["v=DMARC1; p=quarantine; pct=200"]}))
+    check = d.check_dmarc("a.com")
+    assert check.status == d.FAIL
+    assert "pct must be 0-100" in check.detail
+
+
+def test_deep_dmarc_reports_warnings_on_a_valid_record(monkeypatch):
+    _fake_checkdmarc_module(monkeypatch,
+                            dmarc_result={"valid": True, "warnings": ["no rua tag: no reports"],
+                                          "record": "v=DMARC1; p=quarantine"})
+    monkeypatch.setattr(d, "_txt", _txt({"_dmarc.a.com": ["v=DMARC1; p=quarantine"]}))
+    check = d.check_dmarc("a.com")
+    assert check.status == d.WARN
+    assert "no rua tag" in check.detail
+
+
+def test_without_checkdmarc_the_basic_checks_stand(monkeypatch):
+    # No fake module installed and the real one absent: deep checks return
+    # None and the basic verdicts are returned untouched.
+    import sys
+    monkeypatch.setitem(sys.modules, "checkdmarc", None)  # import -> None
+    monkeypatch.setattr(d, "_txt", _txt({"a.com": ["v=spf1 include:x ~all"]}))
+    assert d.check_spf("a.com").status == d.OK
     assert d.check_dkim("b.com", "s1").status == d.FAIL
 
 

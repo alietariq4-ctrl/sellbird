@@ -292,6 +292,11 @@ def is_loopback(host: str) -> bool:
 
 
 def is_public_path(method: str, path: str) -> bool:
+    # Inbound booking webhooks: POST-only, authenticated by their own
+    # HMAC secret inside the route (Cal.com cannot carry the dashboard
+    # token, and the token would hand over the whole dashboard anyway).
+    if method == "POST" and path == "/api/webhooks/calcom":
+        return True
     if method not in ("GET", "HEAD"):
         return False
     if path == "/":

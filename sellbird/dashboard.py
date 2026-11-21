@@ -3212,6 +3212,110 @@ async def get_runs_api():
 WEB_DIR = (Path(__file__).resolve().parent / "web")
 
 
+# ── Inbound booking webhooks ──
+# Cal.com (or any calendar that can POST) tells Sellbird a meeting was booked,
+# so the sequence stops without waiting for the next reply poll. The route is
+# public in the guard (Cal.com cannot carry the dashboard token) and
+# authenticates with its own shared secret instead: an HMAC-SHA256 signature
+# of the raw body, in the Cal.com "x-cal-signature-256" header (the same
+# scheme WEBHOOK_SECRET uses for the CRM's outbound webhooks). Fail closed:
+# no secret configured, no bookings accepted.
+
+CALCOM_SIGNATURE_HEADERS = ("x-cal-signature-256", "x-cal-signature")
+
+
+def _webhook_secret() -> str:
+    return (os.getenv("CALCOM_WEBHOOK_SECRET", "") or "").strip()
+
+
+def _hmac_sha256_hex(secret: str, raw: bytes) -> str:
+    import hashlib
+    import hmac as hmac_mod
+    return hmac_mod.new(secret.encode("utf-8"), raw, hashlib.sha256).hexdigest()
+
+
+@app.post("/api/webhooks/calcom")
+async def calcom_webhook(request: Request):
+    raw = await request.body()
+    secret = _webhook_secret()
+    if not secret:
+        return JSONResponse(
+            {"error": "not_configured",
+             "message": "Set CALCOM_WEBHOOK_SECRET in .env to accept booking webhooks."},
+            status_code=503,
+        )
+    signature = ""
+    for header in CALCOM_SIGNATURE_HEADERS:
+        value = request.headers.get(header, "")
+        if value:
+            signature = value.strip().lower().removeprefix("sha256=")
+            break
+    import hmac as hmac_mod
+    expected = _hmac_sha256_hex(secret, raw)
+    if not signature or not hmac_mod.compare_digest(signature, expected):
+        return JSONResponse({"error": "invalid_signature"}, status_code=401)
+
+    try:
+        payload = json.loads(raw)
+    except (json.JSONDecodeError, UnicodeDecodeError):
+        return JSONResponse({"error": "invalid_json"}, status_code=400)
+
+    trigger = str(payload.get("trigger") or payload.get("type") or "").strip().lower()
+    if trigger and trigger not in ("booking_created", "booking.confirmed", "booking_created_event"):
+        # Bookings rescheduled or cancelled still count as a meeting; anything
+        # else (invitee cancellations included) leaves the sequence alone.
+        return {"received": True, "handled": False, "trigger": trigger}
+
+    # Cal.com nests the attendee differently across payload versions; accept
+    # the shapes seen in the wild rather than one exact schema.
+    booking = payload.get("booking") if isinstance(payload.get("booking"), dict) else payload
+    attendees = booking.get("attendees")
+    if not isinstance(attendees, list):
+        attendee = booking.get("attendee")
+        attendees = [attendee] if isinstance(attendee, dict) else []
+    email = ""
+    for person in attendees:
+        if isinstance(person, dict):
+            email = str(person.get("email") or "").strip().lower()
+            if email:
+                break
+    if not email:
+        return JSONResponse(
+            {"error": "no_attendee_email",
+             "message": "The webhook payload carried no attendee email to match."},
+            status_code=400,
+        )
+
+    state = _state()
+    await state.init_db()
+    prospect = await state.get_prospect_by_email(email)
+    if prospect is None:
+        # Not one of ours (a booking made by hand, or someone else's
+        # calendar): acknowledge so Cal.com stops retrying, change nothing.
+        return {"received": True, "matched": False}
+
+    await state.update_prospect_status(prospect.id, "meeting")
+    cancelled = await state.cancel_pending_outbox_for_prospect(
+        prospect.id, reason="meeting_booked")
+    convo_id = ""
+    try:
+        rows = await query_db(
+            "SELECT id FROM conversations WHERE prospect_id = ? ORDER BY updated_at DESC LIMIT 1",
+            (prospect.id,))
+        if rows:
+            convo_id = rows[0]["id"]
+            await state.update_conversation(convo_id, status="meeting_booked")
+    except Exception as exc:
+        logger.warning("Cal.com webhook: conversation not updated: %s", exc)
+    await state.log_action(
+        action_type="meeting_booked", agent="calcom_webhook",
+        details={"prospect_id": prospect.id, "prospect_email": email,
+                 "conversation_id": convo_id, "cancelled_emails": cancelled,
+                 "booking_title": str(booking.get("title") or "")[:200],
+                 "booking_start": str(booking.get("start") or "")[:60]})
+    return {"received": True, "matched": True, "cancelled_emails": cancelled}
+
+
 TEXT_TYPES = {".css": "text/css", ".js": "text/javascript", ".svg": "image/svg+xml"}
 BINARY_TYPES = {".woff2": "font/woff2", ".woff": "font/woff", ".png": "image/png"}
 

@@ -59,10 +59,11 @@ class LinkedInAutomation:
                         "date": today,
                         "search_pages": int(data.get("search_pages", 0)),
                         "profile_views": int(data.get("profile_views", 0)),
+                        "connections": int(data.get("connections", 0)),
                     }
         except (ValueError, OSError) as e:
             logger.debug(f"Could not load LinkedIn activity log: {e}")
-        return {"date": today, "search_pages": 0, "profile_views": 0}
+        return {"date": today, "search_pages": 0, "profile_views": 0, "connections": 0}
 
     def _save_activity(self):
         try:
@@ -75,14 +76,16 @@ class LinkedInAutomation:
         # Roll over if the date changed mid-run
         today = date.today().isoformat()
         if self._activity.get("date") != today:
-            self._activity = {"date": today, "search_pages": 0, "profile_views": 0}
+            self._activity = {"date": today, "search_pages": 0, "profile_views": 0,
+                              "connections": 0}
         self._activity[kind] = self._activity.get(kind, 0) + 1
         self._save_activity()
 
     def _cap_reached(self, kind: str, cap: int) -> bool:
         today = date.today().isoformat()
         if self._activity.get("date") != today:
-            self._activity = {"date": today, "search_pages": 0, "profile_views": 0}
+            self._activity = {"date": today, "search_pages": 0, "profile_views": 0,
+                              "connections": 0}
         if self._activity.get(kind, 0) >= cap:
             logger.warning(
                 f"LinkedIn daily cap reached for {kind} "
@@ -431,3 +434,66 @@ class LinkedInAutomation:
         except Exception as e:
             logger.error(f"Error extracting profile {linkedin_url}: {e}")
             return None
+
+    # ── Connection requests (touchpoints between email steps) ──
+
+    MAX_DAILY_CONNECTIONS = 15  # inside LinkedIn's ~100/day ceiling, deliberately low
+
+    async def send_connection_request(
+        self, linkedin_url: str, *, note: str = ""
+    ) -> bool:
+        """Send a connection request from a profile page.
+
+        Returns True only when LinkedIn accepted the invite. Any doubt —
+        page didn't load, button missing, already connected, a cap hit —
+        returns False so the caller can leave the touch as a plain view.
+        """
+        if not self.page:
+            await self.start()
+            if not await self.login():
+                return False
+        if self._cap_reached("connections", self.MAX_DAILY_CONNECTIONS):
+            return False
+
+        try:
+            await self.page.goto(linkedin_url, timeout=30000)
+        except Exception as e:
+            logger.warning(f"Failed to load profile for connect: {e}")
+            return False
+
+        self._record("connections")
+        await self._random_delay(3, 5)
+        await self._wait_settled()
+        await self._humanlike_scroll()
+
+        try:
+            # The connect button, whatever the page calls it this month.
+            connect = await self.page.query_selector(
+                "button[aria-label*='Connect' i], button[aria-label*='Add' i], "
+                "button.full-width-button:not([disabled])"
+            )
+            if not connect:
+                logger.info("No connect button found (already connected or restricted).")
+                return False
+            await connect.click()
+            await self._random_delay(1, 2)
+
+            # The modal some flows show: confirm, and paste the note if given.
+            modal = await self.page.query_selector("div[role='dialog']")
+            if modal:
+                if note:
+                    field = await modal.query_selector("textarea")
+                    if field:
+                        await field.fill(note[:300])
+                        await self._random_delay(0.5, 1)
+                confirm = await modal.query_selector(
+                    "button[aria-label*='Send' i], button[aria-label*='Connect' i], "
+                    "button[type='submit']"
+                )
+                if confirm:
+                    await confirm.click()
+            await self._wait_settled(8000)
+            return True
+        except Exception as e:
+            logger.warning(f"Connection request to {linkedin_url} failed: {e}")
+            return False

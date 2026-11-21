@@ -347,7 +347,21 @@ class Writer:
 
             # Generate the email sequence
             self._no_reply = False
-            sequence = await self._write_sequence(prospects)
+            # Phase 4 bandit: pick this batch's framework by Thompson
+            # sampling over real reply outcomes, and tell the model to use it.
+            framework = ""
+            framework_line = ""
+            try:
+                from sellbird.bandit import (choose_framework, instruction_for,
+                                             known_frameworks)
+                frameworks = known_frameworks(self.config)
+                if frameworks != ("built_in",):
+                    stats = await self.state.framework_stats()
+                    framework = choose_framework(stats, frameworks)
+                    framework_line = instruction_for(framework)
+            except Exception as exc:
+                logger.debug("Writer: framework selection skipped: %s", exc)
+            sequence = await self._write_sequence(prospects, framework_line=framework_line)
             if not sequence:
                 paused = getattr(self.brain, "paused_reason", "") or (
                     "no reply from the model" if self._no_reply else "")
@@ -369,6 +383,7 @@ class Writer:
                 sequence=sequence,
                 prospect_ids=[p.id for p in prospects],
                 status="draft",
+                framework=framework,
             )
             campaign_id = await self.state.add_campaign(campaign)
 
@@ -684,7 +699,7 @@ Return ONLY JSON: {{"subject": "...", "body": "..."}}"""
             return None
         return {"subject": subject[:120], "body": body[:2000]}
 
-    async def _write_sequence(self, prospects: list) -> list[EmailStep]:
+    async def _write_sequence(self, prospects: list, *, framework_line: str = "") -> list[EmailStep]:
         """Ask the brain to write a 3-email sequence."""
         # Build context about the prospects
         prospect_summary = "\n".join(
@@ -754,6 +769,10 @@ Pricing: {self.config.product.pricing}"""
             shape, style = SEQUENCE_SHAPE, "\n" + SEQUENCE_STYLE
             strict = "- Follow every rule in the STRICT EMAIL RULES above. No exceptions."
 
+        # Bandit: this batch's framework, when one was chosen. It shapes the
+        # first email only, and never overrides the strict rules above.
+        framework_note = f"\n{framework_line}" if framework_line else ""
+
         prompt += f"""
 
 Write a 3-email cold outreach sequence for prospects like these:
@@ -765,7 +784,7 @@ Requirements:
 {shape}
 {merge_rule}{style}
 {footer_rule(self.config, rules)}
-{strict}
+{strict}{framework_note}
 
 Return ONLY a JSON array (no markdown fences, no commentary):
 [

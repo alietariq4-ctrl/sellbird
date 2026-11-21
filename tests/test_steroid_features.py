@@ -855,6 +855,8 @@ async def test_microsoft_stored_tenant_and_email_finder_ttl_and_send_window_and_
     ai_brain = SimpleNamespace(think=AsyncMock(return_value="Double down on HVAC leads in Colorado."))
     cfg = load_config()
     cfg.channels.email.provider = "gmail"
+    # AI insights are opt-in (they spend a model call per idle cycle).
+    cfg.analyst.ai_insights = True
     analyst = Analyst(state, brain=ai_brain, config=cfg)
 
     insights_blocked = analyst._generate_insights({

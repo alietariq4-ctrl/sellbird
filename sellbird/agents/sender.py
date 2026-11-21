@@ -1239,6 +1239,23 @@ class Sender:
             if prospect.status in ("new", "queued"):
                 await self.state.update_prospect_status(prospect.id, "contacted")
 
+            # LinkedIn touchpoint: the first email out is the moment to make
+            # the follow-up land from a familiar name. One touch per prospect,
+            # ever; the automation's own caps decide how many run per day.
+            if (item["kind"] == "sequence" and int(item.get("step") or 1) == 1
+                    and getattr(self.config.channels, "linkedin", None) is not None
+                    and getattr(self.config.channels.linkedin, "enabled", False)
+                    and (getattr(prospect, "linkedin_url", "") or "").strip()):
+                try:
+                    await self.state.schedule_linkedin_touch(
+                        prospect.id, prospect.linkedin_url,
+                        action="connect" if getattr(
+                            self.config.channels.linkedin, "send_connect", False
+                        ) else "view",
+                    )
+                except Exception as e:
+                    logger.debug(f"Sender: LinkedIn touch not scheduled: {e}")
+
             # A sent reply belongs in its conversation thread.
             if item["kind"] == "reply" and item.get("conversation_id"):
                 try:

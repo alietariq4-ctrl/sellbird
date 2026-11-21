@@ -26,6 +26,9 @@ class Campaign(BaseModel):
     sequence: list[EmailStep] = Field(default_factory=list)
     status: str = "draft"  # draft/active/paused/completed
     prospect_ids: list[str] = Field(default_factory=list)
+    # Which copywriting framework this batch was written in ('' = built-in
+    # shape). The Thompson sampler (sellbird/bandit.py) learns from outcomes.
+    framework: str = ""
     created_at: datetime = Field(default_factory=_utcnow)
 
     def sequence_json(self) -> str:

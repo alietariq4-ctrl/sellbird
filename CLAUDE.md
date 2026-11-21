@@ -380,6 +380,7 @@ sellbird signals               # The signal vocabulary; --confirm / --reject COD
 sellbird discover              # Find businesses; --providers / --estimate / --provider <key>
 sellbird sending pause|resume  # Kill switch for all outbound
 sellbird warmup [domain]       # Sending-domain readiness: SPF/DKIM/DMARC, age, blocklists, ramp, TrulyInbox warmup
+sellbird dns-check [domain]    # Quick MX/SPF/DKIM/DMARC check (deeper with `pip install checkdmarc`)
 sellbird trulyinbox [connect|other]  # Warmup service: connect TrulyInbox, or record another service
 ```
 

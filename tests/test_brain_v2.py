@@ -6,6 +6,7 @@ from __future__ import annotations
 import asyncio
 import json
 import os
+import sys
 from pathlib import Path
 
 import httpx
@@ -177,9 +178,20 @@ def test_find_config_priority_order(tmp_path, monkeypatch):
     with use_home(Home.for_root(ws_root)):
         assert find_config(None).resolve() == ws_cfg.resolve()
 
-    # 3. PROJECT_ROOT / brain.yaml is found even when cwd is outside
+    # 3. PROJECT_ROOT / brain.yaml is found even when cwd is outside.
+    # Hermetic: point PROJECT_ROOT at a controlled dir, since brain.yaml is
+    # gitignored and never present in a clean checkout (or CI).
+    proj = tmp_path / "proj"
+    proj.mkdir()
+    (proj / "brain.yaml").write_text("chain:\n  - provider: ollama\n", encoding="utf-8")
+    import sellbird.paths as paths_mod
+    monkeypatch.setattr(paths_mod, "PROJECT_ROOT", proj)
+    dash = sys.modules.get("sellbird.dashboard")
+    if dash is not None:
+        monkeypatch.setattr(dash, "PROJECT_ROOT", proj, raising=False)
     found = find_config(None)
     assert found is not None and found.name == "brain.yaml"
+    assert found.resolve() == (proj / "brain.yaml").resolve()
 
 
 @pytest.mark.asyncio

@@ -4,6 +4,11 @@ Everything here is free and read-only: public DNS, RDAP, DNS blocklists, and
 Sellbird's own send history. None of it can measure inbox reputation directly
 (only mailbox providers know that), so the report also points at the two
 things that can: Google Postmaster Tools and an inbox-placement test.
+
+With ``pip install checkdmarc`` (optional), SPF and DMARC checks go deeper:
+checkdmarc parses the records the way receivers do, follows include chains to
+count every DNS lookup, and reports syntax errors the basic checks can't see.
+Without it the built-in checks run as before.
 """
 
 import re
@@ -90,6 +95,65 @@ def _unknown(name: str, e: LookupFailed) -> Check:
                  unknown=True)
 
 
+def _checkdmarc_deep_spf(domain: str) -> Check | None:
+    """checkdmarc's verdict on SPF, when the library is installed.
+
+    Follows include chains to count every DNS lookup (the basic check counts
+    top-level terms only) and catches syntax errors. None means not
+    installed or nothing conclusive: the caller keeps its own verdict.
+    """
+    try:
+        import checkdmarc
+    except ImportError:
+        return None
+    try:
+        parsed = checkdmarc.spf.get_spf_record(domain)
+    except Exception:
+        return None
+    try:
+        result = checkdmarc.spf.parse_spf_record(parsed["record"], domain)
+    except Exception as exc:
+        # SPFRecordNotFound etc. carry the reason; a syntax error is a fail.
+        name = type(exc).__name__
+        if "Syntax" in name or "TooMany" in name:
+            return Check("SPF", FAIL, f"checkdmarc: {exc}")
+        return None
+    lookups = result.get("dns_lookups", 0)
+    warnings = [str(w) for w in (result.get("warnings") or [])]
+    if lookups > 10:
+        return Check("SPF", FAIL, f"{lookups} DNS lookups through include chains "
+                     f"(limit is 10) - SPF will permerror.")
+    if warnings:
+        return Check("SPF", WARN, "; ".join(warnings[:3]))
+    return None
+
+
+def _checkdmarc_deep_dmarc(domain: str) -> Check | None:
+    """checkdmarc's verdict on DMARC, when the library is installed.
+
+    Parses the tag list the way receivers do (alignment, pct, rua) and
+    reports syntax errors. None means not installed or nothing conclusive.
+    """
+    try:
+        import checkdmarc
+    except ImportError:
+        return None
+    try:
+        result = checkdmarc.dmarc.check_dmarc(domain)
+    except Exception as exc:
+        name = type(exc).__name__
+        if "Syntax" in name or "NotFound" in name:
+            return Check("DMARC", FAIL, f"checkdmarc: {exc}")
+        return None
+    warnings = [str(w) for w in (result.get("warnings") or [])]
+    if not result.get("valid", True):
+        return Check("DMARC", FAIL, f"checkdmarc: invalid record - "
+                     f"{'; '.join(warnings) if warnings else result.get('record', '')}")
+    if warnings:
+        return Check("DMARC", WARN, "; ".join(warnings[:3]))
+    return None
+
+
 def check_mx(domain: str) -> Check:
     try:
         mx = sorted(_resolve(domain, "MX"), key=lambda r: r.preference)
@@ -122,6 +186,11 @@ def check_spf(domain: str) -> Check:
         return Check("SPF", WARN, f"'?all' is neutral; use '~all' or '-all': {spf}")
     if not any(t.lstrip("+-~?") == "all" or t.startswith("redirect=") for t in terms):
         return Check("SPF", WARN, f"No 'all' at the end, so it ends neutral; add '~all': {spf}")
+    # With checkdmarc installed, follow the include chains before saying OK:
+    # a record can be syntactically fine and still permerror on lookup count.
+    deep = _checkdmarc_deep_spf(domain)
+    if deep is not None:
+        return deep
     return Check("SPF", OK, spf)
 
 
@@ -143,6 +212,10 @@ def check_dmarc(domain: str) -> Check:
     if policy == "none":
         return Check("DMARC", WARN, f"p=none (monitoring only) - fine while warming; "
                      f"move to quarantine once reports look clean. {records[0]}")
+    # With checkdmarc installed, parse the full tag list before saying OK.
+    deep = _checkdmarc_deep_dmarc(domain)
+    if deep is not None:
+        return deep
     return Check("DMARC", OK, records[0])
 
 

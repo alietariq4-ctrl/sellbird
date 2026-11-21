@@ -154,6 +154,21 @@ compliance:
 # every email to 220 words and one link. skills/email_rules.md is gitignored.
 # writer:
 #   email_rules: "skills/email_rules.md"
+#   # Test copywriting frameworks against each other and let Sellbird learn
+#   # which earns the most replies (Thompson sampling). List two or more from
+#   # pas, bab, direct_offer, question_lead. Empty = the built-in shape only.
+#   frameworks: []
+
+# Competitive watch (optional): pages Sellbird reads on idle cycles and tells
+# you about when they change — a rival's pricing page, their careers page.
+# Findings go to you (Telegram/Slack alert + the Activity log), never into
+# cold emails. kind labels the alert: pricing | hiring | homepage.
+# competitor_watch:
+#   enabled: true
+#   watches:
+#     - name: "Rival pricing"
+#       url: "https://rival.example/pricing"
+#       kind: pricing
 
 # When someone says yes to your offer, hand them to the system that delivers it:
 # one tool on its MCP server. See sellbird/handoff.py. Leave it out to handle it yourself.

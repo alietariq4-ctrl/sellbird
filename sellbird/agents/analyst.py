@@ -106,6 +106,10 @@ class Analyst:
         """Ask Brain for one concise strategic recommendation when data exists."""
         if self.brain is None:
             return ""
+        # Opt-in: skip the model call unless the user enabled AI insights.
+        analyst_cfg = getattr(self.config, "analyst", None)
+        if not getattr(analyst_cfg, "ai_insights", False):
+            return ""
         pipeline = report.get("pipeline") or {}
         if sum(pipeline.values()) == 0:
             return ""

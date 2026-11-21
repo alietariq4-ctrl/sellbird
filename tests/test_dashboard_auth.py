@@ -75,8 +75,9 @@ def _protected_requests():
     for route in dash.app.routes:
         if not isinstance(route, Route):
             continue
-        if route.path in ("/", "/static/{path:path}", "/api/instance"):  # public by design
-            continue
+        if route.path in ("/", "/static/{path:path}", "/api/instance",
+                          "/api/webhooks/calcom"):  # public by design (the
+            continue  # webhook authenticates with its own HMAC secret)
         path = re.sub(r"\{[^}]+\}", "x", route.path)
         for method in sorted(route.methods - {"HEAD"}):
             out.append((method, path))

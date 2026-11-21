@@ -584,6 +584,45 @@ async def verify_reoon(email: str, api_key: str) -> Optional[dict]:
     return {"status": status, "catch_all": is_catch_all}
 
 
+async def verify_reacher(email: str, base_url: str) -> Optional[dict]:
+    """A self-hosted Reacher backend (github.com/reacherhq/check-if-email-exists).
+
+    Reacher does SMTP probing itself, so this only works where it runs: a
+    VPS/cloud host with outbound port 25 open (home and office lines block
+    it). That's why it's a plain REACHER_URL, not a first-class provider —
+    for everyone else the verifier keys do the same job.
+
+    Returns {'status': ..., 'catch_all': bool} or None if unavailable.
+    Reacher 'is_reachable' values: safe / risky / invalid / unknown.
+    """
+    url = (base_url or "").strip().rstrip("/")
+    if not url:
+        return None
+    if not url.startswith(("http://", "https://")):
+        url = "http://" + url
+    try:
+        async with httpx.AsyncClient(timeout=API_TIMEOUT) as client:
+            resp = await client.post(
+                f"{url}/v0/check_email",
+                json={"to_email": email},
+            )
+    except httpx.HTTPError as e:
+        logger.debug(f"Reacher request failed for {email}: {_redact(e, url)}")
+        return None
+    if resp.status_code != 200:
+        return None
+    try:
+        data = resp.json()
+    except ValueError:
+        return None
+    if not isinstance(data, dict):
+        return None
+    status = str(data.get("is_reachable") or "").lower()
+    smtp = data.get("smtp") if isinstance(data.get("smtp"), dict) else {}
+    catch_all = bool(smtp.get("is_catch_all")) or status == "risky"
+    return {"status": status, "catch_all": catch_all}
+
+
 async def verify_zerobounce(email: str, api_key: str) -> Optional[dict]:
     """ZeroBounce — its 2026 engine is the reliable one for M365/Workspace catch-alls."""
     try:
@@ -724,9 +763,20 @@ async def _verify_candidate(email: str, mx_type: str, env) -> tuple[Optional[str
                 return status, catch_all_seen
         return None, catch_all_seen
 
-    # Small / self-hosted: Reoon → SMTP (still works here) → Hunter.
+    # Small / self-hosted: Reoon → Reacher (self-hosted, if configured) →
+    # SMTP (still works here) → Hunter.
     if reoon_key:
         verdict = await verify_reoon(email, reoon_key)
+        if verdict:
+            if verdict.get("catch_all"):
+                catch_all_seen = True
+            status = _status_from_verdict(verdict)
+            if status is not None:
+                return status, catch_all_seen
+
+    reacher_url = getattr(env, "reacher_url", "") if env else ""
+    if reacher_url:
+        verdict = await verify_reacher(email, reacher_url)
         if verdict:
             if verdict.get("catch_all"):
                 catch_all_seen = True

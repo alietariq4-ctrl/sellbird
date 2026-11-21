@@ -1104,6 +1104,66 @@ def _warmup_service_check(address: str, warmup):
     return asyncio.run(_run())
 
 
+def cmd_dns_check(args):
+    """The authentication half of `sellbird warmup`, standalone.
+
+    For a quick "is my DNS right" before the full readiness report: MX, SPF,
+    DKIM and DMARC for the sending domain (or any domain passed as an
+    argument). With `pip install checkdmarc` the SPF and DMARC verdicts go
+    deeper: include chains are followed to count every DNS lookup, and the
+    records are parsed the way receivers parse them.
+    """
+    import os
+
+    from dotenv import load_dotenv
+
+    from sellbird import deliverability as d
+    from sellbird.config import ConfigError, load_config
+    from sellbird.paths import PROJECT_ROOT
+
+    domain = (args.domain or "").strip().lower().rstrip(".")
+    config = None
+    if not domain:
+        load_dotenv(PROJECT_ROOT / ".env")
+        try:
+            config = load_config()
+        except ConfigError as e:
+            print(f"\n  {e}\n")
+            raise SystemExit(1)
+        email = config.channels.email
+        smtp_user = os.getenv("SMTP_USERNAME", "").strip() if email.provider == "smtp" else ""
+        sender = smtp_user if "@" in smtp_user else config.persona.email
+        domain = sender.rpartition("@")[2].strip().lower().rstrip(".")
+    if not d.DOMAIN_RE.match(domain):
+        print("\n  No valid domain. Pass one: sellbird dns-check yourdomain.com\n")
+        raise SystemExit(1)
+
+    dkim_selector = ""
+    if config is None:
+        try:
+            load_dotenv(PROJECT_ROOT / ".env")
+            config = load_config()
+        except Exception:
+            config = None
+    if config is not None:
+        dkim_selector = getattr(config.channels.email.warmup, "dkim_selector", "") or ""
+
+    print(f"\n  DNS check - {domain}")
+    print("  " + "=" * 56)
+    checks = [d.check_mx(domain), d.check_spf(domain),
+              d.check_dkim(domain, dkim_selector), d.check_dmarc(domain)]
+    icons = {d.OK: "OK  ", d.WARN: "WARN", d.FAIL: "FAIL", d.INFO: "info"}
+    failed = 0
+    for c in checks:
+        failed += c.status == d.FAIL
+        print(f"    [{icons[c.status]}] {c.name:<26} {c.detail}")
+    print()
+    if failed:
+        print(f"  {failed} FAIL item(s) - fix these before any cold email.\n")
+        raise SystemExit(1)
+    print("  DNS looks right. Run `sellbird warmup` for the full readiness report.\n")
+
+
 def cmd_trulyinbox(args):
     """Connect TrulyInbox, record another warmup service, or show the status."""
     import getpass
@@ -1663,6 +1723,12 @@ def main():
     sub.add_argument("domain", nargs="?", default="",
                      help="Domain to check (default: your sending mailbox's domain)")
     sub.set_defaults(func=cmd_warmup)
+
+    sub = subparsers.add_parser(
+        "dns-check", help="Quick MX/SPF/DKIM/DMARC check for a sending domain")
+    sub.add_argument("domain", nargs="?", default="",
+                     help="Domain to check (default: your sending mailbox's domain)")
+    sub.set_defaults(func=cmd_dns_check)
 
     sub = subparsers.add_parser(
         "trulyinbox", help="Warmup service: connect TrulyInbox so Sellbird can read the inbox rate")

@@ -17,7 +17,10 @@ channels:
                 require_approval, send_to_risky, min_write_score, max_bounce_rate, follow_ups, warmup, send_window, signature }
 usage:        { max_daily_claude_percent, max_daily_usd, heartbeat_interval_minutes, quiet_hours }
 brain:        { provider: claude | codex, model, reasoning_effort, transport_factory }   # optional; claude by default
-writer:       { humanizer, site_facts, require_tip }   # optional; humanizer true adds one editing pass per batch using ~/.claude/skills/humanizer/SKILL.md
+competitor_watch: { enabled, watches: [{ name, url, kind }] }  # optional; watch named pages (a rival's
+              # pricing, careers, homepage) and alert the operator when one changes. kind labels the
+              # alert (pricing | hiring | homepage). Idle cycles only, no model calls, never emailed.
+writer:       { humanizer, site_facts, require_tip, frameworks }   # optional; humanizer true adds one editing pass per batch using ~/.claude/skills/humanizer/SKILL.md
               # site_facts (default true): the Writer sees what the free homepage signals found (no structured data,
               # a stale or very small site, AI crawlers blocked) so an email can name one concrete thing to change.
               # They come from an automated read of one page and can be wrong, so check a draft's claim
@@ -27,6 +30,10 @@ writer:       { humanizer, site_facts, require_tip }   # optional; humanizer tru
               # marked "no_tip" and skipped, instead of getting a draft that says it has no advice. The dashboard shows
               # them as "Nothing to write about yet"; `sellbird retry-writes --no-tip` puts them back in line.
               # email_rules: your own markdown rules for the emails' shape (see The skills library)
+              # frameworks (default empty): copywriting frameworks to test against each other. List two or
+              # more from pas, bab, direct_offer, question_lead; each campaign is written in one and tagged,
+              # and the next is picked by Thompson sampling over real reply outcomes, so more of what earns
+              # replies and some exploration of the rest. Empty = the built-in shape only (nothing changes).
 ```
 
 `min_write_score` (0-100, default 0) is the lowest Scout fit score the writer
@@ -36,6 +43,18 @@ sequence, so Claude calls and sends go to the best matches first.
 `follow_ups` (default true) set to `false` makes a campaign stage only its first email on Gmail, Microsoft and SMTP. Steps 2 and 3 are never prepared, so none can go out to someone who has not answered. A reply is still read, and the answer waits in the Outbox for you as usual. The Writer still drafts the whole sequence; the Sender just doesn't stage the later steps.
 
 `max_daily_claude_percent` caps whichever subscription `brain.provider` uses (the name predates Codex support).
+
+`crm` (Twenty CRM) pushes lead events out and can pull suppressions back in:
+
+```yaml
+crm:
+  provider: twenty                 # twenty | webhook | empty
+  inbound_enabled: false           # true: poll Twenty for do-not-contact people
+  inbound_field: doNotContact      # the Person custom boolean that means "never email"
+  inbound_max_records: 1000        # cap read per poll
+```
+
+Outbound needs `TWENTY_API_KEY` (and `TWENTY_BASE_URL` for self-hosted). With `inbound_enabled`, Sellbird reads people whose `inbound_field` is true (a server-side filter, one poll per heartbeat) and adds each address to its suppressions with reason `imported`, so a blocklist kept in Twenty actually stops emails here. Twenty's Person has no native unsubscribe field, so that field is a custom boolean you create. Polling, not webhooks: the dashboard is loopback-only.
 
 
 ### A transport instead of a subscription

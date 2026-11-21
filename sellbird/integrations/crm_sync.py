@@ -242,3 +242,160 @@ async def sync_lead_event(
     except Exception as exc:
         logger.debug("sync_lead_event error: %s", exc)
         return {"ok": False, "synced": [], "errors": [str(exc)]}
+
+
+# ── Inbound: pull do-not-contact people from Twenty into suppressions ──
+
+TWENTY_PAGE_SIZE = 60  # Twenty's default and a safe page size
+
+
+class TwentyInboundSync:
+    """Reads people marked do-not-contact in Twenty and suppresses them here.
+
+    Twenty's Person object has no native unsubscribe field, so this reads a
+    custom boolean field (``crm.inbound_field``, default ``doNotContact``)
+    with a server-side filter and feeds each matching person's email into
+    Sellbird's suppressions (reason ``imported``). Polling, not webhooks:
+    the dashboard is loopback-only. Never raises — a CRM hiccup must not
+    stall a heartbeat cycle.
+    """
+
+    def __init__(self, state, config=None, env=None, *, transport=None):
+        self.state = state
+        self.config = config
+        self.env = env
+        self._transport = transport
+
+    def _crm(self, attr: str, default=None):
+        crm_cfg = getattr(self.config, "crm", None)
+        if crm_cfg is None:
+            return default
+        v = getattr(crm_cfg, attr, default)
+        return default if v is None else v
+
+    def _val(self, attr: str, env_var: str, default: str = "") -> str:
+        crm_cfg = getattr(self.config, "crm", None)
+        v = (
+            (str(getattr(crm_cfg, attr, "") or "") if crm_cfg is not None else "")
+            or (str(getattr(self.env, attr, "") or "") if self.env is not None else "")
+            or os.getenv(env_var, "")
+        ).strip()
+        return v or default
+
+    @property
+    def api_key(self) -> str:
+        return self._val("twenty_api_key", "TWENTY_API_KEY")
+
+    @property
+    def base_url(self) -> str:
+        return self._val("twenty_base_url", "TWENTY_BASE_URL", DEFAULT_TWENTY_URL).rstrip("/")
+
+    @property
+    def field(self) -> str:
+        return str(self._crm("inbound_field", "doNotContact") or "doNotContact")
+
+    @property
+    def max_records(self) -> int:
+        try:
+            n = int(self._crm("inbound_max_records", 1000) or 1000)
+        except (TypeError, ValueError):
+            n = 1000
+        return max(1, min(n, 100_000))
+
+    def is_configured(self) -> bool:
+        crm_cfg = getattr(self.config, "crm", None)
+        enabled = bool(getattr(crm_cfg, "inbound_enabled", False)) if crm_cfg is not None else False
+        return bool(enabled and self.api_key)
+
+    def _client(self) -> httpx.AsyncClient:
+        extra = {"transport": self._transport} if self._transport is not None else {}
+        return httpx.AsyncClient(timeout=TIMEOUT, **extra)
+
+    @staticmethod
+    def _emails_from_person(person: dict) -> list[str]:
+        """Every address on a Twenty person, from the nested ``emails`` shape."""
+        out = []
+        emails = person.get("emails") if isinstance(person, dict) else None
+        if isinstance(emails, dict):
+            for key in ("primaryEmail", "additionalEmails"):
+                val = emails.get(key)
+                if isinstance(val, str) and val.strip():
+                    out.append(val.strip())
+                elif isinstance(val, list):
+                    out.extend(str(x).strip() for x in val if str(x).strip())
+        elif isinstance(emails, list):
+            out.extend(str(x).strip() for x in emails if str(x).strip())
+        return out
+
+    async def fetch_do_not_contact(self) -> list[str]:
+        """Emails of people whose do-not-contact field is true. [] on any error."""
+        if not self.api_key:
+            return []
+        field = self.field
+        headers = {"Authorization": f"Bearer {self.api_key}", "Accept": "application/json"}
+        found: list[str] = []
+        starting_after = ""
+        seen_pages = 0
+        max_pages = (self.max_records // TWENTY_PAGE_SIZE) + 2
+        async with self._client() as client:
+            while seen_pages < max_pages and len(found) < self.max_records:
+                params = {
+                    "limit": TWENTY_PAGE_SIZE,
+                    "filter": f"{field}[eq]:true",
+                    "fields": "id,emails",
+                }
+                if starting_after:
+                    params["starting_after"] = starting_after
+                try:
+                    resp = await client.get(
+                        f"{self.base_url}/rest/people", headers=headers, params=params)
+                except Exception as exc:
+                    logger.warning("Twenty inbound sync: request failed: %s", exc)
+                    break
+                if resp.status_code >= 400:
+                    logger.warning("Twenty inbound sync: HTTP %s", resp.status_code)
+                    break
+                try:
+                    body = resp.json() or {}
+                except ValueError:
+                    break
+                data = body.get("data") if isinstance(body, dict) else {}
+                people = data.get("people") if isinstance(data, dict) else None
+                if not isinstance(people, list) or not people:
+                    break
+                for person in people:
+                    if isinstance(person, dict):
+                        found.extend(self._emails_from_person(person))
+                # Cursor for the next page: the last record's id.
+                last = people[-1]
+                starting_after = str(last.get("id") or "") if isinstance(last, dict) else ""
+                seen_pages += 1
+                if not starting_after:
+                    break
+        return found[: self.max_records]
+
+    async def run(self) -> int:
+        """One poll: suppress every do-not-contact address. Returns how many
+        were newly added. Never raises."""
+        if not self.is_configured():
+            return 0
+        try:
+            emails = await self.fetch_do_not_contact()
+        except Exception as exc:
+            logger.warning("Twenty inbound sync failed: %s", exc)
+            return 0
+        added = 0
+        for email in emails:
+            try:
+                if await self.state.add_suppression(
+                    "address", email, reason="imported", source="twenty"
+                ):
+                    added += 1
+            except ValueError:
+                continue  # not a usable address; skip it
+            except Exception as exc:
+                logger.debug("Twenty inbound sync: could not suppress %s: %s", email, exc)
+        if added:
+            logger.info("Twenty inbound sync: suppressed %s address(es) marked "
+                        "do-not-contact in the CRM.", added)
+        return added

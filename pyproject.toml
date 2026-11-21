@@ -47,6 +47,11 @@ dev = [
     "pytest>=8.0,<9",
     "pytest-asyncio>=0.23,<1",
 ]
+# Deeper SPF/DMARC verdicts in `sellbird warmup` / `sellbird dns-check`:
+# include chains followed to count every DNS lookup, syntax errors caught.
+deliverability = [
+    "checkdmarc>=6.0,<7",
+]
 
 [project.urls]
 Homepage = "https://github.com/ethanplusai/sellbird"

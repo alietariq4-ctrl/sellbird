@@ -368,6 +368,11 @@ def sending_notice(config) -> str:
 
 class LinkedInChannelConfig(BaseModel):
     enabled: bool = False
+    # Touchpoints between email steps: when the first email goes out and the
+    # prospect has a profile, a light touch is queued. 'view' only, or a
+    # connection request too when send_connect is true (slower, riskier).
+    touchpoints: bool = False
+    send_connect: bool = False
     max_daily_connections: int = 20
     max_daily_messages: int = 10
 
@@ -812,6 +817,22 @@ class WriterConfig(BaseModel):
     # written for, instead of getting a draft that says it has no advice. Put
     # them back with `sellbird retry-writes --no-tip`, once more is known.
     require_tip: bool = False
+    # Copywriting frameworks the Writer may use (Phase 4, ROADMAP.md):
+    # "pas", "bab", "direct_offer", "question_lead". Empty = the built-in
+    # shape only (default; nothing changes). List two or more and Sellbird
+    # picks the next one by Thompson sampling over real reply outcomes
+    # (sellbird/bandit.py): more of what earns replies, some exploration of
+    # the rest. The built-in shape is always allowed alongside them.
+    frameworks: list[str] = Field(default_factory=list)
+
+    @field_validator("frameworks", mode="before")
+    @classmethod
+    def _clean_frameworks(cls, v):
+        if not v:
+            return []
+        if isinstance(v, str):
+            v = [v]
+        return [str(x).strip().lower() for x in v if str(x).strip()]
 
     @field_validator("email_rules", mode="before")
     @classmethod
@@ -960,6 +981,16 @@ class CrmConfig(BaseModel):
     sync_on: list[str] = Field(
         default_factory=lambda: ["replied", "accepted_offer", "meeting_booked"]
     )
+    # Inbound sync (Twenty only): pull people marked do-not-contact in the
+    # CRM into Sellbird's suppressions, so a hand-kept blocklist on the CRM
+    # side actually stops emails here. Off by default; polling, since the
+    # dashboard is loopback-only and webhooks need a public URL.
+    inbound_enabled: bool = False
+    # The Person field that means "never email": a custom boolean, since
+    # Twenty's Person has no native do-not-contact field.
+    inbound_field: str = "doNotContact"
+    # Cap on people read per poll, so a huge CRM never stalls a cycle.
+    inbound_max_records: int = 1000
 
     @field_validator("provider", mode="before")
     @classmethod
@@ -972,13 +1003,53 @@ class CrmConfig(BaseModel):
             )
         return v
 
+    @field_validator("inbound_field", mode="before")
+    @classmethod
+    def _clean_inbound_field(cls, v) -> str:
+        v = "doNotContact" if v is None else str(v).strip()
+        # A field name goes straight into a query param: keep it to the shape
+        # Twenty uses for camelCase custom fields.
+        return v if v.replace("_", "").isalnum() else "doNotContact"
+
 
 class CopilotConfig(BaseModel):
     telegram_enabled: bool = False
     slack_enabled: bool = False
+    # Credentials may live here or in .env (TELEGRAM_BOT_TOKEN /
+    # TELEGRAM_CHAT_ID); the two-way copilot needs both, and the chat id is
+    # also the allowlist: commands from any other chat are ignored.
+    telegram_bot_token: str = ""
+    telegram_chat_id: str = ""
     notify_on: list[str] = Field(
         default_factory=lambda: ["hot_reply", "meeting_booked", "outbox_queued", "paused"]
     )
+
+
+class CompetitorWatch(BaseModel):
+    """One page to watch, e.g. a competitor's pricing page."""
+    name: str = ""
+    url: str = ""
+    kind: str = "homepage"  # pricing | hiring | homepage (labels the alert)
+
+
+class CompetitorWatchConfig(BaseModel):
+    # Scheduled monitor (Phase 4, ROADMAP.md): watch pages the operator
+    # names and alert when something there changes — a price, a role, a
+    # stack. Findings go to the operator only, never into cold emails.
+    enabled: bool = False
+    watches: list[CompetitorWatch] = Field(default_factory=list)
+
+    @field_validator("watches", mode="before")
+    @classmethod
+    def _blank_watches(cls, v):
+        return [] if v is None else v
+
+
+class AnalystConfig(BaseModel):
+    # Opt-in: the Analyst's AI strategy note spends a model call on every
+    # idle/prospect cycle. Off by default so idle cycles stay free, matching
+    # the cost-discipline contract that send-only cycles make no model calls.
+    ai_insights: bool = False
 
 
 class SellbirdConfig(BaseModel):
@@ -996,6 +1067,9 @@ class SellbirdConfig(BaseModel):
     calendar: CalendarConfig = Field(default_factory=CalendarConfig)
     crm: CrmConfig = Field(default_factory=CrmConfig)
     copilot: CopilotConfig = Field(default_factory=CopilotConfig)
+    analyst: AnalystConfig = Field(default_factory=AnalystConfig)
+    competitor_watch: CompetitorWatchConfig = Field(
+        default_factory=CompetitorWatchConfig)
     # The file it was loaded from, so a running Sellbird can re-read the
     # sending mode from that same file (refresh_sending_mode).
     _source_path: str | None = PrivateAttr(default=None)
@@ -1020,10 +1094,20 @@ class SellbirdConfig(BaseModel):
     def _blank_crm(cls, v):
         return CrmConfig() if v is None else v
 
+    @field_validator("competitor_watch", mode="before")
+    @classmethod
+    def _blank_competitor_watch(cls, v):
+        return CompetitorWatchConfig() if v is None else v
+
     @field_validator("copilot", mode="before")
     @classmethod
     def _blank_copilot(cls, v):
         return CopilotConfig() if v is None else v
+
+    @field_validator("analyst", mode="before")
+    @classmethod
+    def _blank_analyst(cls, v):
+        return AnalystConfig() if v is None else v
 
 
 class EnvConfig(BaseModel):
@@ -1044,6 +1128,10 @@ class EnvConfig(BaseModel):
     searxng_url: str = ""
     reoon_api_key: str = ""
     zerobounce_api_key: str = ""
+    # A self-hosted Reacher backend (github.com/reacherhq/check-if-email-exists),
+    # as http://host:8080. Reacher probes SMTP itself, so this only works
+    # from a VPS/cloud host with outbound port 25 open.
+    reacher_url: str = ""
     # Native mail providers (channels.email.provider: gmail | smtp)
     gmail_client_id: str = ""
     gmail_client_secret: str = ""
@@ -1258,6 +1346,7 @@ def load_env() -> EnvConfig:
         searxng_url=os.getenv("SEARXNG_URL", "").strip(),
         reoon_api_key=os.getenv("REOON_API_KEY", "").strip(),
         zerobounce_api_key=os.getenv("ZEROBOUNCE_API_KEY", "").strip(),
+        reacher_url=os.getenv("REACHER_URL", "").strip(),
         gmail_client_id=os.getenv("GMAIL_CLIENT_ID", "").strip(),
         gmail_client_secret=os.getenv("GMAIL_CLIENT_SECRET", "").strip(),
         smtp_host=os.getenv("SMTP_HOST", "").strip(),

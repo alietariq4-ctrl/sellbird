@@ -1109,6 +1109,26 @@ class Handler:
             except Exception as exc:
                 logger.debug(f"Handler: Copilot alert skipped: {exc}")
 
+        # A reply asking about pricing is the moment to answer in person:
+        # the auto-reply drafts something, and the operator may want to step
+        # in with real numbers before it goes.
+        if intent == "question" and any(
+            w in (reply_text or "").lower() for w in
+            ("price", "pricing", "cost", "how much", "what do you charge")
+        ):
+            try:
+                await notify_operator(
+                    "pricing_question",
+                    f"{prospect.full_name() or lead_email} asked about pricing",
+                    reply_text[:240],
+                    details={"email": lead_email, "company": prospect.company,
+                             "stage": convo.stage},
+                    config=self.config,
+                    env=self.env,
+                )
+            except Exception as exc:
+                logger.debug(f"Handler: Copilot alert skipped: {exc}")
+
         if intent not in AUTO_REPLY_INTENTS:
             logger.warning(f"Handler: No auto-reply policy for intent '{intent}'. Skipping reply.")
             return
@@ -1420,15 +1440,32 @@ class Handler:
         )
 
         max_rate = getattr(self.config.channels.email, "max_bounce_rate", 0.05)
-        if (
+        # Two views of the same danger: the all-time rate (a bad list from day
+        # one) and the last 4 hours (a list that went bad today). Either one
+        # past the limit trips the switch; a clean recent window alone doesn't
+        # untrip it — resuming is the operator's call.
+        window_bounces, window_sends = await self.state.bounce_rate_window(hours=4)
+        cumulative_trip = (
             max_rate > 0
             and total_sent >= MIN_SENDS_FOR_KILL_SWITCH
             and bounces / total_sent > max_rate
-        ):
-            reason = (
-                f"bounce rate {bounces}/{total_sent} exceeded "
-                f"{max_rate:.0%} — check list quality before resuming"
-            )
+        )
+        window_trip = (
+            max_rate > 0
+            and window_sends >= MIN_SENDS_FOR_KILL_SWITCH
+            and window_bounces / window_sends > max_rate
+        )
+        if cumulative_trip or window_trip:
+            if window_trip and not cumulative_trip:
+                reason = (
+                    f"bounce rate {window_bounces}/{window_sends} in the last 4 hours "
+                    f"exceeded {max_rate:.0%} — check list quality before resuming"
+                )
+            else:
+                reason = (
+                    f"bounce rate {bounces}/{total_sent} exceeded "
+                    f"{max_rate:.0%} — check list quality before resuming"
+                )
             await self.state.set_setting(KILL_SWITCH_KEY, reason)
             logger.error(f"Handler: KILL SWITCH ENGAGED — {reason}")
             try:
@@ -1436,7 +1473,8 @@ class Handler:
                     "sending_paused",
                     "Sending Paused — Bounce Kill Switch Engaged",
                     reason,
-                    details={"bounces": bounces, "total_sent": total_sent},
+                    details={"bounces": bounces, "total_sent": total_sent,
+                             "window_bounces": window_bounces, "window_sends": window_sends},
                     config=self.config,
                     env=self.env,
                 )

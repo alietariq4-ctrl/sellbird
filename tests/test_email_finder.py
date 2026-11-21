@@ -1,5 +1,6 @@
 """Tests for the pattern-first email pipeline."""
 
+import json
 import os
 import tempfile
 
@@ -33,6 +34,7 @@ class Env:
     def __init__(self, **kw):
         self.reoon_api_key = kw.get("reoon", "")
         self.zerobounce_api_key = kw.get("zerobounce", "")
+        self.reacher_url = kw.get("reacher", "")
 
 
 # ── pattern building / inference ──
@@ -80,7 +82,86 @@ def test_classify_mx():
 # ── verdict → status mapping ──
 
 
+@pytest.mark.asyncio
+async def test_verify_reacher_maps_the_reacher_response():
+    """Reacher's /v0/check_email shape: is_reachable + smtp.is_catch_all."""
+    import httpx
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        assert request.url.path == "/v0/check_email"
+        body = json.loads(request.content)
+        assert body == {"to_email": "jane@acme.example"}
+        return httpx.Response(200, json={
+            "input": "jane@acme.example", "is_reachable": "safe",
+            "smtp": {"is_catch_all": False, "can_connect_smtp": True},
+        })
+
+    verdict = await _reacher_with_transport(handler, "jane@acme.example")
+    assert verdict == {"status": "safe", "catch_all": False}
+
+
+async def _reacher_with_transport(handler, email, url="http://reacher.internal:8080"):
+    """verify_reacher builds its own client, so patch httpx for the test."""
+    import httpx
+
+    real_client = httpx.AsyncClient
+
+    class _Client:
+        def __init__(self, *a, **kw):
+            self._c = real_client(transport=httpx.MockTransport(handler),
+                                 timeout=kw.get("timeout"))
+
+        async def __aenter__(self):
+            return self._c
+
+        async def __aexit__(self, *exc):
+            await self._c.aclose()
+
+    import sellbird.integrations.email_finder as efmod
+    original = efmod.httpx.AsyncClient
+    efmod.httpx.AsyncClient = _Client
+    try:
+        return await efmod.verify_reacher(email, url)
+    finally:
+        efmod.httpx.AsyncClient = original
+
+
+@pytest.mark.asyncio
+async def test_verify_reacher_marks_a_catch_all_risky():
+    import httpx
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(200, json={
+            "is_reachable": "risky",
+            "smtp": {"is_catch_all": True},
+        })
+
+    verdict = await _reacher_with_transport(handler, "info@acme.example")
+    assert verdict == {"status": "risky", "catch_all": True}
+    assert _status_from_verdict(verdict) == "risky"
+
+
+@pytest.mark.asyncio
+async def test_verify_reacher_without_a_url_is_none():
+    assert await ef.verify_reacher("jane@acme.example", "") is None
+
+
+@pytest.mark.asyncio
+async def test_verify_reacher_survives_a_down_backend():
+    import httpx
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(500, json={"error": "boom"})
+
+    assert await _reacher_with_transport(handler, "jane@acme.example") is None
+
+
 def test_status_from_verdict():
+    # Reacher's four is_reachable values map through the same verdict logic.
+    assert _status_from_verdict({"status": "safe", "catch_all": False}) == "verified"
+    assert _status_from_verdict({"status": "risky", "catch_all": True}) == "risky"
+    assert _status_from_verdict({"status": "invalid", "catch_all": False}) == "invalid"
+    assert _status_from_verdict({"status": "unknown", "catch_all": False}) is None
     assert _status_from_verdict({"status": "valid", "catch_all": False}) == "verified"
     assert _status_from_verdict({"status": "deliverable"}) == "verified"
     assert _status_from_verdict({"status": "invalid"}) == "invalid"

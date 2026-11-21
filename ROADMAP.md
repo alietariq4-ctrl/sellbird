@@ -107,24 +107,31 @@ flowchart LR
 - [x] Design premium OLED dark glassmorphism dashboard UI with Brain Studio and Clay AI tabs.
 - [x] Add ASCII Art system banner and CLI diagnostic commands (`sellbird brain doctor`, `sellbird research`).
 
-### Phase 3: Auto-Booking, CRM & Multi-Channel Expansion 🚀 (IN PROGRESS / NEXT)
-- [ ] **Native Cal.com Booking Webhook**:
+### Phase 3: Auto-Booking, CRM & Multi-Channel Expansion ✅ (COMPLETED)
+- [x] **Native Cal.com Booking Webhook**:
   - Accept inbound booking confirmations from Cal.com webhooks (`/api/webhooks/calcom`).
   - Automatically advance prospect status to `converted` and cancel pending follow-up email steps.
-- [ ] **Bidirectional Twenty CRM Synchronization**:
+  - `sellbird/dashboard.py` `/api/webhooks/calcom`: HMAC-SHA256 via `CALCOM_WEBHOOK_SECRET` (fail closed), matches the attendee to a prospect, marks them `meeting`, cancels their queued follow-ups and logs `meeting_booked`.
+- [x] **Bidirectional Twenty CRM Synchronization**:
   - Sync custom company observations into Twenty CRM custom fields.
   - Pull unsubscribe/do-not-contact suppressions from CRM back into SQLite.
-- [ ] **Multi-Channel LinkedIn Touchpoints**:
+  - Outbound (lead events → Twenty) existed; inbound (`sellbird/integrations/crm_sync.py` `TwentyInboundSync`) reads a Person's custom boolean (`crm.inbound_field`, default `doNotContact`) with a server-side filter and suppresses each address (`reason='imported'`). Opt-in via `crm.inbound_enabled`, polled once per heartbeat, Twenty only.
+- [x] **Multi-Channel LinkedIn Touchpoints**:
   - Add optional LinkedIn connection request & profile view actions between Email Step 1 and Step 2.
-- [ ] **Interactive Copilot via Telegram Bot**:
+  - `channels.linkedin.touchpoints` (with `send_connect` for requests vs views): the Sender queues one touch per prospect when email 1 goes out; the heartbeat drains them inside the automation's own daily caps (`sellbird/integrations/linkedin.py`).
+- [x] **Interactive Copilot via Telegram Bot**:
   - Two-way Telegram bot commands: `/approve <id>`, `/reject <id>`, `/edit <id>`, `/status`.
   - Send instant push notifications when a prospect replies positively or asks for pricing.
+  - `sellbird/integrations/copilot.py`: long-poll once per heartbeat, chat-id allowlist, inline Approve/Reject buttons; `/edit` rewrites a waiting email's body (pending_review only, 2000-char cap). The Handler pushes positive replies and pricing questions (`pricing_question`).
 
-### Phase 4: Autonomous Strategy Evolution & Auto-Optimization 🔮 (FUTURE)
-- [ ] **Bandit-Algorithm Framework Optimization**:
+### Phase 4: Autonomous Strategy Evolution & Auto-Optimization ✅ (COMPLETED)
+- [x] **Bandit-Algorithm Framework Optimization**:
   - Automatically allocate traffic across cold email frameworks (e.g., PAS vs. BAB vs. Direct Offer) based on real reply rates.
-- [ ] **Domain Reputation & Burn Detection**:
+  - `writer.frameworks` lists the frameworks to test (`pas`, `bab`, `direct_offer`, `question_lead`); each campaign is written in one and tagged, and the next is chosen by Thompson sampling over real replies (`sellbird/bandit.py`). Off by default (built-in shape only).
+- [x] **Domain Reputation & Burn Detection**:
   - Real-time DNS SPF/DKIM/DMARC monitoring.
   - Automatic sending pause if bounce rate exceeds 2.5% in any 4-hour window.
-- [ ] **Competitive Intelligence Tracker**:
+  - DNS: `sellbird dns-check` (MX/SPF/DKIM/DMARC standalone) and deeper SPF/DMARC verdicts with `pip install checkdmarc` — include chains followed, syntax errors caught (`sellbird/deliverability.py`). The bounce kill switch now watches both the all-time rate and a rolling 4-hour window (`state.bounce_rate_window`); either past `channels.email.max_bounce_rate` pauses sending.
+- [x] **Competitive Intelligence Tracker**:
   - Scheduled monitor alerting on competitor price changes, team hires, or new tech stack adoptions.
+  - `competitor_watch` in sellbird.yaml: named pages (a rival's pricing, careers, homepage) fetched on idle cycles through the same stealth waterfall as profiling; a change from the stored baseline alerts the operator (copilot) and logs an action. No model calls, and findings never reach cold emails.

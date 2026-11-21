@@ -336,6 +336,59 @@ async def _spend_today_usd(state, brain) -> float:
         return 0.0
 
 
+async def run_linkedin_touches(state, config, env, limit: int = 10) -> int:
+    """Drain due LinkedIn touchpoints (profile views / connection requests).
+
+    Runs only when the channel is on with touchpoints enabled; the
+    automation's own persisted daily caps decide how many actually happen.
+    A failed touch is recorded and never retried by the loop (the operator
+    can see it in the Activity log); a login failure stops the batch —
+    retrying it all cycle would just hammer LinkedIn.
+    """
+    li_cfg = getattr(getattr(config, "channels", None), "linkedin", None)
+    if (li_cfg is None or not getattr(li_cfg, "enabled", False)
+            or not getattr(li_cfg, "touchpoints", False)):
+        return 0
+    if not (getattr(env, "linkedin_email", "") or "").strip():
+        return 0
+    try:
+        due = await state.due_linkedin_touches(limit=limit)
+    except Exception:
+        return 0
+    if not due:
+        return 0
+
+    from sellbird.integrations.linkedin import LinkedInAutomation
+
+    linkedin = LinkedInAutomation(env.linkedin_email, env.linkedin_password)
+    done = 0
+    try:
+        await linkedin.start()
+        if not await linkedin.login():
+            logger.warning("LinkedIn touchpoints: login failed; leaving touches queued.")
+            return 0
+        for touch in due:
+            url = str(touch.get("linkedin_url") or "").strip()
+            if not url:
+                await state.finish_linkedin_touch(touch["id"], error="no profile url")
+                continue
+            try:
+                if touch.get("action") == "connect":
+                    ok = await linkedin.send_connection_request(url)
+                else:
+                    ok = await linkedin.extract_profile(url) is not None
+                await state.finish_linkedin_touch(touch["id"], error="" if ok else "action failed")
+                done += 1
+            except Exception as exc:
+                await state.finish_linkedin_touch(touch["id"], error=str(exc))
+    finally:
+        try:
+            await linkedin.stop()
+        except Exception:
+            pass
+    return done
+
+
 async def _close_brain(brain) -> None:
     if brain is not None and hasattr(brain, "aclose"):
         try:
@@ -555,6 +608,11 @@ async def heartbeat(stop_event: asyncio.Event | None = None):
                             tasks.append(("deep_research", researcher.run()))
                     if enricher is not None and await _has_enrichment_columns(state):
                         tasks.append(("clay_enrich", enricher.run()))
+                    # Competitive watch: idle cycles only, no model calls —
+                    # the diff is plain text comparison.
+                    from sellbird.collectors.competitor_watch import run_competitor_watch
+                    tasks.append(("competitor_watch",
+                                  run_competitor_watch(state, config=config, env=env)))
 
                 send_tasks = []
                 if action == "send_campaign":
@@ -566,6 +624,24 @@ async def heartbeat(stop_event: asyncio.Event | None = None):
 
                 if summary.get("unprofiled", 0):
                     tasks.append(("profile", run_profile_stage(state, limit=25, config=config)))
+
+                # LinkedIn touchpoints queued by the Sender: a few per cycle,
+                # inside the automation's own daily caps.
+                tasks.append(("linkedin_touches",
+                              run_linkedin_touches(state, config, env)))
+
+                # Two-way Telegram copilot: one poll per cycle for operator
+                # commands and button taps (loopback dashboard, so no webhook).
+                from sellbird.integrations.copilot import poll_telegram_commands
+                tasks.append(("copilot_poll",
+                              poll_telegram_commands(state, config=config, env=env)))
+
+                # Inbound CRM sync: pull people marked do-not-contact in
+                # Twenty into suppressions (opt-in, Twenty only).
+                from sellbird.integrations.crm_sync import TwentyInboundSync
+                inbound = TwentyInboundSync(state, config=config, env=env)
+                if inbound.is_configured():
+                    tasks.append(("crm_inbound", inbound.run()))
 
                 outcomes = await _run_agents(tasks)
 

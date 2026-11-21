@@ -444,6 +444,70 @@ async def test_bounce_marks_invalid_and_kill_switch(state):
 
 
 @pytest.mark.asyncio
+async def test_a_burst_of_bounces_today_trips_the_window_switch(state):
+    """The 4-hour window catches a list that went bad today, even when the
+    all-time rate is still under the limit."""
+    pid = await seed_prospect(state, status="contacted")
+    # 100 sent long ago: the all-time rate stays low no matter what happens now.
+    for i in range(100):
+        oid = await state.add_outbox_item(
+            prospect_id=pid, to_email="jane@acme.com", subject="s", body="b",
+            send_at="2026-01-01T10:00:00", status="approved", campaign_id=f"old{i}", step=1,
+        )
+        await state.update_outbox_item(oid, status="sent", sent_at="2026-01-01T10:00:00")
+    # 10 sent just now, and a bounce referencing one of them.
+    recent_id = None
+    for i in range(10):
+        oid = await state.add_outbox_item(
+            prospect_id=pid, to_email="jane@acme.com", subject="s", body="b",
+            send_at=_now_iso(), status="approved", campaign_id=f"new{i}", step=1,
+        )
+        await state.update_outbox_item(oid, status="sent", sent_at=_now_iso())
+        recent_id = recent_id or oid
+    await state.update_outbox_item(recent_id, message_id="<m9@x>")
+
+    provider = FakeProvider()
+    provider.inbound = [InboundMessage(
+        provider_id="b2", from_email="mailer-daemon@googlemail.com",
+        subject="Delivery Status Notification (Failure)",
+        body="couldn't be delivered", in_reply_to="<m9@x>", is_bounce=True,
+    )]
+    handler = make_handler(state, provider)
+    await handler._run_native()
+
+    # All-time: 1/110 = 0.9% — under the limit. Window: 1/10 = 10% — over.
+    bounces, sends = await state.bounce_rate_window(hours=4)
+    assert (bounces, sends) == (1, 10)
+    assert await state.get_setting("sending_paused") != ""
+    reason = await state.get_setting("sending_paused")
+    assert "last 4 hours" in reason
+
+
+@pytest.mark.asyncio
+async def test_a_clean_window_does_not_trip_the_switch(state):
+    """Old bounces outside the window don't count against today's sends."""
+    pid = await seed_prospect(state, status="contacted")
+    # 10 sent long ago with a bounce back then: all outside the window.
+    for i in range(10):
+        oid = await state.add_outbox_item(
+            prospect_id=pid, to_email="jane@acme.com", subject="s", body="b",
+            send_at="2026-01-01T10:00:00", status="approved", campaign_id=f"o{i}", step=1,
+        )
+        await state.update_outbox_item(oid, status="sent", sent_at="2026-01-01T10:00:00")
+    await state.log_action(action_type="bounce", agent="handler", details={})
+    # Age the bounce out of the window (log_action stamps now; the window
+    # reads created_at, so move it by hand).
+    async with state._connect() as db:
+        await db.execute(
+            "UPDATE actions SET created_at = '2026-01-01 10:00:00' "
+            "WHERE action_type = 'bounce'")
+        await db.commit()
+
+    bounces, sends = await state.bounce_rate_window(hours=4)
+    assert (bounces, sends) == (0, 0)   # nothing in the window at all
+
+
+@pytest.mark.asyncio
 async def test_inbound_dedup(state):
     await seed_prospect(state, status="contacted")
     provider = FakeProvider()
@@ -540,3 +604,45 @@ async def test_actions_are_indexed_by_type(state):
                               "AND tbl_name = 'actions'") as cursor:
             names = {r[0] for r in await cursor.fetchall()}
     assert "idx_actions_type_created" in names
+
+
+@pytest.mark.asyncio
+async def test_a_pricing_question_alerts_the_operator(state, monkeypatch):
+    """A reply asking about pricing pushes a copilot alert, so the operator
+    can step in with real numbers before the drafted answer goes out."""
+    import sellbird.agents.handler as handler_mod
+    alerts: list[tuple] = []
+
+    async def fake_notify(event_type, title, message="", *, details=None,
+                          config=None, env=None):
+        alerts.append((event_type, title))
+
+    monkeypatch.setattr(handler_mod, "notify_operator", fake_notify)
+    await seed_prospect(state, status="contacted")
+    provider = FakeProvider()
+    provider.inbound = [InboundMessage(
+        provider_id="in8", from_email="jane@acme.com", subject="Re: hi",
+        body="Sounds interesting. What does it cost?",
+    )]
+    await make_handler(state, provider, intent="question")._run_native()
+    assert ("pricing_question", "Jane Doe asked about pricing") in alerts
+
+
+@pytest.mark.asyncio
+async def test_an_ordinary_question_does_not_ping_about_pricing(state, monkeypatch):
+    import sellbird.agents.handler as handler_mod
+    alerts: list[tuple] = []
+
+    async def fake_notify(event_type, title, message="", *, details=None,
+                          config=None, env=None):
+        alerts.append((event_type, title))
+
+    monkeypatch.setattr(handler_mod, "notify_operator", fake_notify)
+    await seed_prospect(state, status="contacted")
+    provider = FakeProvider()
+    provider.inbound = [InboundMessage(
+        provider_id="in9", from_email="jane@acme.com", subject="Re: hi",
+        body="Do you also cover weekend calls?",
+    )]
+    await make_handler(state, provider, intent="question")._run_native()
+    assert alerts == []
