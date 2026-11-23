@@ -991,6 +991,16 @@ class CrmConfig(BaseModel):
     inbound_field: str = "doNotContact"
     # Cap on people read per poll, so a huge CRM never stalls a cycle.
     inbound_max_records: int = 1000
+    # Outbound observations (Twenty only): push each company's latest signal
+    # findings into custom fields on its Twenty Company record, so the CRM
+    # shows what Sellbird knows (who runs their ads, whether they have online
+    # booking, where they rank). Off by default; the operator names the
+    # mapping — signal code → Twenty field — because custom fields only
+    # exist once someone creates them in Twenty.
+    observation_sync_enabled: bool = False
+    # {signal_code: twenty_field}. Signal codes come from the confirmed
+    # vocabulary; fields must exist on Twenty's Company object.
+    observation_fields: dict[str, str] = Field(default_factory=dict)
 
     @field_validator("provider", mode="before")
     @classmethod
@@ -1010,6 +1020,26 @@ class CrmConfig(BaseModel):
         # A field name goes straight into a query param: keep it to the shape
         # Twenty uses for camelCase custom fields.
         return v if v.replace("_", "").isalnum() else "doNotContact"
+
+    @field_validator("observation_fields", mode="before")
+    @classmethod
+    def _clean_observation_fields(cls, v):
+        """Keep only usable pairs: a known-shape signal code and a field name
+        safe to send to Twenty. An empty mapping disables the sync."""
+        if not isinstance(v, dict):
+            return {}
+        out: dict[str, str] = {}
+        for code, field in v.items():
+            code = str(code or "").strip().upper()
+            field = str(field or "").strip()
+            # Both sides go to Twenty: the code names a signal, the field a
+            # custom column. Keep each to the shape Twenty uses for
+            # camelCase custom fields.
+            if (code and field
+                    and code.replace("_", "").isalnum()
+                    and field.replace("_", "").isalnum()):
+                out[code] = field
+        return out
 
 
 class CopilotConfig(BaseModel):

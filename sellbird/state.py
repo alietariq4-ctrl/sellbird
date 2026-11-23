@@ -848,6 +848,18 @@ class StateManager:
                 row = await cursor.fetchone()
                 return self._company_from_row(row) if row else None
 
+    async def get_companies_with_domains(self, limit: int = 200) -> list[Company]:
+        """Companies that have a domain, most recently updated first — the
+        candidates for an outbound CRM sync, which matches records by domain."""
+        async with self._connect() as db:
+            db.row_factory = aiosqlite.Row
+            async with db.execute(
+                "SELECT * FROM companies WHERE domain != '' "
+                "ORDER BY updated_at DESC LIMIT ?",
+                (max(1, min(int(limit), 5000)),),
+            ) as cursor:
+                return [self._company_from_row(r) for r in await cursor.fetchall()]
+
     async def get_company_by_domain(self, domain: str) -> Company | None:
         async with self._connect() as db:
             db.row_factory = aiosqlite.Row

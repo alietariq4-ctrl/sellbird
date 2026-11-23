@@ -643,6 +643,14 @@ async def heartbeat(stop_event: asyncio.Event | None = None):
                 if inbound.is_configured():
                     tasks.append(("crm_inbound", inbound.run()))
 
+                # Outbound CRM sync: push each company's latest signal
+                # findings into its Twenty Company record's custom fields
+                # (opt-in, Twenty only, operator-named mapping).
+                from sellbird.integrations.crm_sync import TwentyObservationSync
+                obs_sync = TwentyObservationSync(state, config=config, env=env)
+                if obs_sync.is_configured():
+                    tasks.append(("crm_observations", obs_sync.run()))
+
                 outcomes = await _run_agents(tasks)
 
                 if _check_stop_sentinel(stop_event):

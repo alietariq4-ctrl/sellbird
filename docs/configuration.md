@@ -52,9 +52,15 @@ crm:
   inbound_enabled: false           # true: poll Twenty for do-not-contact people
   inbound_field: doNotContact      # the Person custom boolean that means "never email"
   inbound_max_records: 1000        # cap read per poll
+  observation_sync_enabled: false  # true: push signal findings to Twenty Company fields
+  observation_fields:              # signal code -> Twenty custom field (create it in Twenty first)
+    RUNNING_GOOGLE_ADS: runsGoogleAds
+    NO_ONLINE_BOOKING: noOnlineBooking
 ```
 
 Outbound needs `TWENTY_API_KEY` (and `TWENTY_BASE_URL` for self-hosted). With `inbound_enabled`, Sellbird reads people whose `inbound_field` is true (a server-side filter, one poll per heartbeat) and adds each address to its suppressions with reason `imported`, so a blocklist kept in Twenty actually stops emails here. Twenty's Person has no native unsubscribe field, so that field is a custom boolean you create. Polling, not webhooks: the dashboard is loopback-only.
+
+With `observation_sync_enabled`, Sellbird also writes what it knows about each company into custom fields on its Twenty Company record (matched by domain, one PATCH per company per cycle): the newest value of every mapped signal — a number for ranks and counts, text for names like the incumbent agency, `true` for boolean findings. Create the fields on Twenty's Company object first; the mapping is yours because only you know what you called them.
 
 
 ### A transport instead of a subscription

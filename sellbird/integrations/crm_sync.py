@@ -399,3 +399,177 @@ class TwentyInboundSync:
             logger.info("Twenty inbound sync: suppressed %s address(es) marked "
                         "do-not-contact in the CRM.", added)
         return added
+
+
+# ── Outbound: push company observations into Twenty Company custom fields ──
+
+
+class TwentyObservationSync:
+    """Writes each company's latest signal findings to its Twenty record.
+
+    The operator names the mapping (``crm.observation_fields``:
+    signal code → custom field on Twenty's Company object) because custom
+    fields only exist once someone creates them in Twenty. For every
+    company with a finding for a mapped code, the newest observation's
+    value goes to the mapped field via ``PATCH /rest/companies/{id}``,
+    matched by domain name. Never raises — a CRM hiccup must not stall a
+    heartbeat cycle.
+    """
+
+    # One PATCH per company per cycle is plenty; the CRM is a mirror, not
+    # a queue.
+    MAX_COMPANIES_PER_RUN = 200
+
+    def __init__(self, state, config=None, env=None, *, transport=None):
+        self.state = state
+        self.config = config
+        self.env = env
+        self._transport = transport
+
+    def _crm(self, attr: str, default=None):
+        crm_cfg = getattr(self.config, "crm", None)
+        if crm_cfg is None:
+            return default
+        v = getattr(crm_cfg, attr, default)
+        return default if v is None else v
+
+    def _val(self, attr: str, env_var: str, default: str = "") -> str:
+        crm_cfg = getattr(self.config, "crm", None)
+        v = (
+            (str(getattr(crm_cfg, attr, "") or "") if crm_cfg is not None else "")
+            or (str(getattr(self.env, attr, "") or "") if self.env is not None else "")
+            or os.getenv(env_var, "")
+        ).strip()
+        return v or default
+
+    @property
+    def api_key(self) -> str:
+        return self._val("twenty_api_key", "TWENTY_API_KEY")
+
+    @property
+    def base_url(self) -> str:
+        return self._val("twenty_base_url", "TWENTY_BASE_URL", DEFAULT_TWENTY_URL).rstrip("/")
+
+    @property
+    def fields(self) -> dict[str, str]:
+        raw = self._crm("observation_fields", {}) or {}
+        return dict(raw) if isinstance(raw, dict) else {}
+
+    def is_configured(self) -> bool:
+        crm_cfg = getattr(self.config, "crm", None)
+        enabled = bool(getattr(crm_cfg, "observation_sync_enabled", False)) if crm_cfg is not None else False
+        return bool(enabled and self.api_key and self.fields)
+
+    def _client(self) -> httpx.AsyncClient:
+        extra = {"transport": self._transport} if self._transport is not None else {}
+        return httpx.AsyncClient(timeout=TIMEOUT, **extra)
+
+    @staticmethod
+    def _value_of(observation: dict):
+        """The value a CRM field should carry: the number when there is one
+        (a rank, a count), else the text (an agency name), else True for a
+        bare boolean finding."""
+        if not isinstance(observation, dict):
+            return None
+        num = observation.get("value_num")
+        if num is not None:
+            try:
+                f = float(num)
+            except (TypeError, ValueError):
+                f = None
+            if f is not None:
+                return int(f) if f.is_integer() else f
+        text = str(observation.get("value_text") or "").strip()
+        if text:
+            return text
+        # No value at all: the row's existence is the finding (a boolean
+        # signal recorded as checked-and-true).
+        return True
+
+    async def _find_company_id(self, client: httpx.AsyncClient, domain: str) -> str:
+        """Twenty's Company record for a domain, by exact domainName match.
+        '' when there is none or the lookup fails."""
+        headers = {"Authorization": f"Bearer {self.api_key}", "Accept": "application/json"}
+        try:
+            resp = await client.get(
+                f"{self.base_url}/rest/companies",
+                headers=headers,
+                params={"filter": f"domainName[eq]:{domain}", "limit": "1", "fields": "id"},
+            )
+        except Exception as exc:
+            logger.debug("Twenty observation sync: company lookup failed for %s: %s", domain, exc)
+            return ""
+        if resp.status_code >= 400:
+            logger.debug("Twenty observation sync: company lookup HTTP %s for %s",
+                         resp.status_code, domain)
+            return ""
+        try:
+            body = resp.json() or {}
+        except ValueError:
+            return ""
+        data = body.get("data") if isinstance(body, dict) else {}
+        companies = data.get("companies") if isinstance(data, dict) else None
+        if isinstance(companies, list) and companies and isinstance(companies[0], dict):
+            return str(companies[0].get("id") or "")
+        return ""
+
+    async def run(self) -> int:
+        """One pass: write each mapped company's latest findings to Twenty.
+        Returns how many companies were updated. Never raises."""
+        if not self.is_configured():
+            return 0
+        mapping = self.fields
+        updated = 0
+        try:
+            companies = await self.state.get_companies_with_domains(
+                limit=self.MAX_COMPANIES_PER_RUN)
+        except Exception as exc:
+            logger.warning("Twenty observation sync: could not read companies: %s", exc)
+            return 0
+        headers = {"Authorization": f"Bearer {self.api_key}",
+                   "Content-Type": "application/json", "Accept": "application/json"}
+        async with self._client() as client:
+            for company in companies:
+                domain = str(getattr(company, "domain", "") or "").strip()
+                if not domain:
+                    continue
+                try:
+                    observations = await self.state.get_observations(
+                        company_id=getattr(company, "id", ""), latest_only=True)
+                except Exception as exc:
+                    logger.debug("Twenty observation sync: observations read failed: %s", exc)
+                    continue
+                # What this company's record should say, per the mapping.
+                patch: dict = {}
+                for obs in observations:
+                    code = str(obs.get("signal_code") or "").strip().upper()
+                    field = mapping.get(code)
+                    if not field:
+                        continue
+                    value = self._value_of(obs)
+                    if value is None:
+                        continue
+                    patch[field] = value
+                if not patch:
+                    continue
+                try:
+                    company_id = await self._find_company_id(client, domain)
+                except Exception:
+                    company_id = ""
+                if not company_id:
+                    continue
+                try:
+                    resp = await client.patch(
+                        f"{self.base_url}/rest/companies/{company_id}",
+                        headers=headers, json=patch)
+                except Exception as exc:
+                    logger.debug("Twenty observation sync: PATCH failed for %s: %s", domain, exc)
+                    continue
+                if resp.status_code >= 400:
+                    logger.debug("Twenty observation sync: PATCH HTTP %s for %s",
+                                 resp.status_code, domain)
+                    continue
+                updated += 1
+        if updated:
+            logger.info("Twenty observation sync: updated %s company record(s).", updated)
+        return updated

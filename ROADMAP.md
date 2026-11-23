@@ -116,6 +116,7 @@ flowchart LR
   - Sync custom company observations into Twenty CRM custom fields.
   - Pull unsubscribe/do-not-contact suppressions from CRM back into SQLite.
   - Outbound (lead events → Twenty) existed; inbound (`sellbird/integrations/crm_sync.py` `TwentyInboundSync`) reads a Person's custom boolean (`crm.inbound_field`, default `doNotContact`) with a server-side filter and suppresses each address (`reason='imported'`). Opt-in via `crm.inbound_enabled`, polled once per heartbeat, Twenty only.
+  - Observations → custom fields: `TwentyObservationSync` (same file) writes each company's newest mapped signal finding to its Twenty Company record via `PATCH /rest/companies/{id}`, matched by `domainName`. The operator names the mapping (`crm.observation_fields`: signal code → field, created in Twenty first); a number goes as a number (ranks, counts), text as text (agency names), a bare boolean as `true`. Opt-in via `crm.observation_sync_enabled`, once per heartbeat, never raises.
 - [x] **Multi-Channel LinkedIn Touchpoints**:
   - Add optional LinkedIn connection request & profile view actions between Email Step 1 and Step 2.
   - `channels.linkedin.touchpoints` (with `send_connect` for requests vs views): the Sender queues one touch per prospect when email 1 goes out; the heartbeat drains them inside the automation's own daily caps (`sellbird/integrations/linkedin.py`).
