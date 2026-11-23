@@ -1,12 +1,12 @@
-# 🦅 Harvey Agent (Sellbird) — Master Handoff & Small Model Operating Guide
+# Sellbird — Master Handoff & Small Model Operating Guide
 
 ```
-  ███████╗███████╗██╗     ██╗     ██████╗ ██╗██████╗ ██████╗ 
-  ██╔════╝██╔════╝██║     ██║     ██╔══██╗██║██╔══██╗██╔══██╗
-  ███████╗█████╗  ██║     ██║     ██████╔╝██║██████╔╝██║  ██║
-  ╚════██║██╔══╝  ██║     ██║     ██╔══██╗██║██╔══██╗██║  ██║
-  ███████║███████╗███████╗███████╗██████╔╝██║██║  ██║██████╔╝
-  ╚══════╝╚══════╝╚══════╝╚══════╝╚═════╝ ╚═╝╚═╝  ╚═╝╚═════╝ 
+  ███████╗███████╗██╗     ██╗     ██████╗ ██╗██████╗ ██████╗
+  ██╔════╝██╔════╝██║     ██║     ██╔══██╗██╗██╔══██╗██╔══██╗
+  ███████╗█████╗  ██║     ██║     ██████╔╝██╗██████╔╝██║  ██╗
+  ╚════██║██╔══╝  ██║     ██║     ██╔══██╗██╗██╔══██╗██║  ██╗
+  ███████╗███████╗███████╗███████╗██████╔╝██║  ██║██████╔╝
+  ╚══════╝╚══════╝╚══════╝╚══════╝╚═════╝ ╚═╝╚═╝  ╚═╝╚═════╝
   ── AUTONOMOUS AI OUTREACH & MULTI-AGENT GTM PLATFORM ──────
 ```
 
@@ -16,30 +16,30 @@
 
 ## 1. System Overview & Executive Summary
 
-**Harvey Agent** (consolidated and developed on the `sellbird` open-source codebase, licensed under AGPL-3.0) is a fully autonomous, local-first Outbound Sales & Go-To-Market (GTM) execution engine.
+**Sellbird** (formerly Harvey, open-source, licensed under AGPL-3.0) is a fully autonomous, local-first Outbound Sales & Go-To-Market (GTM) execution engine.
 
 ### Core Superpowers & Key Upgrades
-1. **Zero `claude login` Requirement**: Any model with an OpenAI-compatible endpoint (`/chat/completions`) can power the entire pipeline. Models like **DeepSeek V4.1 Flash**, **Gemini 2.5/3.8 Flash**, **Groq Llama 3.3**, or local **Ollama / vLLM** run natively.
+1. **Zero `claude login` Requirement**: Any model with an OpenAI-compatible endpoint (`/chat/completions`) can power the entire pipeline via `brain.transport_factory`. Models like **DeepSeek V4.1 Flash**, **Gemini 2.5/3.8 Flash**, **Groq Llama 3.3**, or local **Ollama / vLLM** run natively. Claude Code (the default) and Codex remain first-class providers.
 2. **Provider Failover & Cost-Aware Routing (`harvey_brain`)**: A multi-tiered fallback chain automatically fails over from primary models to secondary providers upon timeouts or rate limits. Per-role routing allows assigning lightweight, fast models (DeepSeek Flash) to high-volume prospecting/scoring while routing creative copywriting to reasoning models.
 3. **Stealth OSINT Scraping Waterfall**: 3-tier SSRF-guarded fetch engine combining `curl_cffi` (browser TLS impersonation), headless Playwright (SPA execution), and `trafilatura` for clean, ads-free Markdown extraction.
-4. **Clay-Style Custom AI Columns**: Dynamically create custom enrichment columns in SQLite v18, execute autonomous AI web investigations per lead, and display them in the web dashboard.
-5. **Auto-Booking & Multi-Channel Integrations**: Live Cal.com API v2 / Google Calendar slot matching, Twenty CRM synchronization, and instant Telegram/Slack operator copilot alerts.
+4. **Clay-Style Custom AI Columns**: Dynamically create custom enrichment columns in SQLite, execute autonomous AI web investigations per lead, and display them in the web dashboard.
+5. **Auto-Booking & Multi-Channel Integrations**: Cal.com booking webhooks, Twenty CRM synchronization (lead events, do-not-contact pull, observation custom fields), and instant Telegram/Slack operator copilot alerts.
 6. **Deliverability & Safety Firewall**: CopyCritic agent verifies all emails before sending, preventing hallucinated facts, spam trigger phrases, and unresolved merge-tag traps (`{{first_name}}`).
 
 ---
 
 ## 2. Quick Start: How to Run and Test
 
-The environment uses **Python 3.13** inside the virtual environment located at `sellbird/.venv`.
+The environment uses **Python 3.11+** with the virtual environment at the repository root (`.venv/`).
 
 ### 2.1 Activate Virtual Environment & Check Status
-```powershell
-# In Windows PowerShell:
-cd "c:\Users\Ali Tariq\Desktop\Harvey Agent\sellbird"
-& ".\.venv\Scripts\Activate.ps1"
+```bash
+# macOS / Linux:
+cd /path/to/sellbird
+source .venv/bin/activate
 
-# Verify CLI is functional and inspect the banner:
-python -m sellbird.cli
+# Verify the CLI is functional:
+sellbird status
 ```
 
 ### 2.2 Configure AI Model Keys (`.env` & `brain.yaml`)
@@ -53,7 +53,7 @@ DEEPSEEK_API_KEY=sk-your-deepseek-key-here
 # OPENAI_API_KEY=sk-your-key-here
 ```
 
-2. Review `brain.yaml` (located at `sellbird/brain.yaml`):
+2. Review `brain.yaml` (at the repository root):
 ```yaml
 budget:
   max_usd_per_day: 5.0
@@ -85,26 +85,24 @@ profiles:
 ```
 
 ### 2.3 Run Diagnostic Checks
-```powershell
+```bash
 # 1. Run Brain Doctor (verifies all configured model providers)
-python -m sellbird.cli brain doctor
+sellbird brain doctor
 
-# 2. Run Live Probe (sends a 1-token test prompt through Scout role)
-python -m sellbird.cli brain probe scout stripe.com
-
-# 3. Check Overall Pipeline Status
-python -m sellbird.cli status
+# 2. Check Overall Pipeline Status
+sellbird status
 ```
 
 ### 2.4 Start the Web Dashboard
-```powershell
-python -m sellbird.cli dashboard --open
-# Opens http://127.0.0.1:5555 with OLED Dark Mode, Brain Studio & Clay AI
+```bash
+sellbird dashboard
+# Prints the private unlock link (http://127.0.0.1:5555/#token=…);
+# sellbird dashboard --url prints it again.
 ```
 
 ### 2.5 Start the Autonomous Outbound Loop
-```powershell
-python -m sellbird.cli run
+```bash
+sellbird run
 ```
 
 ---
@@ -112,63 +110,60 @@ python -m sellbird.cli run
 ## 3. Repository Architecture & Directory Layout
 
 ```
-Harvey Agent/
-├── sellbird/                     # Consolidated package root
-│   ├── .env                      # Local credentials (API keys, ports, secrets)
-│   ├── brain.yaml                # Brain router fallback chain & role profiles
-│   ├── pyproject.toml            # Project dependencies & CLI entrypoints
+sellbird/
+├── sellbird/                     # Package root
+│   ├── main.py                   # 15-minute heartbeat loop & signal control
+│   ├── cli.py                    # Command line interface & ASCII art banner
+│   ├── dashboard.py              # FastAPI web server (:5555) & REST API
+│   ├── brain.py                  # Bridge connecting Sellbird to harvey_brain
+│   ├── bandit.py                 # Thompson-sampling framework optimizer
+│   ├── state.py                  # SQLite StateManager (schema v20, WAL mode)
+│   ├── deliverability.py         # DNS checks (deep SPF/DMARC via checkdmarc)
+│   ├── site_facts.py              # Company observation & facts extraction
 │   │
-│   ├── harvey_brain/             # Universal LLM Router Engine
-│   │   ├── __init__.py           # Brain public exports
-│   │   ├── spec.py               # Provider specifications (DeepSeek, Groq, xAI, etc.)
-│   │   ├── config.py             # Config loader, brain.yaml & .env discovery
-│   │   ├── openai_compat.py      # Universal OpenAI /chat/completions transport
-│   │   ├── router.py             # Multi-provider fallback loop & budget tracking
-│   │   ├── profile.py            # Per-role overrides (scout, writer, researcher)
-│   │   ├── router_factory.py     # Factory constructing RouterTransport from config
-│   │   ├── schemas.py            # Strict task JSON schemas & 400 auto-downgrade
-│   │   └── probe.py              # CLI diagnostic probe
+│   ├── agents/                   # Multi-Agent Roster
+│   │   ├── scout.py              # ICP qualification & decision-maker discovery
+│   │   ├── writer.py             # Cold email copywriting & sequence generator
+│   │   ├── researcher.py         # Autonomous OSINT deep web investigation
+│   │   ├── enricher.py           # Clay-style custom AI column evaluator
+│   │   ├── critic.py             # Hallucination, spam & merge-tag reviewer
+│   │   ├── sender.py             # Multi-inbox rotation & rate-limited delivery
+│   │   ├── handler.py            # Bounce processing, reply reading & auto-booking
+│   │   └── analyst.py            # Pipeline analytics & funnel metrics
 │   │
-│   ├── sellbird/                 # Main Application Logic
-│   │   ├── main.py               # 15-minute heartbeat loop & Windows signal control
-│   │   ├── cli.py                # Command line interface & ASCII art banner
-│   │   ├── dashboard.py          # FastAPI web server (:5555) & REST API
-│   │   ├── brain.py              # Bridge connecting Sellbird host to harvey_brain
-│   │   ├── state.py              # SQLite StateManager (v18 schema, WAL mode)
-│   │   ├── site_facts.py         # Company observation & facts extraction
-│   │   │
-│   │   ├── agents/               # Multi-Agent Roster
-│   │   │   ├── scout.py          # ICP qualification & decision-maker discovery
-│   │   │   ├── writer.py         # Cold email copywriting & sequence generator
-│   │   │   ├── researcher.py     # Autonomous OSINT deep web investigation
-│   │   │   ├── enricher.py       # Clay-style custom AI column evaluator
-│   │   │   ├── critic.py         # Hallucination, spam & merge-tag reviewer
-│   │   │   ├── sender.py         # Multi-inbox rotation & rate-limited delivery
-│   │   │   ├── handler.py        # Bounce processing, reply reading & auto-booking
-│   │   │   └── analyst.py        # Pipeline analytics & funnel metrics
-│   │   │
-│   │   ├── integrations/         # Third-Party Connectors
-│   │   │   ├── stealth_fetch.py  # 3-tier SSRF-guarded stealth web scraper
-│   │   │   ├── calendar.py       # Cal.com v2, Google Calendar & M365 booking
-│   │   │   ├── crm_sync.py       # Twenty CRM REST/GraphQL & Webhook sync
-│   │   │   ├── copilot.py        # Telegram Bot API & Slack webhook alerts
-│   │   │   ├── gmail.py          # Google Workspace OAuth2 email sender
-│   │   │   ├── microsoft.py      # Microsoft Graph OAuth2 email sender
-│   │   │   ├── smtp_mail.py      # Custom SMTP/IMAP mailbox provider
-│   │   │   └── email_finder.py   # Pattern discovery & MX validation
-│   │   │
-│   │   └── web/                  # Premium OLED Dark Dashboard
-│   │       ├── index.html        # Glassmorphic UI layout & modal dialogs
-│   │       ├── app.js            # Frontend controllers (Brain Studio, Clay AI)
-│   │       └── app.css           # OLED black (#020617) & glass styling
+│   ├── collectors/               # Data Collection
+│   │   ├── discover.py           # The only stage that spends money
+│   │   ├── ats.py                # Greenhouse/Lever/Ashby/Workable board reads
+│   │   └── competitor_watch.py   # Scheduled page-change monitor
 │   │
-│   ├── tests/                    # Comprehensive Pytest Suite
-│   │   ├── test_brain_v2.py      # 16 tests for Brain router & provider spec
-│   │   ├── test_steroid_features.py # 33 tests for stealth fetch, OSINT, Clay, etc.
-│   │   └── test_dashboard_brain_and_windows.py # 4 tests for dashboard & stop control
+│   ├── integrations/             # Third-Party Connectors
+│   │   ├── stealth_fetch.py      # 3-tier SSRF-guarded stealth web scraper
+│   │   ├── calendar.py           # Cal.com / Google Calendar booking
+│   │   ├── crm_sync.py           # Twenty CRM REST sync (outbound + inbound)
+│   │   ├── copilot.py            # Telegram Bot API & Slack webhook alerts
+│   │   ├── gmail.py              # Google Workspace OAuth2 email sender
+│   │   ├── microsoft.py          # Microsoft Graph OAuth2 email sender
+│   │   ├── smtp_mail.py          # Custom SMTP/IMAP mailbox provider
+│   │   └── email_finder.py       # Pattern discovery & MX validation
 │   │
-│   └── data/                     # Local SQLite Storage & Logs
-│       └── sellbird.db           # SQLite DB (Schema v18 with enrichment tables)
+│   └── web/                      # Dashboard front end (no build step)
+│       ├── index.html            # UI layout & modal dialogs
+│       ├── app.js                # Frontend controllers (Brain Studio, Clay AI)
+│       └── app.css               # Light/dark themes, one token set
+│
+├── harvey_brain/                 # Universal LLM Router Engine
+│   ├── spec.py                   # Provider specifications (DeepSeek, Groq, xAI, etc.)
+│   ├── config.py                 # Config loader, brain.yaml & .env discovery
+│   ├── openai_compat.py          # Universal OpenAI /chat/completions transport
+│   ├── router.py                 # Multi-provider fallback loop & budget tracking
+│   ├── profile.py                # Per-role overrides (scout, writer, researcher)
+│   ├── router_factory.py         # Factory constructing RouterTransport from config
+│   ├── schemas.py                # Strict task JSON schemas & 400 auto-downgrade
+│   └── probe.py                  # CLI diagnostic probe
+│
+├── tests/                        # Comprehensive Pytest Suite (3,800+ tests)
+└── data/                         # Local SQLite Storage & Logs (created on first run)
+    └── sellbird.db               # SQLite DB (schema v20 with enrichment tables)
 ```
 
 ---
@@ -181,13 +176,13 @@ Harvey Agent/
 flowchart TD
     Host["Sellbird Agent (e.g. Scout, Writer)"] -->|"think_json(agent='writer')"| Bridge["Brain (sellbird/brain.py)"]
     Bridge -->|"resolve(agent='writer')"| Router["RouterTransport (harvey_brain/router.py)"]
-    
+
     subgraph FallbackChain["Chain Resolution with Automatic Failover"]
         Router -->|"1. Try Primary"| P1["DeepSeek V4.1 Flash"]
         P1 -.->|"Timeout / Rate-Limit (5xx/429)"| P2["OpenRouter Fallback"]
         P2 -.->|"Failure"| P3["Local Ollama / vLLM"]
     end
-    
+
     P1 -->|"Valid Response"| SchemaVal["Schema & JSON Extraction"]
     SchemaVal -->|"Track Token & Cost"| UsageLedger["usage_events (SQLite)"]
     UsageLedger --> Host
@@ -216,6 +211,18 @@ Before any email is staged to `outbox`:
 3. Verifies that claims cite actual signals stored in `companies.signals`.
 4. If issues are found, prompts the Critic role to repair the email copy automatically.
 
+### 4.5 Framework Experiment (`bandit.py`)
+When `writer.frameworks` lists two or more copywriting frameworks (e.g. `pas`, `bab`), each campaign is written in one and tagged. The next campaign's framework is chosen by Thompson sampling over real reply outcomes (`state.framework_stats()`), so winning shapes gradually earn more traffic. The dashboard's Campaigns tab shows per-framework reply rates. Off by default: the built-in writer shape runs alone.
+
+### 4.6 Twenty CRM Sync (`integrations/crm_sync.py`)
+Three directions, all opt-in, all Twenty REST:
+- **Lead events out** (`CRMSyncClient`): hot replies, accepted offers and booked meetings create/update a Person, and an Opportunity on high-intent events.
+- **Do-not-contact in** (`TwentyInboundSync`): people whose custom boolean (`crm.inbound_field`, default `doNotContact`) is true are suppressed here (`reason='imported'`), so a blocklist kept in Twenty actually holds.
+- **Observations out** (`TwentyObservationSync`): each company's newest mapped signal finding (`crm.observation_fields`: signal code → field) is written to its Twenty Company record via `PATCH /rest/companies/{id}`, matched by domain. Unchanged findings cost nothing: the last pushed values and Twenty's company id are remembered in settings.
+
+### 4.7 Competitive Intelligence Tracker (`collectors/competitor_watch.py`)
+`competitor_watch` in sellbird.yaml names pages to watch (a rival's pricing page, their careers page). On idle cycles each page is fetched through the stealth waterfall and compared against a stored baseline; a change alerts the operator (Telegram/Slack + the Activity log) and moves the baseline forward. No model calls, and findings never reach cold emails.
+
 ---
 
 ## 5. Golden Rules for Smaller Models (DeepSeek V4.1 Flash)
@@ -227,7 +234,8 @@ When writing code or adding features to this repository, smaller reasoning model
 3. **SQLite WAL Mode & Connection Pool**: Always access SQLite via `StateManager` or `storage.connect(path)` with `PRAGMA synchronous=NORMAL` and `busy_timeout=5000`. Never hold open long transactions across async `await` sleeps.
 4. **Mandatory URL SSRF Validation**: Any web fetching feature **must** call `validate_public_url(url)` before sending an HTTP request.
 5. **Clean Resource Lifecycles**: Always call `await brain.aclose()` inside `finally` blocks to close active `httpx.AsyncClient` connection pools and avoid socket leaks.
-6. **No Raw Emojis in Dashboard UI**: Per UI design standards, use clean SVG icons (`<svg class="icon"><use href="#icon-id"/></svg>`) instead of Unicode emojis.
+6. **No Real People in the Repo**: This is a public repository. Never add a real person's or business's name, email, phone or address to code, tests, docs, commits or PR text — fictional `example.com`-style data only (see CONTRIBUTING.md).
+7. **No Raw Emojis in Dashboard UI**: Per UI design standards, use clean SVG icons (`<svg class="icon"><use href="#icon-id"/></svg>`) instead of Unicode emojis.
 
 ---
 
@@ -235,10 +243,16 @@ When writing code or adding features to this repository, smaller reasoning model
 
 Run the comprehensive test suite at any time to verify system integrity:
 
-```powershell
-# Run all custom steroid, brain v2, and dashboard tests (53 tests):
-& ".\.venv\Scripts\pytest.exe" tests/test_brain_v2.py tests/test_steroid_features.py tests/test_dashboard_brain_and_windows.py -q
-
-# Run full project test suite (3,600+ tests):
-& ".\.venv\Scripts\pytest.exe" tests/ -q
+```bash
+# Full project test suite (3,800+ tests):
+.venv/bin/python -m pytest tests/ -q
 ```
+
+---
+
+## 7. Where to Go Next
+
+- **CLAUDE.md** — how to guide a user through setup, and what each CLI command does.
+- **docs/configuration.md** — every config key in sellbird.yaml and brain.yaml.
+- **docs/skills-and-agents.md** — the agent roster and the skills that steer them.
+- **ROADMAP.md** — what has shipped (all four phases) and the research it came from.
