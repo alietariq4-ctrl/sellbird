@@ -1242,9 +1242,12 @@ class Sender:
             # LinkedIn touchpoint: the first email out is the moment to make
             # the follow-up land from a familiar name. One touch per prospect,
             # ever; the automation's own caps decide how many run per day.
+            # Same gate as the drain (run_linkedin_touches): without the
+            # touchpoints check, touches would queue forever, never drained.
             if (item["kind"] == "sequence" and int(item.get("step") or 1) == 1
                     and getattr(self.config.channels, "linkedin", None) is not None
                     and getattr(self.config.channels.linkedin, "enabled", False)
+                    and getattr(self.config.channels.linkedin, "touchpoints", False)
                     and (getattr(prospect, "linkedin_url", "") or "").strip()):
                 try:
                     await self.state.schedule_linkedin_touch(

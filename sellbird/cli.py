@@ -1031,13 +1031,13 @@ def cmd_warmup(args):
     except ConfigError as e:
         print(f"\n  {e}\n")
         raise SystemExit(1)
-    email = config.channels.email
-    smtp_user = os.getenv("SMTP_USERNAME", "").strip() if email.provider == "smtp" else ""
-    sender = smtp_user if "@" in smtp_user else config.persona.email
+    from sellbird.integrations.trulyinbox import sending_address
+    sender = sending_address(config)
     domain = (args.domain or sender.rpartition("@")[2]).strip().lower().rstrip(".")
     if not d.DOMAIN_RE.match(domain):
         print("\n  No valid sending domain found. Pass one: sellbird warmup yourdomain.com\n")
         raise SystemExit(1)
+    email = config.channels.email
 
     async def _history():
         state = StateManager()
@@ -1130,10 +1130,8 @@ def cmd_dns_check(args):
         except ConfigError as e:
             print(f"\n  {e}\n")
             raise SystemExit(1)
-        email = config.channels.email
-        smtp_user = os.getenv("SMTP_USERNAME", "").strip() if email.provider == "smtp" else ""
-        sender = smtp_user if "@" in smtp_user else config.persona.email
-        domain = sender.rpartition("@")[2].strip().lower().rstrip(".")
+        from sellbird.integrations.trulyinbox import sending_address
+        domain = sending_address(config).rpartition("@")[2].strip().lower().rstrip(".")
     if not d.DOMAIN_RE.match(domain):
         print("\n  No valid domain. Pass one: sellbird dns-check yourdomain.com\n")
         raise SystemExit(1)

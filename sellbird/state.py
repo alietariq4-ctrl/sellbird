@@ -1729,6 +1729,11 @@ class StateManager:
                 (since,),
             ) as cursor:
                 bounces = (await cursor.fetchone())[0]
+        # count_outbox_sent_today compares sent_at as a raw string, and the
+        # outbox carries both timestamp styles ('T' from Python, ' ' from
+        # SQLite) — 'T' sorts after ' ', so a naive compare would miss
+        # Python-written sends. Normalise both sides through datetime().
+        async with self._connect() as db:
             async with db.execute(
                 "SELECT COUNT(*) FROM outbox WHERE status = 'sent' "
                 "AND datetime(sent_at) >= datetime(?)",
@@ -3235,39 +3240,28 @@ class StateManager:
         Frameworks with no history are absent — the sampler's uniform prior
         covers them.
 
-        Campaigns carry their prospect ids as JSON, so the join is done here
-        rather than in SQL.
+        One query: campaigns carry their prospect ids as JSON, and
+        json_each() joins them to prospects in SQL.
         """
-        finished_states = {"replied", "contacted", "lost", "opted_out"}
-        replied_states = {"replied"}
+        finished_states = ("replied", "contacted", "lost", "opted_out")
         stats: dict[str, list[int]] = {}
         async with self._connect() as db:
             db.row_factory = aiosqlite.Row
             async with db.execute(
-                "SELECT COALESCE(framework, '') AS fw, prospect_ids_json "
-                "FROM campaigns"
+                "SELECT COALESCE(c.framework, '') AS fw, p.status "
+                "FROM campaigns c "
+                "JOIN json_each(c.prospect_ids_json) je "
+                "JOIN prospects p ON p.id = je.value"
             ) as cursor:
-                campaigns = await cursor.fetchall()
-            for camp in campaigns:
-                fw = camp["fw"] or ""
-                try:
-                    ids = json.loads(camp["prospect_ids_json"] or "[]")
-                except (json.JSONDecodeError, TypeError):
-                    ids = []
-                if not ids:
-                    continue
-                marks = ",".join("?" for _ in ids)
-                async with db.execute(
-                    f"SELECT status FROM prospects WHERE id IN ({marks})",
-                    ids,
-                ) as pcursor:
-                    statuses = [r["status"] for r in await pcursor.fetchall()]
+                rows = await cursor.fetchall()
+            for row in rows:
+                fw = row["fw"] or ""
+                st = row["status"] or ""
                 bucket = stats.setdefault(fw, [0, 0])
-                for st in statuses:
-                    if st in finished_states:
-                        bucket[1] += 1
-                        if st in replied_states:
-                            bucket[0] += 1
+                if st in finished_states:
+                    bucket[1] += 1
+                    if st == "replied":
+                        bucket[0] += 1
         # A framework with no finished prospect yet is left out, so the
         # sampler treats it as untried (uniform prior) rather than 0/0.
         return {fw: (v[0], v[1]) for fw, v in stats.items() if v[1] > 0}

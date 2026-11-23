@@ -59,6 +59,10 @@ INTENT_LABELS = {
 # Intents that get an automated reply. Everything else is closed,
 # deferred, or escalated to a human.
 AUTO_REPLY_INTENTS = {"accepted_offer", "interested", "objection", "question", "wrong_person"}
+
+# Words that mean a reply is about money. Both the pricing-question alert
+# and the stage advance read these.
+PRICING_WORDS = ("price", "pricing", "cost", "how much", "what do you charge", "demo", "trial")
 # Set once a prospect's accepted offer was handed off (sellbird.handoff), so a
 # retry of the same reply never hands them off twice.
 HANDOFF_KEY = "handoff:"
@@ -1113,8 +1117,7 @@ class Handler:
         # the auto-reply drafts something, and the operator may want to step
         # in with real numbers before it goes.
         if intent == "question" and any(
-            w in (reply_text or "").lower() for w in
-            ("price", "pricing", "cost", "how much", "what do you charge")
+            w in (reply_text or "").lower() for w in PRICING_WORDS
         ):
             try:
                 await notify_operator(
@@ -1601,7 +1604,7 @@ Respond with ONLY the category label, nothing else."""
                 return "engaged"
             if current_stage == "engaged":
                 # Check if they're asking about specifics → presenting
-                if any(w in text_lower for w in ["price", "cost", "how much", "pricing", "demo", "trial"]):
+                if any(w in text_lower for w in PRICING_WORDS):
                     return "presenting"
                 return "qualifying"
             if current_stage in ("qualifying", "presenting"):

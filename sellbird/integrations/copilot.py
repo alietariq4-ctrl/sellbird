@@ -179,7 +179,23 @@ class TelegramCopilot:
         self.config = config
         self.env = env
         self._transport = transport
+        # Telegram confirms updates only when a higher offset is sent, and a
+        # new instance is built every cycle — so the offset persists in
+        # settings. Without that, every poll replays the last unconfirmed
+        # commands (/approve, /reject, /edit) again and again.
         self._offset = 0
+
+    async def load_offset(self):
+        try:
+            self._offset = int(await self.state.get_setting("telegram.offset", "0") or 0)
+        except Exception:
+            self._offset = 0
+
+    async def _save_offset(self):
+        try:
+            await self.state.set_setting("telegram.offset", str(self._offset))
+        except Exception:
+            pass
 
     def _val(self, attr: str, env_var: str, default: str = "") -> str:
         cop_cfg = getattr(self.config, "copilot", None)
@@ -233,6 +249,7 @@ class TelegramCopilot:
         """Fetch and handle one batch of updates. Returns commands handled."""
         if not self.is_configured():
             return 0
+        await self.load_offset()
         result = await self._api(
             "getUpdates",
             {"offset": self._offset, "limit": 20, "timeout": LONG_POLL_SECONDS,
@@ -241,6 +258,7 @@ class TelegramCopilot:
         )
         if not isinstance(result, list):
             return 0
+        start_offset = self._offset
         handled = 0
         for update in result:
             try:
@@ -249,6 +267,8 @@ class TelegramCopilot:
                     handled += 1
             except Exception as exc:
                 logger.debug("Telegram update handling failed: %s", exc)
+        if self._offset != start_offset:
+            await self._save_offset()
         return handled
 
     async def _handle(self, update: dict) -> bool:

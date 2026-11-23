@@ -197,6 +197,65 @@ async def test_a_crash_in_the_crm_never_raises(state):
 
 
 @pytest.mark.asyncio
+async def test_unchanged_findings_cost_nothing_the_second_cycle(state):
+    """The sync remembers what it pushed: an unchanged company gets no GET
+    and no PATCH on the next run."""
+    await _seed_company(state, "c7", "acme.example")
+    await state.add_observation("RUNNING_GOOGLE_ADS", company_id="c7",
+                                value_num=1, collector="profile")
+    calls = []
+
+    def handler(req: httpx.Request) -> httpx.Response:
+        calls.append((req.method, unquote(str(req.url))))
+        if req.method == "GET":
+            return httpx.Response(200, json={
+                "data": {"companies": [{"id": "twenty-c7"}]}, "totalCount": 1})
+        return httpx.Response(200, json={})
+
+    sync = TwentyObservationSync(
+        state,
+        config=_config(observation_sync_enabled=True,
+                       observation_fields={"RUNNING_GOOGLE_ADS": "runsGoogleAds"}),
+        env=_env(), transport=httpx.MockTransport(handler))
+    assert await sync.run() == 1
+    first_calls = list(calls)
+    assert len(first_calls) == 2  # one GET + one PATCH
+    assert await sync.run() == 0  # unchanged: nothing called
+    assert calls == first_calls
+
+
+@pytest.mark.asyncio
+async def test_the_twenty_company_id_is_looked_up_once(state):
+    await _seed_company(state, "c8", "beta.example")
+    await state.add_observation("RUNNING_GOOGLE_ADS", company_id="c8",
+                                value_num=1, collector="profile")
+    # A change between runs so the PATCH still fires.
+    await state.add_observation("NO_ONLINE_BOOKING", company_id="c8",
+                                value_num=1, collector="profile")
+    gets = []
+
+    def handler(req: httpx.Request) -> httpx.Response:
+        if req.method == "GET":
+            gets.append(unquote(str(req.url)))
+            return httpx.Response(200, json={
+                "data": {"companies": [{"id": "twenty-c8"}]}, "totalCount": 1})
+        return httpx.Response(200, json={})
+
+    sync = TwentyObservationSync(
+        state,
+        config=_config(observation_sync_enabled=True,
+                       observation_fields={"RUNNING_GOOGLE_ADS": "runsGoogleAds",
+                                           "NO_ONLINE_BOOKING": "noOnlineBooking"}),
+        env=_env(), transport=httpx.MockTransport(handler))
+    await sync.run()
+    # Force a "change" so the second run patches again — the id must come
+    # from the cache, not a second GET.
+    await state.set_setting("twenty.obs.last.beta.example", "")
+    await sync.run()
+    assert len(gets) == 1  # looked up once, then cached
+
+
+@pytest.mark.asyncio
 async def test_companies_without_a_domain_are_never_considered(state):
     await state.add_company(Company(id="c6", name="No Domain Co", domain=""))
     await state.add_observation("RUNNING_GOOGLE_ADS", company_id="c6",

@@ -465,7 +465,7 @@ class TwentyObservationSync:
         return httpx.AsyncClient(timeout=TIMEOUT, **extra)
 
     @staticmethod
-    def _value_of(observation: dict):
+    def _value_of(observation: object):
         """The value a CRM field should carry: the number when there is one
         (a rank, a count), else the text (an agency name), else True for a
         bare boolean finding."""
@@ -513,6 +513,18 @@ class TwentyObservationSync:
             return str(companies[0].get("id") or "")
         return ""
 
+    # Settings keys: the last values pushed per company (so unchanged
+    # findings cost nothing), and Twenty's record id per domain (it never
+    # changes, so the GET lookup happens once per domain, ever).
+    _LAST_KEY = "twenty.obs.last."
+    _ID_KEY = "twenty.obs.company_id."
+
+    def _last_key(self, domain: str) -> str:
+        return self._LAST_KEY + domain.lower()
+
+    def _id_key(self, domain: str) -> str:
+        return self._ID_KEY + domain.lower()
+
     async def run(self) -> int:
         """One pass: write each mapped company's latest findings to Twenty.
         Returns how many companies were updated. Never raises."""
@@ -552,8 +564,15 @@ class TwentyObservationSync:
                     patch[field] = value
                 if not patch:
                     continue
+                # Unchanged since the last push: no GET, no PATCH.
                 try:
-                    company_id = await self._find_company_id(client, domain)
+                    last = await self.state.get_setting(self._last_key(domain))
+                except Exception:
+                    last = ""
+                if last and last == json.dumps(patch, sort_keys=True):
+                    continue
+                try:
+                    company_id = await self._cached_company_id(client, domain)
                 except Exception:
                     company_id = ""
                 if not company_id:
@@ -569,7 +588,29 @@ class TwentyObservationSync:
                     logger.debug("Twenty observation sync: PATCH HTTP %s for %s",
                                  resp.status_code, domain)
                     continue
+                try:
+                    await self.state.set_setting(self._last_key(domain),
+                                                 json.dumps(patch, sort_keys=True))
+                except Exception:
+                    pass
                 updated += 1
         if updated:
             logger.info("Twenty observation sync: updated %s company record(s).", updated)
         return updated
+
+    async def _cached_company_id(self, client: httpx.AsyncClient, domain: str) -> str:
+        """Twenty's record id for a domain, looked up once and then kept in
+        settings — a Twenty company id never changes."""
+        try:
+            cached = await self.state.get_setting(self._id_key(domain))
+        except Exception:
+            cached = ""
+        if cached:
+            return cached
+        company_id = await self._find_company_id(client, domain)
+        if company_id:
+            try:
+                await self.state.set_setting(self._id_key(domain), company_id)
+            except Exception:
+                pass
+        return company_id

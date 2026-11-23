@@ -608,11 +608,12 @@ async def heartbeat(stop_event: asyncio.Event | None = None):
                             tasks.append(("deep_research", researcher.run()))
                     if enricher is not None and await _has_enrichment_columns(state):
                         tasks.append(("clay_enrich", enricher.run()))
-                    # Competitive watch: idle cycles only, no model calls —
-                    # the diff is plain text comparison.
-                    from sellbird.collectors.competitor_watch import run_competitor_watch
-                    tasks.append(("competitor_watch",
-                                  run_competitor_watch(state, config=config, env=env)))
+                    if action == "idle":
+                        # Competitive watch: idle cycles only, no model
+                        # calls — the diff is plain text comparison.
+                        from sellbird.collectors.competitor_watch import run_competitor_watch
+                        tasks.append(("competitor_watch",
+                                      run_competitor_watch(state, config=config, env=env)))
 
                 send_tasks = []
                 if action == "send_campaign":

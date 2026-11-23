@@ -1024,20 +1024,20 @@ class CrmConfig(BaseModel):
     @field_validator("observation_fields", mode="before")
     @classmethod
     def _clean_observation_fields(cls, v):
-        """Keep only usable pairs: a known-shape signal code and a field name
-        safe to send to Twenty. An empty mapping disables the sync."""
+        """Keep only usable pairs: a signal code from the catalog and a field
+        name safe to send to Twenty. An empty mapping disables the sync."""
         if not isinstance(v, dict):
             return {}
+        from sellbird.signals import SIGNAL_CATALOG
+        known = {str(s.get("code") or "").upper() for s in SIGNAL_CATALOG}
         out: dict[str, str] = {}
         for code, field in v.items():
             code = str(code or "").strip().upper()
             field = str(field or "").strip()
-            # Both sides go to Twenty: the code names a signal, the field a
-            # custom column. Keep each to the shape Twenty uses for
-            # camelCase custom fields.
-            if (code and field
-                    and code.replace("_", "").isalnum()
-                    and field.replace("_", "").isalnum()):
+            # A typo'd code would silently match no observation, so only
+            # catalog codes pass; the field keeps the shape Twenty uses
+            # for camelCase custom fields.
+            if code in known and field and field.replace("_", "").isalnum():
                 out[code] = field
         return out
 
@@ -1061,6 +1061,13 @@ class CompetitorWatch(BaseModel):
     url: str = ""
     kind: str = "homepage"  # pricing | hiring | homepage (labels the alert)
 
+    @field_validator("name", mode="before")
+    @classmethod
+    def _clean_name(cls, v):
+        # Baselines key on the lowercased name, so "Rival" and "rival "
+        # in a hand-edited file must not become two watches sharing one.
+        return str(v or "").strip()
+
 
 class CompetitorWatchConfig(BaseModel):
     # Scheduled monitor (Phase 4, ROADMAP.md): watch pages the operator
@@ -1072,7 +1079,13 @@ class CompetitorWatchConfig(BaseModel):
     @field_validator("watches", mode="before")
     @classmethod
     def _blank_watches(cls, v):
-        return [] if v is None else v
+        if v is None:
+            return []
+        if not isinstance(v, list):
+            return []
+        # A cap on the file path too: the dashboard caps at 50, and each
+        # watch is a sequential fetch on a cycle that other agents share.
+        return v[:50]
 
 
 class AnalystConfig(BaseModel):

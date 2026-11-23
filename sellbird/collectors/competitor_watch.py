@@ -45,6 +45,10 @@ KIND_LABELS = {
     "hiring": "hiring change",
     "homepage": "homepage change",
 }
+# The kinds a watch can be, one place: the config model, the collector's
+# labels and the dashboard's validation all read this.
+KINDS = ("pricing", "hiring", "homepage")
+
 
 
 def _normalise(text: str) -> str:
@@ -52,10 +56,11 @@ def _normalise(text: str) -> str:
     return " ".join((text or "").split())
 
 
-def _fingerprint(markdown: str) -> tuple[str, str]:
-    """(hash, trimmed text) for a page's markdown."""
+def _fingerprint(markdown: str) -> str:
+    """The hash compared across runs: the page's text, whitespace-collapsed
+    and capped, so a re-flowed layout isn't a change."""
     trimmed = _normalise(markdown)[:COMPARE_CHARS]
-    return hashlib.sha256(trimmed.encode("utf-8", "replace")).hexdigest(), trimmed
+    return hashlib.sha256(trimmed.encode("utf-8", "replace")).hexdigest()
 
 
 def _watch_key(name: str) -> str:
@@ -92,13 +97,12 @@ async def run_competitor_watch(state, config=None, env=None) -> int:
             logger.debug("competitor watch %s: nothing readable at %s", name, url)
             continue
 
-        digest, trimmed = _fingerprint(page.markdown)
+        digest = _fingerprint(page.markdown)
         key = _watch_key(name)
         stored = await state.get_setting(key)
         if not stored:
             # First run: record the baseline, alert nothing.
-            await state.set_setting(key, json.dumps(
-                {"url": url, "hash": digest, "text": trimmed}))
+            await state.set_setting(key, json.dumps({"url": url, "hash": digest}))
             logger.info("Competitor watch: baseline recorded for '%s'.", name)
             continue
         try:
@@ -106,7 +110,14 @@ async def run_competitor_watch(state, config=None, env=None) -> int:
         except (json.JSONDecodeError, TypeError):
             baseline = {}
         if baseline.get("hash") == digest:
-            continue  # unchanged
+            continue
+        if baseline.get("url") != url:
+            # The watch now points somewhere else: the old page's baseline
+            # says nothing about the new one, so re-baseline instead of
+            # crying "change" about a URL the operator just edited.
+            await state.set_setting(key, json.dumps({"url": url, "hash": digest}))
+            logger.info("Competitor watch: '%s' URL changed; new baseline recorded.", name)
+            continue
 
         # Something changed: alert, then move the baseline forward.
         label = KIND_LABELS.get(kind, "change")
@@ -128,7 +139,6 @@ async def run_competitor_watch(state, config=None, env=None) -> int:
             alerts += 1
         except Exception as exc:
             logger.debug("competitor watch %s: alert failed: %s", name, exc)
-        await state.set_setting(key, json.dumps(
-            {"url": url, "hash": digest, "text": trimmed}))
+        await state.set_setting(key, json.dumps({"url": url, "hash": digest}))
         logger.info("Competitor watch: '%s' changed (%s).", name, label)
     return alerts

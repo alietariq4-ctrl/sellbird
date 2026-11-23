@@ -2103,36 +2103,42 @@ async def get_frameworks():
     return {"configured": configured, "rows": rows}
 
 
-def _configured_frameworks() -> list[str]:
-    """writer.frameworks straight from the YAML, without the full config's
-    required fields — the dashboard may be up before training is done."""
+def _read_config_doc() -> dict:
+    """The config file Sellbird reads, as a plain dict — without the full
+    config model's required fields, so the dashboard works before training
+    is done. {} when there is no file yet."""
     try:
-        doc = yaml.safe_load(read_user_text(_resolve_config_file())) or {}
+        return yaml.safe_load(read_user_text(_resolve_config_file())) or {}
     except FileNotFoundError:
-        return []
-    writer = doc.get("writer")
+        return {}
+
+
+def _configured_frameworks() -> list[str]:
+    """writer.frameworks from the config file, filtered to the frameworks
+    the bandit actually knows — a typo shows no arm that never runs."""
+    from sellbird.bandit import FRAMEWORK_INSTRUCTIONS
+    writer = _read_config_doc().get("writer")
     if not isinstance(writer, dict):
         return []
     fw = writer.get("frameworks")
-    return [str(x) for x in fw if isinstance(fw, list) and isinstance(x, str)] if isinstance(fw, list) else []
+    if not isinstance(fw, list):
+        return []
+    return [str(x) for x in fw
+            if isinstance(x, str) and str(x).strip().lower() in FRAMEWORK_INSTRUCTIONS]
 
 
 @app.get("/api/competitor-watch")
 async def get_competitor_watch():
     """The configured watches plus the changes the watcher has logged."""
     enabled, watches = False, []
-    try:
-        doc = yaml.safe_load(read_user_text(_resolve_config_file())) or {}
-        cw = doc.get("competitor_watch")
-        if isinstance(cw, dict):
-            enabled = bool(cw.get("enabled"))
-            raw = cw.get("watches")
-            if isinstance(raw, list):
-                watches = [{"name": str(w.get("name") or ""), "url": str(w.get("url") or ""),
-                            "kind": str(w.get("kind") or "homepage")}
-                           for w in raw if isinstance(w, dict)]
-    except FileNotFoundError:
-        pass
+    cw = _read_config_doc().get("competitor_watch")
+    if isinstance(cw, dict):
+        enabled = bool(cw.get("enabled"))
+        raw = cw.get("watches")
+        if isinstance(raw, list):
+            watches = [{"name": str(w.get("name") or ""), "url": str(w.get("url") or ""),
+                        "kind": str(w.get("kind") or "homepage")}
+                       for w in raw if isinstance(w, dict)]
     rows = await query_db(
         "SELECT details_json, created_at FROM actions "
         "WHERE action_type = 'competitor_change' ORDER BY created_at DESC LIMIT 20")
@@ -2150,6 +2156,7 @@ async def get_competitor_watch():
 @app.post("/api/competitor-watch")
 async def save_competitor_watch(request: Request):
     """Save the watch list to the config file Sellbird reads."""
+    from sellbird.collectors.competitor_watch import KINDS
     try:
         body = await request.json()
     except ValueError:
@@ -2173,7 +2180,7 @@ async def save_competitor_watch(request: Request):
             return _refuse("Each watch needs both a name and a URL.", 400)
         if not url.startswith(("https://", "http://")):
             return _refuse(f"Watch '{name}': the URL must start with https:// or http://.", 400)
-        if kind not in ("pricing", "hiring", "homepage"):
+        if kind not in KINDS:
             kind = "homepage"
         if name.lower() in seen:
             return _refuse(f"Two watches are named '{name}' — names key the baseline, so make them unique.", 400)
@@ -2183,10 +2190,7 @@ async def save_competitor_watch(request: Request):
         return _refuse("Add at least one watch, or turn the watcher off.", 400)
     path = _resolve_config_file()
     try:
-        try:
-            doc = yaml.safe_load(read_user_text(path)) or {}
-        except FileNotFoundError:
-            doc = {}
+        doc = _read_config_doc()
         doc["competitor_watch"] = {"enabled": enabled, "watches": watches}
         _write_yaml_atomic(path, doc)
     except Exception as e:
@@ -2219,10 +2223,8 @@ async def dns_check_route(request: Request):
     if not domain:
         if config is None:
             return _refuse("No sending domain configured — pass a domain to check.", 400)
-        email_cfg = config.channels.email
-        smtp_user = os.getenv("SMTP_USERNAME", "").strip() if email_cfg.provider == "smtp" else ""
-        sender = smtp_user if "@" in smtp_user else config.persona.email
-        domain = sender.rpartition("@")[2].strip().lower().rstrip(".")
+        from sellbird.integrations.trulyinbox import sending_address
+        domain = sending_address(config).rpartition("@")[2].strip().lower().rstrip(".")
     if not d.DOMAIN_RE.match(domain):
         return _refuse("That doesn't look like a domain. Try yourdomain.com", 400)
     selector = ""
