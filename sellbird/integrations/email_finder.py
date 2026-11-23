@@ -765,24 +765,21 @@ async def _verify_candidate(email: str, mx_type: str, env) -> tuple[Optional[str
 
     # Small / self-hosted: Reoon → Reacher (self-hosted, if configured) →
     # SMTP (still works here) → Hunter.
-    if reoon_key:
-        verdict = await verify_reoon(email, reoon_key)
-        if verdict:
-            if verdict.get("catch_all"):
-                catch_all_seen = True
-            status = _status_from_verdict(verdict)
-            if status is not None:
-                return status, catch_all_seen
-
     reacher_url = getattr(env, "reacher_url", "") if env else ""
+    channels = []
+    if reoon_key:
+        channels.append(lambda: verify_reoon(email, reoon_key))
     if reacher_url:
-        verdict = await verify_reacher(email, reacher_url)
-        if verdict:
-            if verdict.get("catch_all"):
-                catch_all_seen = True
-            status = _status_from_verdict(verdict)
-            if status is not None:
-                return status, catch_all_seen
+        channels.append(lambda: verify_reacher(email, reacher_url))
+    for channel in channels:
+        verdict = await channel()
+        if verdict is None:
+            continue
+        if verdict.get("catch_all"):
+            catch_all_seen = True
+        status = _status_from_verdict(verdict)
+        if status is not None:
+            return status, catch_all_seen
 
     smtp = await verify_email_smtp(email)
     if smtp is True:

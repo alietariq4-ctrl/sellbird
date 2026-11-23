@@ -352,10 +352,10 @@ class Writer:
             framework = ""
             framework_line = ""
             try:
-                from sellbird.bandit import (choose_framework, instruction_for,
-                                             known_frameworks)
+                from sellbird.bandit import (DEFAULT_FRAMEWORKS, choose_framework,
+                                             instruction_for, known_frameworks)
                 frameworks = known_frameworks(self.config)
-                if frameworks != ("built_in",):
+                if frameworks != DEFAULT_FRAMEWORKS:
                     stats = await self.state.framework_stats()
                     framework = choose_framework(stats, frameworks)
                     framework_line = instruction_for(framework)

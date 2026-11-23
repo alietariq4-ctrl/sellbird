@@ -55,13 +55,21 @@ def _extract_prospect_dict(prospect, company=None) -> dict:
     return p
 
 
-class CRMSyncClient:
-    """Syncs lead lifecycle events to Twenty CRM and/or generic JSON webhooks."""
+class _CrmBase:
+    """The plumbing every CRM client here shares: config/env resolution and
+    an httpx client. Subclasses name their own credentials."""
 
     def __init__(self, config=None, env=None, *, transport=None):
         self.config = config
         self.env = env
         self._transport = transport
+
+    def _crm(self, attr: str, default=None):
+        crm_cfg = getattr(self.config, "crm", None)
+        if crm_cfg is None:
+            return default
+        v = getattr(crm_cfg, attr, default)
+        return default if v is None else v
 
     def _val(self, attr: str, env_var: str, default: str = "") -> str:
         crm_cfg = getattr(self.config, "crm", None)
@@ -71,6 +79,14 @@ class CRMSyncClient:
             or os.getenv(env_var, "")
         ).strip()
         return v or default
+
+    def _client(self) -> httpx.AsyncClient:
+        extra = {"transport": self._transport} if self._transport is not None else {}
+        return httpx.AsyncClient(timeout=TIMEOUT, **extra)
+
+
+class CRMSyncClient(_CrmBase):
+    """Syncs lead lifecycle events to Twenty CRM and/or generic JSON webhooks."""
 
     @property
     def twenty_api_key(self) -> str:
@@ -90,10 +106,6 @@ class CRMSyncClient:
 
     def is_configured(self) -> bool:
         return bool(self.twenty_api_key or self.webhook_url)
-
-    def _client(self) -> httpx.AsyncClient:
-        extra = {"transport": self._transport} if self._transport is not None else {}
-        return httpx.AsyncClient(timeout=TIMEOUT, **extra)
 
     async def sync_twenty(self, event_type: str, lead: dict, details: dict | None = None) -> dict:
         """Create/sync Person (and Opportunity on high-intent events) in Twenty CRM REST API."""
@@ -249,7 +261,7 @@ async def sync_lead_event(
 TWENTY_PAGE_SIZE = 60  # Twenty's default and a safe page size
 
 
-class TwentyInboundSync:
+class TwentyInboundSync(_CrmBase):
     """Reads people marked do-not-contact in Twenty and suppresses them here.
 
     Twenty's Person object has no native unsubscribe field, so this reads a
@@ -261,26 +273,8 @@ class TwentyInboundSync:
     """
 
     def __init__(self, state, config=None, env=None, *, transport=None):
+        super().__init__(config, env, transport=transport)
         self.state = state
-        self.config = config
-        self.env = env
-        self._transport = transport
-
-    def _crm(self, attr: str, default=None):
-        crm_cfg = getattr(self.config, "crm", None)
-        if crm_cfg is None:
-            return default
-        v = getattr(crm_cfg, attr, default)
-        return default if v is None else v
-
-    def _val(self, attr: str, env_var: str, default: str = "") -> str:
-        crm_cfg = getattr(self.config, "crm", None)
-        v = (
-            (str(getattr(crm_cfg, attr, "") or "") if crm_cfg is not None else "")
-            or (str(getattr(self.env, attr, "") or "") if self.env is not None else "")
-            or os.getenv(env_var, "")
-        ).strip()
-        return v or default
 
     @property
     def api_key(self) -> str:
@@ -306,10 +300,6 @@ class TwentyInboundSync:
         crm_cfg = getattr(self.config, "crm", None)
         enabled = bool(getattr(crm_cfg, "inbound_enabled", False)) if crm_cfg is not None else False
         return bool(enabled and self.api_key)
-
-    def _client(self) -> httpx.AsyncClient:
-        extra = {"transport": self._transport} if self._transport is not None else {}
-        return httpx.AsyncClient(timeout=TIMEOUT, **extra)
 
     @staticmethod
     def _emails_from_person(person: dict) -> list[str]:
@@ -404,7 +394,7 @@ class TwentyInboundSync:
 # ── Outbound: push company observations into Twenty Company custom fields ──
 
 
-class TwentyObservationSync:
+class TwentyObservationSync(_CrmBase):
     """Writes each company's latest signal findings to its Twenty record.
 
     The operator names the mapping (``crm.observation_fields``:
@@ -421,26 +411,8 @@ class TwentyObservationSync:
     MAX_COMPANIES_PER_RUN = 200
 
     def __init__(self, state, config=None, env=None, *, transport=None):
+        super().__init__(config, env, transport=transport)
         self.state = state
-        self.config = config
-        self.env = env
-        self._transport = transport
-
-    def _crm(self, attr: str, default=None):
-        crm_cfg = getattr(self.config, "crm", None)
-        if crm_cfg is None:
-            return default
-        v = getattr(crm_cfg, attr, default)
-        return default if v is None else v
-
-    def _val(self, attr: str, env_var: str, default: str = "") -> str:
-        crm_cfg = getattr(self.config, "crm", None)
-        v = (
-            (str(getattr(crm_cfg, attr, "") or "") if crm_cfg is not None else "")
-            or (str(getattr(self.env, attr, "") or "") if self.env is not None else "")
-            or os.getenv(env_var, "")
-        ).strip()
-        return v or default
 
     @property
     def api_key(self) -> str:
@@ -459,10 +431,6 @@ class TwentyObservationSync:
         crm_cfg = getattr(self.config, "crm", None)
         enabled = bool(getattr(crm_cfg, "observation_sync_enabled", False)) if crm_cfg is not None else False
         return bool(enabled and self.api_key and self.fields)
-
-    def _client(self) -> httpx.AsyncClient:
-        extra = {"transport": self._transport} if self._transport is not None else {}
-        return httpx.AsyncClient(timeout=TIMEOUT, **extra)
 
     @staticmethod
     def _value_of(observation: object):
