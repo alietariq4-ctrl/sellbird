@@ -856,7 +856,7 @@ def test_collected_links_cannot_run_script_in_the_dashboard():
         pytest.skip("node is not installed")
     src = (WEB / "app.js").read_text(encoding="utf-8")
     funcs = "".join(re.search(rf"^function {n}\(.*?^}}\n", src, re.S | re.M).group(0)
-                    for n in ("escHtml", "safeHref"))
+                    for n in ("escHtml", "isHttpUrl", "safeHref"))
     urls = ["https://ok.example/a?b=1&c=2", "javascript:alert(1)", " JaVaScRiPt:x",
             "data:text/html,x", "//evil.example", "vbscript:x"]
     script = funcs + f"process.stdout.write(JSON.stringify({json.dumps(urls)}.map(safeHref)))"

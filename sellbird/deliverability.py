@@ -154,6 +154,14 @@ def _checkdmarc_deep_dmarc(domain: str) -> Check | None:
     return None
 
 
+def dns_checks(domain: str, dkim_selector: str = "") -> list[Check]:
+    """The four records a sending domain needs, in report order: MX, SPF,
+    DKIM, DMARC. `sellbird warmup`, `sellbird dns-check` and the
+    dashboard's DNS check all render this same list."""
+    return [check_mx(domain), check_spf(domain),
+            check_dkim(domain, dkim_selector), check_dmarc(domain)]
+
+
 def check_mx(domain: str) -> Check:
     try:
         mx = sorted(_resolve(domain, "MX"), key=lambda r: r.preference)

@@ -2232,8 +2232,7 @@ async def dns_check_route(request: Request):
         selector = getattr(config.channels.email.warmup, "dkim_selector", "") or ""
 
     def _run():
-        return [d.check_mx(domain), d.check_spf(domain),
-                d.check_dkim(domain, selector), d.check_dmarc(domain)]
+        return d.dns_checks(domain, selector)
 
     checks = await asyncio.to_thread(_run)
     return {"domain": domain,

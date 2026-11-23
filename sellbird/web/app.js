@@ -69,9 +69,12 @@ function own(table, key) {
 
 // Links built from collected data (websites, profiles) open only as http(s):
 // a javascript: URL from a scraped page must never run in the dashboard.
+function isHttpUrl(u) {
+  return /^https?:\/\//i.test(String(u || '').trim());
+}
 function safeHref(u) {
   const s = String(u || '').trim();
-  return /^https?:\/\//i.test(s) ? escHtml(s) : '';
+  return isHttpUrl(s) ? escHtml(s) : '';
 }
 
 // ── One status vocabulary ──
@@ -2713,7 +2716,7 @@ function addCompetitorWatch() {
   const kind = document.getElementById('cw-kind').value;
   const status = document.getElementById('cw-status');
   if (!name || !url) { status.textContent = 'Enter both a name and a URL.'; return; }
-  if (!/^https?:\/\//i.test(url)) { status.textContent = 'The URL must start with https:// or http://.'; return; }
+  if (!isHttpUrl(url)) { status.textContent = 'The URL must start with https:// or http://.'; return; }
   if (_cwWatches.some(w => w.name.toLowerCase() === name.toLowerCase())) {
     status.textContent = 'Watch names must be unique.'; return;
   }

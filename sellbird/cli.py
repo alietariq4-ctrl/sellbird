@@ -1049,9 +1049,7 @@ def cmd_warmup(args):
     print(f"\n  Deliverability check - {domain}")
     print("  " + "=" * 56)
     sections = [
-        ("Authentication", [d.check_mx(domain), d.check_spf(domain),
-                            d.check_dkim(domain, email.warmup.dkim_selector),
-                            d.check_dmarc(domain)]),
+        ("Authentication", d.dns_checks(domain, email.warmup.dkim_selector)),
         ("Reputation", [d.check_domain_age(domain), *d.check_domain_blocklists(domain)]
          + (d.check_ip_blocklists(smtp_host) if smtp_host else [])),
         ("Warmup & sending", [d.check_warmup(email.warmup, email.max_daily_sends,
@@ -1148,8 +1146,7 @@ def cmd_dns_check(args):
 
     print(f"\n  DNS check - {domain}")
     print("  " + "=" * 56)
-    checks = [d.check_mx(domain), d.check_spf(domain),
-              d.check_dkim(domain, dkim_selector), d.check_dmarc(domain)]
+    checks = d.dns_checks(domain, dkim_selector)
     icons = {d.OK: "OK  ", d.WARN: "WARN", d.FAIL: "FAIL", d.INFO: "info"}
     failed = 0
     for c in checks:
