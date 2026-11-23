@@ -297,6 +297,13 @@ function offlineState() {
     'The dashboard process may have stopped. Restart it with <b>sellbird dashboard</b> and refresh this page.');
 }
 
+// A tab's content while its fetch is in flight. Replaced by whatever renders
+// next — data, an empty state, or offlineState() — so every loader must write
+// its container before returning.
+function loadingState() {
+  return '<div class="loading" role="status">Loading…</div>';
+}
+
 async function api(path, opts) {
   try {
     const r = await authFetch(path, opts);
@@ -416,7 +423,38 @@ function showTab(id, btn) {
   loadCurrentTab();
 }
 
+// The container each tab refills, painted with loadingState() while its
+// fetch is in flight. Controls and Help are static; Today's smaller cards
+// keep their last numbers on a failed read (the queue says why).
+const TAB_LOADING = {
+  today: ['today-queue', 'live-status'],
+  signals: ['signals-groups'],
+  discover: ['discover-providers'],
+  companies: ['companies-list'],
+  prospects: ['prospects-table'],
+  campaigns: ['campaigns-list'],
+  outbox: ['outbox-desk', 'outbox-list'],
+  conversations: ['conversations-list'],
+  activity: ['activity-list'],
+  brain: ['brain-chain-container', 'brain-roles-grid'],
+  enrichment: ['clay-column-list'],
+  inboxes: ['inboxes-list'],
+  usage: ['usage-stats'],
+  settings: ['sending-mode-card', 'cw-watches'],
+  company: ['company-body'],
+};
+
+function showTabLoading(id) {
+  // A drilled-in company view isn't reloaded on tab entry; don't wipe it.
+  if (id === 'companies' && companyDrill) return;
+  for (const cid of own(TAB_LOADING, id) || []) {
+    const el = document.getElementById(cid);
+    if (el) el.innerHTML = loadingState();
+  }
+}
+
 function loadCurrentTab() {
+  showTabLoading(currentTab);
   switch (currentTab) {
     case 'today': loadLiveStatus(); loadRenameNotice(); loadToday(); loadTrend(); loadFunnel(); loadSetupStatus(); loadRuns(); loadTodayActivity(); break;
     case 'signals': loadSignals(); break;
@@ -1170,7 +1208,7 @@ async function runCohort() {
     return;
   }
 
-  let html = '<div style="border-top:1px solid var(--border);margin-top:20px;padding-top:20px">' +
+  let html = '<div style="border-top:1px solid var(--line);margin-top:20px;padding-top:20px">' +
     '<div class="cohort-size">' + data.size + '</div>' +
     '<div class="muted" style="font-size:13px;margin-top:2px">compan' +
       (data.size === 1 ? 'y matches' : 'ies match') + ' this cohort right now</div>';
@@ -1511,6 +1549,12 @@ async function loadSellbirdStatus() {
   if (!data) {
     headerDot.className = 'status-dot offline';
     headerText.textContent = 'Offline';
+    // The Controls tab must not read a dead server as "Stopped".
+    document.getElementById('control-dot').className = 'dot offline';
+    const label = document.getElementById('control-label');
+    label.className = 'label stopped';
+    label.textContent = 'Offline';
+    document.getElementById('control-meta').textContent = "Can't reach Sellbird right now.";
     return;
   }
   const running = !!data.running;
@@ -1639,7 +1683,13 @@ function quotaCardHtml(data) {
 async function loadUsage() {
   const data = await api('/api/usage');
   const statsEl = document.getElementById('usage-stats');
-  if (!data) { statsEl.innerHTML = offlineState(); return; }
+  if (!data) {
+    statsEl.innerHTML = offlineState();
+    document.getElementById('usage-quota').style.display = 'none';
+    document.getElementById('usage-daily').style.display = 'none';
+    document.getElementById('usage-tables').innerHTML = '';
+    return;
+  }
 
   const quotaEl = document.getElementById('usage-quota');
   const qHtml = quotaCardHtml(data);
@@ -1873,7 +1923,7 @@ function sendingModeBanner(m) {
 }
 
 function sendingModeCard(m) {
-  if (!m) return '<div class="card muted">Couldn’t read the sending mode.</div>';
+  if (!m) return '<div class="card">' + offlineState() + '</div>';
   const auto = m.mode === 'autopilot';
   const instantly = m.provider === 'instantly';
   const domains = (m.your_domains || []).map(escHtml).join(', ') || 'none yet';
@@ -2190,7 +2240,7 @@ function companyInfoCard(company, profile) {
     ? '<a href="' + safeHref(url) + '" target="_blank" rel="noopener noreferrer">' + escHtml(text || url) + '</a>'
     : escHtml(text || url || '');
   const website = c.website || (c.domain ? 'https://' + c.domain : '');
-  const row = (k, v) => v ? '<tr><td class="muted" style="width:170px;vertical-align:top">' + k +
+  const row = (k, v) => v ? '<tr><td class="muted" style="vertical-align:top">' + k +
     '</td><td style="white-space:normal">' + v + '</td></tr>' : '';
   const latest = {};
   for (const o of obs) {
@@ -2240,7 +2290,9 @@ async function showCompanyContacts(index) {
     '<div class="card flush"><div class="card-head"><h3>Contacts</h3>' +
     '<span class="meta">' + escHtml([company.industry, company.location].filter(Boolean).join(' · ')) + '</span></div>';
   if (!data || !data.length) {
-    html += '<div class="empty"><div class="copy">No contacts found at this company yet.</div></div></div>';
+    html += emptyState(icon('contacts'), 'No contacts here yet',
+      'Sellbird hasn\'t found a person at this company. It reads the team and about ' +
+      'pages of each site it profiles — try <b>Read websites</b> on the Discover tab.') + '</div>';
   } else {
     html += '<table><thead><tr><th>Name</th><th>Email</th><th>Phone</th><th>LinkedIn</th><th>Status</th><th>Source</th></tr></thead><tbody>';
     for (const p of data) {
@@ -2625,7 +2677,7 @@ let _cwLoaded = false;
 
 async function loadCompetitorWatch() {
   const data = await api('/api/competitor-watch');
-  if (!data) return;
+  if (!data) { document.getElementById('cw-watches').innerHTML = offlineState(); return; }
   _cwWatches = (data.watches || []).map(w => ({name: w.name, url: w.url, kind: w.kind}));
   _cwLoaded = true;
   document.getElementById('cw-enabled').checked = !!data.enabled;
@@ -3323,6 +3375,7 @@ async function loadActivity() {
 
 // ── Init & live refresh ──
 
+showTabLoading('today');
 loadRenameNotice();
 loadToday();
 loadTrend();
@@ -3391,7 +3444,8 @@ async function loadCompany() {
   const body = document.getElementById('company-body');
   const data = await api('/api/company');
   if (!data) { body.innerHTML = offlineState(); return; }
-  if (data.error) { body.innerHTML = `<p class="desc">${ce(data.error)}</p>`; return; }
+  if (data.error) { body.innerHTML = emptyState(icon('alert'), 'Couldn\'t read your company config',
+    escHtml(data.error) + ' Fix it and reopen this tab, or retrain with <b>sellbird train &lt;url&gt;</b>.'); return; }
   _company = data;
   const o = data.offer || {}, p = data.product || {}, icp = data.icp || {}, s = data.persona || {};
   const objections = Object.entries(p.objection_responses || {});
@@ -3626,7 +3680,14 @@ const KNOWN_PROVIDERS = [
 
 async function loadBrainStudio() {
   const data = await api('/api/brain/config');
-  if (!data) return;
+  if (!data) {
+    // Never leave the studio stuck on "Loading…" when the read fails.
+    const chainEl = document.getElementById('brain-chain-container');
+    const rolesEl = document.getElementById('brain-roles-grid');
+    if (chainEl) chainEl.innerHTML = offlineState();
+    if (rolesEl) rolesEl.innerHTML = '';
+    return;
+  }
   _brainConfig = data;
 
   // Render budget & spend
@@ -3848,15 +3909,15 @@ async function loadEnrichment() {
   const list = document.getElementById('clay-column-list');
   if (!list) return;
   const data = await api('/api/enrichment/columns');
-  if (!data || !data.columns || !data.columns.length) {
-    list.innerHTML = `
-      <div class="inset" style="text-align: center; color: var(--text-2); padding: 24px;">
-        No custom columns added yet. Click <b>+ Add AI Column</b> to define a new signal.
-      </div>
-    `;
+  if (!data) { list.innerHTML = offlineState(); return; }
+  const cols = data.columns || [];
+  if (!cols.length) {
+    list.innerHTML = emptyState(icon('enrichment'), 'No AI columns yet',
+      'Define a prompt once and Sellbird runs it against every company it has read. ' +
+      'Click <b>+ Add AI Column</b> to create the first one.');
     return;
   }
-  list.innerHTML = data.columns.map(col => `
+  list.innerHTML = cols.map(col => `
     <div class="clay-col-item">
       <div>
         <h4>${escHtml(col.name)} <span class="tag" style="text-transform:none;font-weight:normal">${escHtml(col.key)}</span> <span class="tag accent">${escHtml(col.output_type || 'text')}</span></h4>

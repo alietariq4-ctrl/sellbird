@@ -173,6 +173,22 @@ a {
 }
 @media (hover: hover) { a:hover { text-decoration-color: currentColor; } }
 :focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; border-radius: var(--r-xs); }
+/* Touch: controls grow to a 40px hit area (the sheet's own precedent:
+   nav buttons already sit at 40px on desktop). Mouse users see nothing. */
+@media (hover: none) {
+  nav button { height: 40px; }
+  .btn, .btn-sm, .theme-switch button { min-height: 40px; }
+}
+/* Controls get the same ring as .form-input:focus — accent line over an
+   accent-soft halo. :focus-visible only, so mouse users see nothing new. */
+.btn:focus-visible, .icon-btn:focus-visible, .refresh-btn:focus-visible,
+nav button:focus-visible, .theme-switch button:focus-visible, .oled-toggle:focus-visible,
+.segmented button:focus-visible, .preset-pill:focus-visible, .provider-pick:focus-visible,
+.offer-idea:focus-visible, .inbox-row:focus-visible, tr.clickable:focus-visible,
+.desk-item:focus-visible, .prov-card:focus-visible {
+  outline: 2px solid var(--accent); outline-offset: 2px;
+  box-shadow: 0 0 0 3px var(--accent-soft);
+}
 code, kbd, .mono { font-family: var(--mono); }
 code {
   font-size: 0.85em; padding: 1px 5px; border-radius: var(--r-xs);
@@ -245,6 +261,9 @@ nav button.active .icon { color: var(--accent); }
   padding: var(--sp-3) 6px 0; border-top: 1px solid var(--line);
 }
 .sellbird-status { display: flex; align-items: center; gap: 8px; font-size: var(--fs-ui); color: var(--text-2); }
+/* The status text wraps the top bar into a third row on phones; the dot
+   alone still says running/offline. */
+@media (max-width: 640px) { .sellbird-status { font-size: 0; gap: 0; } .sellbird-status .status-dot { width: 9px; height: 9px; } }
 .status-dot { width: 7px; height: 7px; border-radius: 50%; flex: none; background: var(--text-3); }
 .status-dot.running { background: var(--good); box-shadow: 0 0 0 3px var(--good-bg); }
 .status-dot.offline { background: var(--bad); box-shadow: 0 0 0 3px var(--bad-bg); }
@@ -410,7 +429,9 @@ main.content { min-width: 0; padding: var(--sp-6) var(--sp-6) 96px; }
   transition-duration: 150ms; transition-timing-function: ease-out;
 }
 .btn:not(:disabled):active { scale: 0.96; }
-.btn:disabled { opacity: 0.5; cursor: not-allowed; }
+/* One disabled rule for every variant: dimmed, no pointer. The variant's
+   own box-shadow is its border, so it stays; hovers are already :not(:disabled). */
+.btn:disabled { opacity: 0.5; cursor: default; }
 .btn .icon { width: 15px; height: 15px; }
 .btn-primary { background: var(--accent); color: var(--accent-text); box-shadow: var(--btn-primary-shadow); }
 .btn-secondary { background: var(--surface); color: var(--text); }
@@ -807,7 +828,11 @@ textarea.form-input { height: auto; padding: 8px 12px; }
 .form-input::placeholder { color: var(--text-3); }
 .form-row { display: flex; gap: var(--sp-3); align-items: flex-end; flex-wrap: wrap; }
 .form-row .form-group { flex: 1; min-width: 140px; }
-@media (max-width: 640px) { .form-input { font-size: 16px; } }
+/* 16px inputs at phone widths: Safari zooms the page on focus otherwise.
+   .desk-edit-body and .cohort-bound are inputs too, so they're in here. */
+@media (max-width: 640px) {
+  .form-input, .desk-edit-body, .cohort-bound { font-size: 16px; }
+}
 
 .test-result { font-size: var(--fs-ui); margin-top: var(--sp-3); padding: 10px 12px; border-radius: var(--r-sm); border: 1px solid transparent; }
 .test-result.success { background: var(--good-bg); color: var(--good); border-color: var(--good-line); }
@@ -919,6 +944,7 @@ textarea.form-input { height: auto; padding: 8px 12px; }
 .status-big { display: flex; align-items: center; gap: 10px; margin-bottom: 6px; }
 .status-big .dot { width: 10px; height: 10px; border-radius: 50%; background: var(--text-3); }
 .status-big .dot.running { background: var(--good); box-shadow: 0 0 0 4px var(--good-bg); }
+.status-big .dot.offline { background: var(--bad); box-shadow: 0 0 0 4px var(--bad-bg); }
 .status-big .label { font-size: 1.25rem; font-weight: 600; letter-spacing: -0.015em; }
 .status-big .label.running { color: var(--good); }
 .status-meta { font-size: var(--fs-ui); color: var(--text-3); min-height: 20px; }
@@ -943,6 +969,7 @@ textarea.form-input { height: auto; padding: 8px 12px; }
 .file-table { width: 100%; font-size: var(--fs-ui); border-collapse: collapse; }
 .file-table td { padding: 10px 14px; border-bottom: 1px solid var(--line); }
 .file-table td:first-child { font-family: var(--mono); font-size: 12px; white-space: nowrap; width: 230px; color: var(--text); }
+@media (max-width: 640px) { .file-table td:first-child { white-space: normal; width: auto; } }
 .file-table td:last-child { color: var(--text-2); }
 .file-table tr:last-child td { border-bottom: none; }
 
@@ -955,13 +982,25 @@ textarea.form-input { height: auto; padding: 8px 12px; }
 .empty .title { font-size: var(--fs-h3); font-weight: 600; margin-bottom: 4px; }
 .empty .copy { font-size: var(--fs-ui); color: var(--text-2); line-height: 1.6; max-width: 48ch; margin: 0 auto; text-wrap: pretty; }
 .empty .copy b { color: var(--text); font-weight: 500; }
-.section > .empty, .content-inner > .empty, #companies-list > .empty, #prospects-table > .empty,
-#campaigns-list > .empty, #conversations-list > .empty, #activity-list > .empty {
+.section > .empty, .content-inner > .empty, #today-queue > .empty, #companies-list > .empty,
+#prospects-table > .empty, #campaigns-list > .empty, #conversations-list > .empty, #activity-list > .empty,
+#signals-groups > .empty, #discover-providers > .empty, #outbox-desk > .empty, #inboxes-list > .empty,
+#usage-stats > .empty, #company-body > .empty, #sending-mode-card > .empty, #outbox-list > .empty {
+  background: var(--surface); border-radius: var(--r-lg); box-shadow: var(--shadow-border);
+}
+.loading { padding: var(--sp-4) var(--sp-5); font-size: var(--fs-ui); color: var(--text-3); text-align: center; }
+.card > .loading { padding: var(--sp-2) 0; }   /* the card already pads */
+#brain-roles-grid > .loading, #usage-stats > .loading, #usage-stats > .empty { grid-column: 1 / -1; }   /* grids, not one cell */
+.section > .loading, .content-inner > .loading, #today-queue > .loading, #companies-list > .loading,
+#prospects-table > .loading, #campaigns-list > .loading, #conversations-list > .loading, #activity-list > .loading,
+#signals-groups > .loading, #discover-providers > .loading, #outbox-desk > .loading, #inboxes-list > .loading,
+#usage-stats > .loading, #company-body > .loading, #sending-mode-card > .loading, #outbox-list > .loading {
   background: var(--surface); border-radius: var(--r-lg); box-shadow: var(--shadow-border);
 }
 
 .toast {
-  position: fixed; bottom: var(--sp-5); right: var(--sp-5); z-index: 60; max-width: 420px;
+  position: fixed; bottom: var(--sp-5); right: var(--sp-5); z-index: 60;
+  max-width: min(420px, calc(100vw - 2 * var(--sp-5)));
   padding: 10px 14px; border-radius: var(--r-md); font-size: var(--fs-ui); font-weight: 500;
   box-shadow: var(--shadow-pop);
   transition-property: opacity, translate; transition-duration: 250ms; transition-timing-function: var(--ease-out);
@@ -984,7 +1023,7 @@ textarea.form-input { height: auto; padding: 8px 12px; }
     border-right: none; border-bottom: 1px solid var(--line); overflow: visible;
   }
   .brand .tagline { display: none; }
-  nav { order: 3; width: 100%; flex-direction: row; gap: 2px; overflow-x: auto; scrollbar-width: none; margin: 0 calc(-1 * var(--sp-4)); padding: 0 var(--sp-4) 2px; width: calc(100% + 2 * var(--sp-4)); }
+  nav { order: 3; width: 100%; flex-direction: row; gap: 2px; overflow-x: auto; scrollbar-width: thin; margin: 0 calc(-1 * var(--sp-4)); padding: 0 var(--sp-4) 2px; width: calc(100% + 2 * var(--sp-4)); }
   nav::-webkit-scrollbar { display: none; }
   .nav-group { flex-direction: row; gap: 2px; }
   .nav-label { display: none; }
@@ -1058,7 +1097,9 @@ a.btn, a.btn:hover { text-decoration: none; }
 
 
 /* Your company */
-.company-body { display: flex; flex-direction: column; gap: 16px; max-width: 880px; }
+/* Cards in this column are groups (gap inside one: 12px), so the column's
+   gap is twice that. */
+.company-body { display: flex; flex-direction: column; gap: var(--sp-5); max-width: 880px; }
 .company-card { display: flex; flex-direction: column; gap: 12px; }
 .company-card-head { display: flex; align-items: baseline; justify-content: space-between; gap: 12px; flex-wrap: wrap; }
 .company-card-head h3 { margin: 0; }
@@ -1100,7 +1141,6 @@ a.btn, a.btn:hover { text-decoration: none; }
   transition-property: box-shadow, background-color; transition-duration: 120ms; transition-timing-function: ease-out;
 }
 @media (hover: hover) { .inbox-row:hover { box-shadow: var(--shadow-border-hover); background: var(--surface-2); } }
-.inbox-row:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
 .inbox-avatar {
   width: 36px; height: 36px; border-radius: 50%; display: grid; place-items: center;
   background: var(--accent-soft); color: var(--accent); font-weight: 600; font-size: var(--fs-ui);
@@ -1266,9 +1306,14 @@ dialog.modal::backdrop { background: rgb(0 0 0 / 0.45); }
   width: 22px; height: 22px; border-radius: 50%; display: grid; place-items: center;
   background: var(--accent-soft); color: var(--accent); font-size: 11px; font-weight: 600;
 }
-@media (max-width: 960px) {
+@media (max-width: 1100px) {
   .chain-row { grid-template-columns: 26px minmax(0, 1fr) minmax(0, 1fr) 32px; }
   .chain-row .chain-url, .chain-row .chain-env { grid-column: 2 / 4; }
+}
+/* Phones: one field per row keeps each input readable. */
+@media (max-width: 640px) {
+  .chain-row { grid-template-columns: 26px minmax(0, 1fr) 32px; }
+  .chain-row .chain-url, .chain-row .chain-env { grid-column: 2 / 3; }
 }
 
 .roles-grid {
@@ -1285,6 +1330,7 @@ dialog.modal::backdrop { background: rgb(0 0 0 / 0.45); }
 .role-box-head b { font-size: var(--fs-caption); text-transform: uppercase; letter-spacing: 0.05em; color: var(--text); }
 .role-box-head span { font-size: 11px; color: var(--text-3); }
 .role-box-inputs { display: grid; grid-template-columns: minmax(0, 0.85fr) minmax(0, 1.35fr); gap: 6px; }
+@media (max-width: 580px) { .role-box-inputs { grid-template-columns: minmax(0, 1fr); } }
 
 .doctor-panel {
   margin-top: var(--sp-4); padding: var(--sp-3) var(--sp-4);
