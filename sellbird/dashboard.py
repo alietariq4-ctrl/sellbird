@@ -2086,6 +2086,159 @@ async def get_campaigns():
     return rows
 
 
+@app.get("/api/frameworks")
+async def get_frameworks():
+    """How each copywriting framework is doing (the bandit experiment).
+
+    The Campaigns tab shows this only when frameworks are configured or a
+    campaign already carries a tag; the built-in shape alone has nothing
+    to compare, so the card stays hidden.
+    """
+    configured = _configured_frameworks()
+    state = _state()
+    await state.init_db()
+    stats = await state.framework_stats()
+    rows = [{"framework": fw, "replies": replied, "finished": finished}
+            for fw, (replied, finished) in sorted(stats.items()) if fw]
+    return {"configured": configured, "rows": rows}
+
+
+def _configured_frameworks() -> list[str]:
+    """writer.frameworks straight from the YAML, without the full config's
+    required fields — the dashboard may be up before training is done."""
+    try:
+        doc = yaml.safe_load(read_user_text(_resolve_config_file())) or {}
+    except FileNotFoundError:
+        return []
+    writer = doc.get("writer")
+    if not isinstance(writer, dict):
+        return []
+    fw = writer.get("frameworks")
+    return [str(x) for x in fw if isinstance(fw, list) and isinstance(x, str)] if isinstance(fw, list) else []
+
+
+@app.get("/api/competitor-watch")
+async def get_competitor_watch():
+    """The configured watches plus the changes the watcher has logged."""
+    enabled, watches = False, []
+    try:
+        doc = yaml.safe_load(read_user_text(_resolve_config_file())) or {}
+        cw = doc.get("competitor_watch")
+        if isinstance(cw, dict):
+            enabled = bool(cw.get("enabled"))
+            raw = cw.get("watches")
+            if isinstance(raw, list):
+                watches = [{"name": str(w.get("name") or ""), "url": str(w.get("url") or ""),
+                            "kind": str(w.get("kind") or "homepage")}
+                           for w in raw if isinstance(w, dict)]
+    except FileNotFoundError:
+        pass
+    rows = await query_db(
+        "SELECT details_json, created_at FROM actions "
+        "WHERE action_type = 'competitor_change' ORDER BY created_at DESC LIMIT 20")
+    changes = []
+    for r in rows:
+        try:
+            details = json.loads(r.get("details_json") or "{}")
+        except (json.JSONDecodeError, TypeError):
+            details = {}
+        changes.append({"watch": details.get("watch", ""), "url": details.get("url", ""),
+                        "kind": details.get("kind", ""), "at": str(r.get("created_at") or "")})
+    return {"enabled": enabled, "watches": watches, "changes": changes}
+
+
+@app.post("/api/competitor-watch")
+async def save_competitor_watch(request: Request):
+    """Save the watch list to the config file Sellbird reads."""
+    try:
+        body = await request.json()
+    except ValueError:
+        body = None
+    if not isinstance(body, dict):
+        return _refuse("expected a JSON object", 400)
+    enabled = bool(body.get("enabled"))
+    raw = body.get("watches") or []
+    if not isinstance(raw, list) or len(raw) > 50:
+        return _refuse("watches must be a list of at most 50 entries", 400)
+    watches, seen = [], set()
+    for w in raw:
+        if not isinstance(w, dict):
+            return _refuse("each watch must be an object", 400)
+        name = str(w.get("name") or "").strip()[:120]
+        url = str(w.get("url") or "").strip()[:2000]
+        kind = str(w.get("kind") or "homepage").strip().lower()
+        if not name and not url:
+            continue  # a blank row the form left behind
+        if not name or not url:
+            return _refuse("Each watch needs both a name and a URL.", 400)
+        if not url.startswith(("https://", "http://")):
+            return _refuse(f"Watch '{name}': the URL must start with https:// or http://.", 400)
+        if kind not in ("pricing", "hiring", "homepage"):
+            kind = "homepage"
+        if name.lower() in seen:
+            return _refuse(f"Two watches are named '{name}' — names key the baseline, so make them unique.", 400)
+        seen.add(name.lower())
+        watches.append({"name": name, "url": url, "kind": kind})
+    if enabled and not watches:
+        return _refuse("Add at least one watch, or turn the watcher off.", 400)
+    path = _resolve_config_file()
+    try:
+        try:
+            doc = yaml.safe_load(read_user_text(path)) or {}
+        except FileNotFoundError:
+            doc = {}
+        doc["competitor_watch"] = {"enabled": enabled, "watches": watches}
+        _write_yaml_atomic(path, doc)
+    except Exception as e:
+        return JSONResponse({"success": False, "message": f"Couldn't save: {e}"}, status_code=500)
+    state = _state()
+    await state.init_db()
+    await state.log_action("competitor_watch_saved", "dashboard",
+                           {"enabled": enabled, "watches": len(watches)})
+    return {"success": True, "message": "Saved. The watcher uses it from the next idle cycle."}
+
+
+@app.post("/api/dns-check")
+async def dns_check_route(request: Request):
+    """MX/SPF/DKIM/DMARC for a domain — `sellbird dns-check` in the browser.
+
+    DNS lookups block, so they run in a thread; nothing is written anywhere.
+    """
+    from sellbird import deliverability as d
+    from sellbird.config import load_config
+    try:
+        body = await request.json()
+    except ValueError:
+        body = None
+    domain = str((body or {}).get("domain") or "").strip().lower().rstrip(".")
+    config = None
+    try:
+        config = load_config(str(_resolve_config_file()))
+    except Exception:
+        config = None
+    if not domain:
+        if config is None:
+            return _refuse("No sending domain configured — pass a domain to check.", 400)
+        email_cfg = config.channels.email
+        smtp_user = os.getenv("SMTP_USERNAME", "").strip() if email_cfg.provider == "smtp" else ""
+        sender = smtp_user if "@" in smtp_user else config.persona.email
+        domain = sender.rpartition("@")[2].strip().lower().rstrip(".")
+    if not d.DOMAIN_RE.match(domain):
+        return _refuse("That doesn't look like a domain. Try yourdomain.com", 400)
+    selector = ""
+    if config is not None:
+        selector = getattr(config.channels.email.warmup, "dkim_selector", "") or ""
+
+    def _run():
+        return [d.check_mx(domain), d.check_spf(domain),
+                d.check_dkim(domain, selector), d.check_dmarc(domain)]
+
+    checks = await asyncio.to_thread(_run)
+    return {"domain": domain,
+            "checks": [{"name": c.name, "status": c.status, "detail": c.detail} for c in checks],
+            "failed": sum(c.status == d.FAIL for c in checks)}
+
+
 @app.get("/api/prospects/{prospect_id}/opt-out")
 async def get_opt_out(prospect_id: str):
     """Why this person is opted out: the rule, the words and their message."""

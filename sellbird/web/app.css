@@ -1318,3 +1318,50 @@ dialog.modal.modal-wide { width: min(680px, calc(100vw - 32px)); }
 }
 .spend-amount { font-size: var(--fs-kpi); font-weight: 600; letter-spacing: -0.03em; font-variant-numeric: tabular-nums; }
 .spend-cap { font-size: var(--fs-ui); color: var(--text-2); }
+
+/* ── Framework experiment (Campaigns) ─────────────────────────── */
+
+.frameworks-card { margin-bottom: var(--sp-5); }
+.frameworks-card h3 { font-size: var(--fs-h3); font-weight: 600; margin-bottom: 4px; }
+.frameworks-card .lede { margin-bottom: var(--sp-4); }
+
+/* ── Settings: DNS check ─────────────────────────────────────── */
+
+.dns-summary { font-size: var(--fs-body); margin: var(--sp-3) 0 var(--sp-2); }
+.dns-checks { display: flex; flex-direction: column; gap: var(--sp-2); }
+.dns-check {
+  display: grid; grid-template-columns: 52px minmax(0, 1fr); gap: var(--sp-3);
+  align-items: start; padding: 10px 12px; border-radius: var(--r-md);
+  background: var(--surface-2); border: 1px solid var(--line);
+}
+.dns-check .mini { margin-top: 2px; }
+.dns-check b { font-size: var(--fs-ui); font-weight: 600; }
+.dns-check .muted { font-size: var(--fs-caption); margin-top: 2px; overflow-wrap: anywhere; }
+
+/* ── Settings: competitor watch ──────────────────────────────── */
+
+.cw-enabled {
+  display: inline-flex; align-items: center; gap: 6px;
+  font-size: var(--fs-ui); color: var(--text-2); margin-top: var(--sp-3);
+  cursor: pointer;
+}
+#cw-watches { display: flex; flex-direction: column; gap: var(--sp-2); margin-bottom: var(--sp-3); }
+.cw-watch {
+  display: flex; align-items: center; justify-content: space-between; gap: var(--sp-3);
+  padding: 10px 12px; border-radius: var(--r-md);
+  background: var(--surface-2); border: 1px solid var(--line);
+}
+.cw-watch b { font-size: var(--fs-ui); font-weight: 600; }
+.cw-watch .muted { font-size: var(--fs-caption); margin-top: 2px; overflow-wrap: anywhere; }
+.cw-add { display: grid; grid-template-columns: minmax(0, 1fr) minmax(0, 1.4fr) auto auto; gap: var(--sp-2); margin-bottom: var(--sp-3); }
+@media (max-width: 860px) { .cw-add { grid-template-columns: minmax(0, 1fr); } }
+#cw-changes { margin-top: var(--sp-4); }
+.cw-changes-title { font-size: var(--fs-ui); font-weight: 600; margin-bottom: var(--sp-2); }
+.cw-change {
+  padding: 10px 12px; border-radius: var(--r-md);
+  background: var(--surface-2); border: 1px solid var(--line);
+  margin-bottom: var(--sp-2);
+}
+.cw-change b { font-size: var(--fs-ui); font-weight: 600; }
+.cw-change .muted { font-size: var(--fs-caption); margin-top: 2px; overflow-wrap: anywhere; }
+.cw-change a { color: var(--accent); }

@@ -278,6 +278,7 @@
 <!-- Campaigns -->
 <div id="campaigns" class="section">
   <div class="section-head"><div><h2>Campaigns</h2><p>Email sequences Sellbird has written, and how far each one has got.</p></div></div>
+  <div id="frameworks-card"></div>
   <div id="campaigns-list"></div>
 </div>
 
@@ -488,6 +489,21 @@
 
   <div class="subhead">Sending</div>
   <div id="sending-mode-card"></div>
+
+  <div class="card" id="dns-card">
+    <div class="settings-row">
+      <div>
+        <h3>DNS check</h3>
+        <p class="desc">MX, SPF, DKIM and DMARC for your sending domain — the same checks as <code>sellbird dns-check</code>. Fix any FAIL before cold email; warnings are worth a look too.</p>
+      </div>
+      <div class="fields">
+        <div class="form-group"><label class="form-label" for="dns-domain">Domain <span class="optional-tag">blank = your sending domain</span></label>
+          <input type="text" class="form-input" id="dns-domain" placeholder="yourdomain.com" autocomplete="off"></div>
+        <div><button class="btn btn-secondary btn-sm" id="dns-run" onclick="runDnsCheck()">Check DNS</button></div>
+        <div id="dns-results" aria-live="polite"></div>
+      </div>
+    </div>
+  </div>
 
   <div class="subhead">Email provider <span class="hint">Active: <b id="active-provider">…</b> &middot; set <code>channels.email.provider</code> in <code>sellbird.yaml</code> to gmail, microsoft, smtp or instantly</span></div>
   <div class="card">
@@ -719,6 +735,33 @@
             <input type="password" class="form-input" id="slack-webhook" placeholder="https://hooks.slack.com/services/..." autocomplete="off"></div>
         </div>
         <button class="btn btn-primary btn-sm" onclick="saveIntegrations()">Save Integrations</button>
+      </div>
+    </div>
+  </div>
+
+  <div class="subhead">Competitor watch</div>
+  <div class="card" id="competitor-watch-card">
+    <div class="settings-row">
+      <div>
+        <h3>Pages to watch</h3>
+        <p class="desc">Sellbird reads these pages on idle cycles and alerts you when one changes — a rival's pricing page, their careers page. Findings come to you (Telegram/Slack and the log below), never into cold emails. The first check only records a baseline.</p>
+        <label class="cw-enabled"><input type="checkbox" id="cw-enabled" onchange="saveCompetitorWatch()"> Watch these pages</label>
+      </div>
+      <div class="fields">
+        <div id="cw-watches"></div>
+        <div class="cw-add">
+          <input type="text" class="form-input" id="cw-name" placeholder="Name, e.g. Rival pricing" autocomplete="off">
+          <input type="text" class="form-input" id="cw-url" placeholder="https://rival.example/pricing" autocomplete="off">
+          <select class="form-input" id="cw-kind" aria-label="What kind of page is this">
+            <option value="pricing">pricing</option>
+            <option value="hiring">hiring</option>
+            <option value="homepage">homepage</option>
+          </select>
+          <button class="btn btn-secondary btn-sm" onclick="addCompetitorWatch()">Add</button>
+        </div>
+        <div><button class="btn btn-primary btn-sm" id="cw-save" onclick="saveCompetitorWatch()">Save watches</button>
+          <span id="cw-status" class="hint"></span></div>
+        <div id="cw-changes"></div>
       </div>
     </div>
   </div>

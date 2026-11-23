@@ -431,7 +431,7 @@ function loadCurrentTab() {
     case 'enrichment': loadEnrichment(); break;
     case 'inboxes': loadInboxes(); break;
     case 'usage': loadUsage(); break;
-    case 'settings': loadSettings(); loadSendingModeCard(); break;
+    case 'settings': loadSettings(); loadSendingModeCard(); loadCompetitorWatch(); break;
     case 'company': loadCompany(); break;
     case 'controls': loadSellbirdStatus(); loadLogs(); break;
   }
@@ -2558,8 +2558,147 @@ function campaignProgress(c) {
       '<span><i class="' + p[2] + '"></i>' + p[0] + ' <b>' + p[1] + '</b></span>').join('') + '</div></div>';
 }
 
+// ── Framework experiment: which email shape earns replies ──
+
+const FRAMEWORK_LABELS = {
+  pas: 'PAS — problem, agitate, solve',
+  bab: 'BAB — before, after, bridge',
+  direct_offer: 'Direct offer',
+  question_lead: 'Question lead',
+};
+
+function renderFrameworks(data) {
+  const el = document.getElementById('frameworks-card');
+  if (!el) return;
+  const configured = (data && data.configured) || [];
+  const rows = (data && data.rows) || [];
+  if (!configured.length && !rows.length) { el.innerHTML = ''; return; }
+  const stats = {};
+  rows.forEach(r => { stats[r.framework] = r; });
+  const arms = [...new Set([...configured, ...rows.map(r => r.framework)])];
+  const body = arms.map(fw => {
+    const s = own(stats, fw) || {replies: 0, finished: 0};
+    const rate = s.finished ? (100 * s.replies / s.finished).toFixed(1) + '%' : '—';
+    return '<tr><td>' + escHtml(own(FRAMEWORK_LABELS, fw) || fw) + '</td>' +
+      '<td class="num">' + s.finished + '</td><td class="num">' + s.replies + '</td>' +
+      '<td class="num">' + rate + '</td></tr>';
+  }).join('');
+  el.innerHTML = '<section class="card frameworks-card" aria-labelledby="frameworks-h">' +
+    '<h3 id="frameworks-h">Framework experiment</h3>' +
+    '<p class="lede">Each campaign tests one email shape. Sellbird gives the next campaign to a shape by Thompson sampling over these real replies, so winners gradually get more traffic. “Finished” means a person replied or their sequence ran its course.</p>' +
+    '<div class="table-card"><table><thead><tr><th>Framework</th><th class="num">Finished</th>' +
+    '<th class="num">Replies</th><th class="num">Reply rate</th></tr></thead><tbody>' + body +
+    '</tbody></table></div></section>';
+}
+
+// ── Settings: DNS and competitor watch ──
+
+async function runDnsCheck() {
+  const btn = document.getElementById('dns-run');
+  const out = document.getElementById('dns-results');
+  const domain = document.getElementById('dns-domain').value.trim();
+  btn.disabled = true;
+  out.innerHTML = '<p class="hint">Checking DNS…</p>';
+  const data = await api('/api/dns-check', {
+    method: 'POST', headers: {'Content-Type': 'application/json'},
+    body: JSON.stringify({domain}),
+  });
+  btn.disabled = false;
+  if (!data || data.success === false) {
+    out.innerHTML = '<p class="hint">' + escHtml(failMsg(data, 'The DNS check could not run.')) + '</p>';
+    return;
+  }
+  const statusClasses = {ok: 't-good', warn: 't-waiting', fail: 't-bad', info: 't-idle'};
+  const checks = (data.checks || []).map(c => {
+    const status = String(c.status || 'info').toLowerCase();
+    return '<div class="dns-check"><span class="mini ' + (own(statusClasses, status) || 't-idle') + '">' +
+      escHtml(status.toUpperCase()) + '</span><div><b>' + escHtml(c.name) + '</b>' +
+      '<div class="muted">' + escHtml(c.detail) + '</div></div></div>';
+  }).join('');
+  out.innerHTML = '<div class="dns-summary"><b>' + escHtml(data.domain) + '</b> — ' +
+    (data.failed ? data.failed + ' FAIL item(s): fix these before cold email.' : 'No FAIL items.') +
+    '</div><div class="dns-checks">' + checks + '</div>';
+}
+
+let _cwWatches = [];
+let _cwLoaded = false;
+
+async function loadCompetitorWatch() {
+  const data = await api('/api/competitor-watch');
+  if (!data) return;
+  _cwWatches = (data.watches || []).map(w => ({name: w.name, url: w.url, kind: w.kind}));
+  _cwLoaded = true;
+  document.getElementById('cw-enabled').checked = !!data.enabled;
+  renderCompetitorWatches();
+  const changes = data.changes || [];
+  document.getElementById('cw-changes').innerHTML = changes.length
+    ? '<h4 class="cw-changes-title">Recent changes</h4>' + changes.map(c => {
+        const href = safeHref(c.url);
+        const link = href
+          ? ' <a href="' + href + '" target="_blank" rel="noopener noreferrer">' + escHtml(c.url) + '</a>'
+          : ' ' + escHtml(c.url);
+        return '<div class="cw-change"><div><b>' + escHtml(c.watch) + '</b>' +
+          ' <span class="mini t-note">' + escHtml(c.kind || 'page') + '</span></div>' +
+          '<div class="muted">' + link + '</div><div class="muted">' + relTime(c.at) + '</div></div>';
+      }).join('')
+    : '';
+}
+
+function renderCompetitorWatches() {
+  document.getElementById('cw-watches').innerHTML = _cwWatches.length
+    ? _cwWatches.map((w, i) =>
+        '<div class="cw-watch"><div><b>' + escHtml(w.name) + '</b> <span class="mini t-idle">' +
+        escHtml(w.kind) + '</span><div class="muted">' + escHtml(w.url) + '</div></div>' +
+        '<button class="btn btn-ghost btn-sm" onclick="removeCompetitorWatch(' + i + ')">Remove</button></div>'
+      ).join('')
+    : '<p class="hint">No watches yet — add a page below.</p>';
+}
+
+function addCompetitorWatch() {
+  if (!_cwLoaded) return;
+  const name = document.getElementById('cw-name').value.trim();
+  const url = document.getElementById('cw-url').value.trim();
+  const kind = document.getElementById('cw-kind').value;
+  const status = document.getElementById('cw-status');
+  if (!name || !url) { status.textContent = 'Enter both a name and a URL.'; return; }
+  if (!/^https?:\/\//i.test(url)) { status.textContent = 'The URL must start with https:// or http://.'; return; }
+  if (_cwWatches.some(w => w.name.toLowerCase() === name.toLowerCase())) {
+    status.textContent = 'Watch names must be unique.'; return;
+  }
+  _cwWatches.push({name, url, kind});
+  document.getElementById('cw-name').value = '';
+  document.getElementById('cw-url').value = '';
+  status.textContent = 'Unsaved — click Save watches.';
+  renderCompetitorWatches();
+}
+
+function removeCompetitorWatch(i) {
+  _cwWatches.splice(i, 1);
+  document.getElementById('cw-status').textContent = 'Unsaved — click Save watches.';
+  renderCompetitorWatches();
+}
+
+async function saveCompetitorWatch() {
+  const status = document.getElementById('cw-status');
+  if (!_cwLoaded) { status.textContent = 'Still loading — try again in a moment.'; return; }
+  const btn = document.getElementById('cw-save');
+  btn.disabled = true;
+  const data = await api('/api/competitor-watch', {
+    method: 'POST', headers: {'Content-Type': 'application/json'},
+    body: JSON.stringify({enabled: document.getElementById('cw-enabled').checked, watches: _cwWatches}),
+  });
+  btn.disabled = false;
+  if (!data || data.success === false) {
+    status.textContent = failMsg(data, 'Could not save the watches.');
+    return;
+  }
+  status.textContent = data.message || 'Saved.';
+  await loadCompetitorWatch();
+}
+
 async function loadCampaigns() {
   const el = document.getElementById('campaigns-list');
+  renderFrameworks(await api('/api/frameworks'));
   const data = await api('/api/campaigns');
   if (!data) { el.innerHTML = offlineState(); return; }
   _campaigns = data;
@@ -2613,6 +2752,7 @@ async function loadCampaigns() {
     const pc = (c.prospect_ids || []).length;
     html += '<div class="campaign-card"><div class="campaign-top">' +
       '<div class="campaign-title"><h3>' + escHtml(c.name || 'Untitled Campaign') + '</h3>' +
+        (c.framework ? '<span class="mini" title="Copywriting framework this campaign tests">' + escHtml(c.framework) + '</span>' : '') +
         '<button class="btn btn-ghost btn-sm" onclick="fbCampaign(' + i + ')">Feedback</button></div>' +
       '<div class="meta">' + badge(c.status) + '<span>' + pc + ' prospect' + (pc !== 1 ? 's' : '') + '</span>' +
         '<span>' + (c.sequence || []).length + ' emails</span><span>Created ' + relTime(c.created_at) + '</span></div>' +
