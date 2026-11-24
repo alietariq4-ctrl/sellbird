@@ -116,6 +116,12 @@ PRICES: tuple[tuple[str, str, Price], ...] = (
         2.00, 0.10, 10.00, "https://ai.google.dev/gemini-api/docs/pricing")),
     ("gemini", "gemini-4-", Price(
         1.50, 0.075, 7.50, "https://ai.google.dev/gemini-api/docs/pricing")),
+    ("gemini", "gemini-flash-lite", Price(
+        0.10, 0.025, 0.40, "https://ai.google.dev/gemini-api/docs/pricing")),
+    ("gemini", "gemini-flash", Price(
+        0.30, 0.075, 1.20, "https://ai.google.dev/gemini-api/docs/pricing")),
+    ("gemini", "gemini-", Price(
+        0.30, 0.075, 1.20, "https://ai.google.dev/gemini-api/docs/pricing")),
 
     # ── DeepSeek direct ───────────────────────────────────────────────────
     # source: https://api-docs.deepseek.com/quick_start/pricing (PEAK rate;

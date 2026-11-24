@@ -3958,6 +3958,39 @@ async def save_brain_config(request: Request):
     }
 
 
+def _normalize_doctor_row(p, use_network: bool):
+    if hasattr(p, "model_dump"):
+        p = p.model_dump()
+    elif dataclasses.is_dataclass(p) and not isinstance(p, type):
+        p = dataclasses.asdict(p)
+    if not isinstance(p, dict):
+        return p
+    prov = p.get("provider") or p.get("name") or "provider"
+    configured = bool(p.get("configured", p.get("key_set", False)))
+    reachable = p.get("reachable")
+    err = p.get("error") or ""
+    if "ok" in p or "ready" in p:
+        ok = bool(p.get("ok") or p.get("ready"))
+    elif use_network and reachable is not None:
+        ok = str(reachable).lower() == "yes"
+    else:
+        ok = configured
+    detail = p.get("detail") or p.get("reason") or err
+    if not detail:
+        if use_network and str(reachable).lower() == "yes":
+            detail = "Connected"
+        elif configured:
+            detail = "API key configured"
+    return {
+        **p,
+        "provider": prov,
+        "key_set": bool(p.get("key_set", configured)),
+        "ok": ok,
+        "ready": ok,
+        "detail": detail,
+    }
+
+
 def _coerce_doctor_payload(raw_res, use_network: bool) -> dict:
     if hasattr(raw_res, "model_dump"):
         raw_res = raw_res.model_dump()
@@ -3967,31 +4000,38 @@ def _coerce_doctor_payload(raw_res, use_network: bool) -> dict:
     if isinstance(raw_res, dict):
         providers = raw_res.get("providers") or raw_res.get("checks") or raw_res.get("chain") or []
         if isinstance(providers, list):
-            providers = [
-                p.model_dump() if hasattr(p, "model_dump")
-                else (dataclasses.asdict(p) if dataclasses.is_dataclass(p) and not isinstance(p, type) else p)
-                for p in providers
-            ]
+            providers = [_normalize_doctor_row(p, use_network) for p in providers]
         ok = raw_res.get("ok")
         if ok is None:
             ok = bool(raw_res.get("ready", bool(providers) and any(
                 isinstance(p, dict) and (p.get("ok") or p.get("ready") or p.get("key_set"))
                 for p in providers
             )))
+        summary = raw_res.get("summary") or (
+            f"{sum(1 for p in providers if isinstance(p, dict) and p.get('ok'))}/{len(providers)} provider(s) ready"
+            if isinstance(providers, list) and providers else ""
+        )
         return {
             **raw_res,
             "ok": bool(ok),
             "network": use_network,
             "providers": providers if isinstance(providers, list) else [],
+            "summary": summary,
         }
     if isinstance(raw_res, list):
-        items = [
-            p.model_dump() if hasattr(p, "model_dump")
-            else (dataclasses.asdict(p) if dataclasses.is_dataclass(p) and not isinstance(p, type) else p)
-            for p in raw_res
-        ]
+        items = [_normalize_doctor_row(p, use_network) for p in raw_res]
         any_ok = any(isinstance(p, dict) and (p.get("ok") or p.get("ready")) for p in items)
-        return {"ok": any_ok, "network": use_network, "providers": items, "checks": items}
+        summary = (
+            f"{sum(1 for p in items if isinstance(p, dict) and p.get('ok'))}/{len(items)} provider(s) ready"
+            if items else "No providers configured in brain.yaml"
+        )
+        return {
+            "ok": any_ok,
+            "network": use_network,
+            "providers": items,
+            "checks": items,
+            "summary": summary,
+        }
     return {"ok": bool(raw_res), "network": use_network, "providers": [], "summary": str(raw_res)}
 
 
@@ -4225,10 +4265,22 @@ async def brain_probe(request: Request):
                                 reply.get("text") or reply.get("content") or str(reply)
                                 if isinstance(reply, dict) else getattr(reply, "text", str(reply))
                             )
+                            if not str(text_out or "").strip():
+                                last_err = (
+                                    getattr(transport, "last_error", "")
+                                    or getattr(transport, "paused_reason", "")
+                                    or "Empty reply from provider"
+                                )
+                                raise RuntimeError(last_err)
+                            last_usage = getattr(transport, "last_usage", None)
+                            prov_name = str(getattr(transport, "last_provider", "") or "")
+                            model_name = str(getattr(last_usage, "model", "") or "") if last_usage is not None else ""
                             return {
                                 "ok": True,
                                 "mode": "live",
                                 "role": role,
+                                "provider": prov_name,
+                                "model": model_name,
                                 "latency_ms": latency_ms,
                                 "reply": str(text_out).strip()[:200],
                             }
@@ -4246,11 +4298,24 @@ async def brain_probe(request: Request):
     # Direct OpenAI-compatible 1-token probe against first ready chain entry or explicit override
     cfg = await get_brain_config()
     chain = cfg.get("chain") or []
+    ready_entry = next(
+        (
+            c for c in chain
+            if isinstance(c, dict) and (
+                env_map.get(
+                    str(c.get("api_key_env") or _PROVIDER_DEFAULTS.get(str(c.get("provider", "")).lower(), ("", ""))[1]),
+                    "",
+                ).strip()
+                or str(c.get("base_url") or "").startswith(("http://127.0.0.1", "http://localhost"))
+            )
+        ),
+        chain[0] if chain else {},
+    )
     target_entry = {
-        "provider": override_prov or (chain[0].get("provider") if chain else "openrouter"),
-        "model": override_model or (chain[0].get("model") if chain else "openai/gpt-4o-mini"),
-        "base_url": override_base or (chain[0].get("base_url") if chain else ""),
-        "api_key_env": override_env or (chain[0].get("api_key_env") if chain else ""),
+        "provider": override_prov or ready_entry.get("provider", "openrouter"),
+        "model": override_model or ready_entry.get("model", "openai/gpt-4o-mini"),
+        "base_url": override_base or ready_entry.get("base_url", ""),
+        "api_key_env": override_env or ready_entry.get("api_key_env", ""),
     }
     prov = str(target_entry["provider"] or "openrouter")
     def_url, def_env = _PROVIDER_DEFAULTS.get(prov.lower(), ("https://openrouter.ai/api/v1", "OPENROUTER_API_KEY"))
