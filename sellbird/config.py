@@ -42,6 +42,11 @@ class PersonaConfig(BaseModel):
     linkedin: str
     tone: str
 
+    @field_validator("name", "company", "role", "email", "linkedin", "tone", mode="before")
+    @classmethod
+    def _none_to_empty_str(cls, v):
+        return "" if v is None else v
+
 
 class OfferConfig(BaseModel):
     primary: str = ""
@@ -57,6 +62,21 @@ class OfferConfig(BaseModel):
     meeting_duration: str = "15 minutes"
     meeting_owner: str = ""
 
+    @field_validator("primary", "entry", "booking_url", "meeting_owner", mode="before")
+    @classmethod
+    def _none_to_empty_str(cls, v):
+        return "" if v is None else v
+
+    @field_validator("goal", "booking_method", "meeting_duration", mode="before")
+    @classmethod
+    def _none_to_default_str(cls, v, info):
+        return cls.model_fields[info.field_name].default if v is None else v
+
+    @field_validator("entry_ideas", mode="before")
+    @classmethod
+    def _none_to_empty_list(cls, v):
+        return [] if v is None else v
+
 
 class ProductConfig(BaseModel):
     name: str
@@ -65,6 +85,26 @@ class ProductConfig(BaseModel):
     key_benefits: list[str]
     objection_responses: dict[str, str]
     offer: OfferConfig = OfferConfig()
+
+    @field_validator("name", "description", "pricing", mode="before")
+    @classmethod
+    def _none_to_empty_str(cls, v):
+        return "" if v is None else v
+
+    @field_validator("key_benefits", mode="before")
+    @classmethod
+    def _none_to_empty_list(cls, v):
+        return [] if v is None else v
+
+    @field_validator("objection_responses", mode="before")
+    @classmethod
+    def _none_to_empty_dict(cls, v):
+        return {} if v is None else v
+
+    @field_validator("offer", mode="before")
+    @classmethod
+    def _none_to_default_offer(cls, v):
+        return OfferConfig() if v is None else v
 
 
 class ICPConfig(BaseModel):
@@ -86,6 +126,21 @@ class ICPConfig(BaseModel):
     # Each variant runs in every city alongside the industry itself, so the
     # estimate grows with it. Empty → each industry is its own one search.
     keyword_variants: dict[str, list[str]] = {}
+
+    @field_validator("company_size", mode="before")
+    @classmethod
+    def _none_to_empty_str(cls, v):
+        return "" if v is None else v
+
+    @field_validator("industries", "titles", "geography", "hiring_signals", mode="before")
+    @classmethod
+    def _none_to_empty_list(cls, v):
+        return [] if v is None else v
+
+    @field_validator("geo_coordinates", "keyword_variants", mode="before")
+    @classmethod
+    def _none_to_empty_dict(cls, v):
+        return {} if v is None else v
 
 
 class WarmupConfig(BaseModel):
@@ -660,9 +715,28 @@ class QuietHoursConfig(BaseModel):
     end: str = "07:00"
     timezone: str = "America/New_York"
 
-    @field_validator("start", "end")
+    @field_validator("start", "end", mode="before")
     @classmethod
-    def _valid_time(cls, v: str) -> str:
+    def _valid_time(cls, v, info) -> str:
+        if v is None:
+            return cls.model_fields[info.field_name].default
+        if isinstance(v, bool):
+            raise ValueError(
+                f"'{v}' is not a valid time. Use 24h HH:MM format, e.g. '22:00'."
+            )
+        # YAML 1.1 reads an unquoted 22:00 as the integer 1320 (base 60).
+        if isinstance(v, int):
+            if 0 <= v < 24 * 60:
+                v = f"{v // 60:02d}:{v % 60:02d}"
+            else:
+                raise ValueError(
+                    f"'{v}' is not a valid time. Use 24h HH:MM format, e.g. '22:00'."
+                )
+        elif not isinstance(v, str):
+            raise ValueError(
+                f"'{v}' is not a valid time. Use 24h HH:MM format, e.g. '22:00'."
+            )
+        v = v.strip()
         try:
             _time.fromisoformat(v)
         except ValueError:
@@ -1266,7 +1340,7 @@ def load_config(config_path: str | None = None) -> SellbirdConfig:
     except FileNotFoundError:
         raise ConfigFileNotFoundError(
             f"Config file not found: {config_path}. "
-            "Create one from sellbird.yaml.example or run 'sellbird setup'."
+            "Create sellbird.yaml or run 'sellbird setup'."
         )
     except yaml.YAMLError as e:
         raise ConfigError(f"Invalid YAML in {config_path}:\n  {e}")
@@ -1305,6 +1379,12 @@ def load_brain_config(config_path: str | None = None) -> BrainConfig:
     providers.
     """
     if config_path is None:
+        given = _CURRENT_CONFIG.get()
+        if given is not None:
+            return given.brain
+        from sellbird.workspace_home import current_home
+        if current_home().hosted:
+            raise ConfigFileNotFoundError("This workspace's settings weren't loaded.")
         try:
             config_path = _find_config_file()
         except ConfigFileNotFoundError:
@@ -1345,32 +1425,60 @@ def _sync_dotenv_file(path: Path) -> bool:
     return True
 
 
+def _parse_env_port(name: str, default: int) -> int:
+    raw = os.getenv(name, "").strip()
+    if not raw:
+        return default
+    try:
+        port = int(raw)
+    except ValueError:
+        raise ConfigError(
+            f"Invalid {name} '{raw}' in environment/.env: must be an integer port number."
+        ) from None
+    if not 1 <= port <= 65535:
+        raise ConfigError(
+            f"Invalid {name} '{raw}' in environment/.env: must be between 1 and 65535."
+        )
+    return port
+
+
 def load_env() -> EnvConfig:
     """Load environment variables from .env file."""
-    candidates: list[Path] = [Path.cwd() / ".env"]
+    hosted = False
+    home_env: Path | None = None
+    home_root: Path | None = None
     try:
         from sellbird.workspace_home import current_home
-        home_root = getattr(current_home(), "root", None)
-        if home_root is not None:
-            candidates.append(Path(home_root) / ".env")
+        home = current_home()
+        hosted = bool(getattr(home, "hosted", False))
+        home_env = getattr(home, "env_file", None)
+        home_root = getattr(home, "root", None)
     except Exception:
         pass
-    candidates.append(ENV_FILE)
 
-    loaded_any = False
-    seen_paths: set[Path] = set()
-    for candidate in candidates:
-        try:
-            resolved = candidate.resolve()
-        except OSError:
-            resolved = candidate
-        if resolved in seen_paths:
-            continue
-        seen_paths.add(resolved)
-        if _sync_dotenv_file(candidate):
-            loaded_any = True
-    if not loaded_any:
-        load_dotenv(override=False)
+    if not hosted:
+        candidates: list[Path] = []
+        if home_env is not None:
+            candidates.append(Path(home_env))
+        if home_root is not None:
+            candidates.append(Path(home_root) / ".env")
+        candidates.append(Path.cwd() / ".env")
+        candidates.append(ENV_FILE)
+
+        loaded_any = False
+        seen_paths: set[Path] = set()
+        for candidate in candidates:
+            try:
+                resolved = candidate.resolve()
+            except OSError:
+                resolved = candidate
+            if resolved in seen_paths:
+                continue
+            seen_paths.add(resolved)
+            if _sync_dotenv_file(candidate):
+                loaded_any = True
+        if not loaded_any:
+            load_dotenv(override=False)
 
     env = EnvConfig(
         instantly_api_key=os.getenv("INSTANTLY_API_KEY", "").strip(),
@@ -1393,11 +1501,11 @@ def load_env() -> EnvConfig:
         gmail_client_id=os.getenv("GMAIL_CLIENT_ID", "").strip(),
         gmail_client_secret=os.getenv("GMAIL_CLIENT_SECRET", "").strip(),
         smtp_host=os.getenv("SMTP_HOST", "").strip(),
-        smtp_port=int(os.getenv("SMTP_PORT", "587").strip() or 587),
+        smtp_port=_parse_env_port("SMTP_PORT", 587),
         smtp_username=os.getenv("SMTP_USERNAME", "").strip(),
         smtp_password=os.getenv("SMTP_PASSWORD", "").strip(),
         imap_host=os.getenv("IMAP_HOST", "").strip(),
-        imap_port=int(os.getenv("IMAP_PORT", "993").strip() or 993),
+        imap_port=_parse_env_port("IMAP_PORT", 993),
         imap_username=os.getenv("IMAP_USERNAME", "").strip(),
         imap_password=os.getenv("IMAP_PASSWORD", "").strip(),
         m365_client_id=os.getenv("M365_CLIENT_ID", "").strip(),
@@ -1496,9 +1604,14 @@ def set_require_approval(value: bool, path=None) -> Path:
         SellbirdConfig(**expected)          # still a valid config
         if b"\r\n" in data_bytes:
             new = new.replace("\n", "\r\n")
-        tmp = target.with_name(target.name + ".tmp")
+        import tempfile
+        fd, tmp_name = tempfile.mkstemp(
+            dir=target.parent, prefix=f".{target.name}.", suffix=".tmp"
+        )
+        tmp = Path(tmp_name)
         try:
-            tmp.write_bytes((b"\xef\xbb\xbf" if bom else b"") + new.encode("utf-8"))
+            with os.fdopen(fd, "wb") as f:
+                f.write((b"\xef\xbb\xbf" if bom else b"") + new.encode("utf-8"))
             shutil.copymode(target, tmp)
             os.replace(tmp, target)
         finally:
@@ -1612,7 +1725,7 @@ def _find_config_file() -> str:
         if not home_config.exists():
             raise ConfigFileNotFoundError(
                 f"sellbird.yaml not found at {home_config}. "
-                "Create one from sellbird.yaml.example or run 'sellbird setup'."
+                "Create sellbird.yaml or run 'sellbird setup'."
             )
         return str(home_config)
     # The working directory counts only for a checkout run in place. A home
@@ -1635,5 +1748,5 @@ def _find_config_file() -> str:
     raise ConfigFileNotFoundError(
         "sellbird.yaml not found in "
         + ", ".join(str(p.parent) for p in candidates)
-        + ". Create one from sellbird.yaml.example or run 'sellbird setup'."
+        + ". Create sellbird.yaml or run 'sellbird setup'."
     )

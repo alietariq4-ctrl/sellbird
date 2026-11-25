@@ -19,6 +19,7 @@ When the host is not importable the transport reports itself unavailable
 from __future__ import annotations
 
 import asyncio
+from contextlib import nullcontext
 import json
 import logging
 from time import monotonic
@@ -151,6 +152,7 @@ class DelegateTransport:
                        timeout: float = DEFAULT_TIMEOUT,
                        expect_json: bool = False) -> str:
         self.last_usage = None
+        self.last_error = ""
         if not self._checked:
             self.paused_reason = self._check_host()
             self._checked = True
@@ -177,20 +179,41 @@ class DelegateTransport:
 
         exe = claude_runtime.check_cli()
         argv = claude_runtime.build_command(exe, model=self.model)
-        proc = await asyncio.create_subprocess_exec(
-            *argv,
-            stdin=asyncio.subprocess.PIPE,
-            stdout=asyncio.subprocess.PIPE,
-            stderr=asyncio.subprocess.PIPE,
-            cwd=self.cwd or None,
-            env=claude_runtime.runtime_env(self.cwd or "."),
-        )
-        try:
-            stdout, stderr = await asyncio.wait_for(
-                proc.communicate(prompt.encode()), timeout=budget)
-        except asyncio.TimeoutError:
-            proc.kill()
-            raise
+        isolated_ctx = getattr(claude_runtime, "isolated_cwd", None)
+        if self.cwd:
+            cwd_ctx = nullcontext(self.cwd)
+        elif callable(isolated_ctx):
+            res = isolated_ctx()
+            if hasattr(res, "__enter__") and hasattr(res, "__exit__"):
+                cwd_ctx = res
+            else:
+                cwd_ctx = nullcontext(str(res))
+        else:
+            cwd_ctx = nullcontext(None)
+
+        with cwd_ctx as cwd:
+            proc = await asyncio.create_subprocess_exec(
+                *argv,
+                stdin=asyncio.subprocess.PIPE,
+                stdout=asyncio.subprocess.PIPE,
+                stderr=asyncio.subprocess.PIPE,
+                cwd=cwd or None,
+                env=claude_runtime.runtime_env(cwd or "."),
+            )
+            try:
+                stdout, stderr = await asyncio.wait_for(
+                    proc.communicate(prompt.encode()), timeout=budget)
+            except BaseException:
+                if proc.returncode is None:
+                    try:
+                        proc.kill()
+                    except ProcessLookupError:
+                        pass
+                    try:
+                        await asyncio.wait_for(proc.wait(), timeout=5.0)
+                    except (ProcessLookupError, asyncio.TimeoutError):
+                        pass
+                raise
         raw = stdout.decode(errors="replace").strip()
         if proc.returncode != 0:
             note = " ".join(stderr.decode(errors="replace").split())[:200]
@@ -203,6 +226,13 @@ class DelegateTransport:
                 payload, agent, task, int((monotonic() - started) * 1000))
             self.last_usage = usage
             await self._fire_usage(usage)
+            if payload.get("is_error"):
+                note = " ".join(
+                    (text or str(payload.get("error") or "claude_cli error")).split()
+                )[:200]
+                logger.warning("claude_cli returned error: %s", note)
+                self.last_error = f"is_error: {note}" if note else "is_error"
+                return ""
         return text
 
     @staticmethod

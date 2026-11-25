@@ -86,9 +86,7 @@ def _check_ip_string(raw_ip: str) -> None:
     cleaned = raw_ip.split("%", 1)[0].strip("[]")
     # Delegate first to sellbird.public_http._public_address so upstream SSRF rules
     # and test monkeypatches are always honored.
-    res = _public_address(cleaned)
-    if res is False:
-        raise ValueError(f"Address is not public: {cleaned}")
+    _public_address(cleaned)
 
     try:
         addr = ipaddress.ip_address(cleaned)

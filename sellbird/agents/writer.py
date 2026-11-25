@@ -9,6 +9,7 @@ Steps 2-3 stay campaign-level (proof point + breakup are less personal by
 design). Every draft still passes the deterministic pre-send gate.
 """
 
+import inspect
 import json
 import logging
 import re
@@ -20,6 +21,7 @@ from sellbird.email_style import (
     BREAKUP_MAX_WORDS, FIRST_EMAIL_MAX_WORDS, FOLLOW_UP_MAX_WORDS,
     style_problems, tidy, with_sign_off,
 )
+from sellbird.gate import MAX_SUBJECT_LEN
 from sellbird.humanize import humanize, humanizer_enabled
 from sellbird.integrations.mail_provider import NATIVE_PROVIDERS
 from sellbird.models.campaign import Campaign, EmailStep
@@ -227,6 +229,7 @@ class Writer:
         self.state = state
         self.config = config
         self.env = env
+        self.skills = ""
 
     @property
     def is_native(self) -> bool:
@@ -292,6 +295,34 @@ class Writer:
             p for p in prospects_with_email
             if not await self.state.colleague_who_replied(p.id)
         ]
+        # Skip DB-suppressed addresses and domains before any LLM call.
+        suppressed_among = getattr(self.state, "suppressed_among", None)
+        is_suppressed = getattr(self.state, "is_suppressed", None)
+        if callable(suppressed_among) and prospects_with_email:
+            try:
+                res = suppressed_among([p.email for p in prospects_with_email])
+                if inspect.isawaitable(res):
+                    res = await res
+                suppressed_map = res or {}
+                if suppressed_map:
+                    prospects_with_email = [
+                        p for p in prospects_with_email
+                        if p.email.strip().lower() not in suppressed_map
+                    ]
+            except Exception as e:
+                logger.debug(f"Writer: suppressed_among check failed: {e}")
+        elif callable(is_suppressed) and prospects_with_email:
+            kept = []
+            for p in prospects_with_email:
+                try:
+                    res = is_suppressed(p.email)
+                    if inspect.isawaitable(res):
+                        res = await res
+                    if not res:
+                        kept.append(p)
+                except Exception:
+                    kept.append(p)
+            prospects_with_email = kept
         if not prospects_with_email:
             logger.info(
                 "Writer: No prospects with deliverable (verified/risky) emails yet."
@@ -497,7 +528,17 @@ class Writer:
         provider = self.config.channels.email.provider
 
         pending = []
+        is_suppressed = getattr(self.state, "is_suppressed", None)
         for prospect in prospects:
+            if callable(is_suppressed) and prospect.email:
+                try:
+                    res = is_suppressed(prospect.email)
+                    if inspect.isawaitable(res):
+                        res = await res
+                    if res:
+                        continue
+                except Exception:
+                    pass
             try:
                 draft = await self._write_personal_email(prospect)
             except Exception as e:
@@ -697,7 +738,7 @@ Return ONLY JSON: {{"subject": "...", "body": "..."}}"""
         body = _fill_personal_merge_leaks(str(result.get("body") or "").strip(), prospect)
         if not subject or not body:
             return None
-        return {"subject": subject[:120], "body": body[:2000]}
+        return {"subject": subject[:MAX_SUBJECT_LEN], "body": body[:2000]}
 
     async def _write_sequence(self, prospects: list, *, framework_line: str = "") -> list[EmailStep]:
         """Ask the brain to write a 3-email sequence."""
@@ -836,7 +877,7 @@ Return ONLY a JSON array (no markdown fences, no commentary):
             body = tidy(str(d.get("body") or ""))
             if shape:
                 body = with_sign_off(body, self.config.persona.name)
-            return {**d, "subject": tidy(str(d.get("subject") or "")), "body": body}
+            return {**d, "subject": tidy(str(d.get("subject") or ""))[:MAX_SUBJECT_LEN], "body": body}
 
         def problems(d: dict) -> list[str]:
             return style_problems(d["subject"], d["body"], kind="cold", step=step,
@@ -901,7 +942,7 @@ Return ONLY a JSON object: {{"subject": "...", "body": "..."}}"""
         after = set(MERGE_VAR.findall(subject + new_body))
         if not after <= before or (before and not after):
             return None  # a merge variable appeared from nowhere, or all of them went
-        return {**draft, "subject": subject[:120], "body": new_body[:2000]}
+        return {**draft, "subject": subject[:MAX_SUBJECT_LEN], "body": new_body[:2000]}
 
     def _parse_sequence(self, result) -> list[EmailStep]:
         """Robustly coerce LLM output into a validated EmailStep list.
@@ -938,7 +979,7 @@ Return ONLY a JSON object: {{"subject": "...", "body": "..."}}"""
                 steps.append(
                     EmailStep(
                         step=len(steps) + 1,
-                        subject=subject,
+                        subject=subject[:MAX_SUBJECT_LEN],
                         body=body,
                         delay_days=delay,
                     )

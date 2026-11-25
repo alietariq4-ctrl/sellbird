@@ -380,8 +380,17 @@ class TelegramCopilot:
             elif item.get("status") != "pending_review":
                 note = f"Can't edit: that email is {item.get('status')}."
             else:
-                await self.state.update_outbox_item(item_id, body=body[:2000])
-                note = "Edited. Approve it with /approve " + item_id
+                changed = await self.state.edit_outbox_draft(
+                    item_id, item.get("subject") or "", body[:2000]
+                )
+                if changed:
+                    note = "Edited. Approve it with /approve " + item_id
+                else:
+                    latest = await self.state.get_outbox_item(item_id)
+                    if latest is None:
+                        note = "Not found."
+                    else:
+                        note = f"Can't edit: that email is {latest.get('status')}."
         await self._send(note)
         return note
 

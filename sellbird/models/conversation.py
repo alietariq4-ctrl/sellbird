@@ -35,6 +35,7 @@ class Conversation(BaseModel):
     prospect_id: str
     campaign_id: str = ""
     channel: str = "email"
+    mailbox_id: str = ""
     thread: list[Message] = Field(default_factory=list)
     intent: str = ""  # interested/objection/not_interested/ooo/wrong_person
     stage: str = "initial_outreach"  # sales pipeline stage

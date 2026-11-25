@@ -8,6 +8,7 @@ sending domain while nobody's watching.
 """
 
 import html
+import inspect
 import json
 import logging
 import re
@@ -750,6 +751,9 @@ class Handler:
             # it for the next cycle instead of losing it to a provider outage.
             consumed = False
             raise
+        except Exception:
+            consumed = False
+            raise
         finally:
             # Otherwise ALWAYS mark processed — even on early exits (opt-out,
             # OOO, unknown prospect) — so the same reply is never re-handled
@@ -872,6 +876,54 @@ class Handler:
 
         if prospect.status == "opted_out":
             await self._record_after_opt_out(prospect, reply_text, campaign_id, escalate)
+            return
+
+        is_suppressed_fn = getattr(self.state, "is_suppressed", None)
+        suppressed_reason = ""
+        if callable(is_suppressed_fn):
+            for candidate_email in dict.fromkeys(
+                e for e in (prospect.email, lead_email) if e and "@" in e
+            ):
+                try:
+                    res = is_suppressed_fn(candidate_email)
+                    if inspect.isawaitable(res):
+                        res = await res
+                    if res:
+                        suppressed_reason = str(res)
+                        break
+                except Exception as e:
+                    logger.debug(f"Handler: is_suppressed check failed: {e}")
+        if suppressed_reason:
+            if suppressed_reason == "opted_out":
+                await self._record_after_opt_out(prospect, reply_text, campaign_id, escalate)
+                return
+            try:
+                await self.state.cancel_pending_outbox_for_prospect(prospect.id)
+            except Exception as e:
+                logger.debug(f"Handler: outbox cancel failed: {e}")
+            await self.state.add_conversation(Conversation(
+                id="",
+                prospect_id=prospect.id,
+                campaign_id=campaign_id,
+                channel="email",
+                thread=[Message(sender="prospect", content=reply_text)],
+                intent="escalate" if escalate else "question",
+                stage="closed_lost",
+                status="needs_human",
+            ))
+            await self.state.log_action(
+                action_type="escalation",
+                agent="handler",
+                details={
+                    "prospect_email": prospect.email or lead_email,
+                    "reason": f"suppressed ({suppressed_reason})",
+                    "reply_preview": reply_text[:200],
+                },
+            )
+            logger.info(
+                f"Handler: {lead_email} is suppressed ({suppressed_reason}). "
+                "Handed to you; no reply sent."
+            )
             return
 
         # Update prospect status + stop-on-reply: a human answered, so every
@@ -1261,6 +1313,12 @@ class Handler:
 
         handled = 0
         complete = True
+        own_addrs: set[str] = set()
+        if label and "@" in label:
+            own_addrs.add(label.strip().lower())
+        prov_id = getattr(getattr(provider, "identity", None), "address", "")
+        if prov_id and "@" in prov_id:
+            own_addrs.add(prov_id.strip().lower())
         for msg in inbound:
             dedup_key = msg.provider_id or msg.message_id
             if not dedup_key or await self.state.is_reply_processed(dedup_key):
@@ -1268,7 +1326,7 @@ class Handler:
             consumed = True
             try:
                 if msg.is_bounce:
-                    await self._handle_bounce(msg)
+                    await self._handle_bounce(msg, own_emails=own_addrs)
                 elif msg.body.strip():
                     matched_outbox = await self._match_outbox_for_inbound(msg, fallback_recipient=True)
                     matched_campaign_id = str((matched_outbox or {}).get("campaign_id") or "")
@@ -1291,6 +1349,7 @@ class Handler:
                 logger.error(f"Handler: stopping; replies are left for later ({e}).")
                 break
             except Exception as e:
+                consumed = False
                 logger.error(f"Handler: error processing {msg.from_email}: {e}")
                 self.last_read_problem = f"a reply from {msg.from_email} couldn't be handled ({e})"
                 complete = False
@@ -1338,17 +1397,51 @@ class Handler:
 
         if fallback_recipient and getattr(msg, "from_email", ""):
             sender_addr = msg.from_email.strip().lower()
+            getter = getattr(self.state, "get_latest_sent_outbox_for_recipient", None)
+            if callable(getter):
+                try:
+                    row = await getter(sender_addr)
+                    if row:
+                        return row
+                except Exception:
+                    pass
+            connect = getattr(self.state, "_connect", None)
+            if callable(connect):
+                try:
+                    import aiosqlite
+                    async with connect() as db:
+                        db.row_factory = aiosqlite.Row
+                        async with db.execute(
+                            "SELECT * FROM outbox "
+                            "WHERE status = 'sent' AND lower(trim(to_email)) = ? "
+                            "AND COALESCE(campaign_id, '') != '' "
+                            "ORDER BY COALESCE(sent_at, created_at) DESC, created_at DESC "
+                            "LIMIT 1",
+                            (sender_addr,),
+                        ) as cursor:
+                            row = await cursor.fetchone()
+                            if row:
+                                return dict(row)
+                except Exception:
+                    pass
             try:
                 sent_rows = await self.state.get_outbox(status="sent", limit=200)
-                for row in sent_rows or []:
-                    if (row.get("to_email") or "").strip().lower() == sender_addr and row.get("campaign_id"):
-                        return row
+                matches = [
+                    row for row in (sent_rows or [])
+                    if (row.get("to_email") or "").strip().lower() == sender_addr
+                    and row.get("campaign_id")
+                ]
+                if matches:
+                    return max(
+                        matches,
+                        key=lambda r: str(r.get("sent_at") or r.get("created_at") or ""),
+                    )
             except Exception:
                 pass
         return None
 
     @staticmethod
-    def _extract_bounced_addresses(msg, own_email: str = "") -> list[str]:
+    def _extract_bounced_addresses(msg, own_email: str | set[str] | list[str] | tuple[str, ...] = "") -> list[str]:
         """Extract candidate failed recipient emails from DSN headers and bounce body."""
         headers = getattr(msg, "headers", None) or {}
         body = getattr(msg, "body", "") or ""
@@ -1375,8 +1468,14 @@ class Handler:
 
         ignore = {
             (getattr(msg, "from_email", "") or "").strip().lower(),
-            (own_email or "").strip().lower(),
         }
+        if isinstance(own_email, str):
+            if own_email.strip():
+                ignore.add(own_email.strip().lower())
+        elif own_email:
+            for addr in own_email:
+                if addr and str(addr).strip():
+                    ignore.add(str(addr).strip().lower())
         out: list[str] = []
         for addr in raw_candidates:
             low = addr.strip().lower()
@@ -1388,7 +1487,52 @@ class Handler:
             out.append(low)
         return out
 
-    async def _handle_bounce(self, msg):
+    async def _all_own_addresses(self, extra: set[str] | list[str] | tuple[str, ...] | None = None) -> set[str]:
+        """Collect the active inbox, persona, provider, and all connected mailbox addresses."""
+        addrs: set[str] = set()
+        persona_email = str(getattr(getattr(self.config, "persona", None), "email", "") or "").strip().lower()
+        if persona_email and "@" in persona_email:
+            addrs.add(persona_email)
+        for item in extra or ():
+            val = str(item or "").strip().lower()
+            if val and "@" in val:
+                addrs.add(val)
+        providers = [getattr(self, "provider", None), *getattr(self, "_inbox_providers", {}).values()]
+        for prov in providers:
+            if prov is None:
+                continue
+            for cand in (
+                getattr(getattr(prov, "identity", None), "address", ""),
+                getattr(prov, "username", ""),
+                getattr(prov, "smtp_user", ""),
+                getattr(prov, "imap_user", ""),
+            ):
+                val = str(cand or "").strip().lower()
+                if val and "@" in val:
+                    addrs.add(val)
+        list_mb = getattr(self.state, "list_mailboxes", None)
+        if callable(list_mb):
+            try:
+                rows = await list_mb(include_retired=True)
+                for r in rows or []:
+                    val = str((r.get("address") if isinstance(r, dict) else getattr(r, "address", "")) or "").strip().lower()
+                    if val and "@" in val:
+                        addrs.add(val)
+            except Exception:
+                pass
+        elif getattr(self.state, "db_path", None):
+            try:
+                from sellbird.mailboxes import MailboxStore
+                rows = await MailboxStore(db_path=self.state.db_path).list_mailboxes(include_retired=True)
+                for r in rows or []:
+                    val = str(r.get("address") or "").strip().lower()
+                    if val and "@" in val:
+                        addrs.add(val)
+            except Exception:
+                pass
+        return addrs
+
+    async def _handle_bounce(self, msg, own_emails: set[str] | list[str] | tuple[str, ...] | None = None):
         """A bounce is a data bug AND a reputation threat. Fix both."""
         outbox_item = await self._match_outbox_for_inbound(msg, fallback_recipient=False)
         prospect = None
@@ -1396,8 +1540,8 @@ class Handler:
             prospect = await self.state.get_prospect(outbox_item["prospect_id"])
 
         if prospect is None:
-            own_addr = str(getattr(getattr(self.config, "persona", None), "email", "") or "")
-            for addr in self._extract_bounced_addresses(msg, own_email=own_addr):
+            own_addrs = await self._all_own_addresses(own_emails)
+            for addr in self._extract_bounced_addresses(msg, own_email=own_addrs):
                 prospect = await self.state.get_prospect_by_email(addr)
                 if prospect is not None:
                     break

@@ -21,6 +21,7 @@ from sellbird.integrations.mail_provider import NATIVE_PROVIDERS
 from sellbird.pidfile import (
     LOCK_FILE, hold_loop_lock, read_pid, release_loop_lock, remove_pid_file, write_pid_file,
 )
+from sellbird.logsafety import RedactSecrets, quiet_http_loggers
 from sellbird.pipeline import run_profile_stage
 from sellbird.state import StateManager
 
@@ -29,6 +30,9 @@ logging.basicConfig(
     format="%(asctime)s [%(name)s] %(levelname)s: %(message)s",
     datefmt="%Y-%m-%d %H:%M:%S",
 )
+for _handler in logging.getLogger().handlers:
+    if not any(isinstance(_f, RedactSecrets) for _f in _handler.filters):
+        _handler.addFilter(RedactSecrets())
 logger = logging.getLogger("sellbird")
 
 
@@ -41,8 +45,7 @@ def quiet_http_client_logs():
     clear text on every verification. Nothing in those lines is useful to a
     user, so both client loggers sit at WARNING.
     """
-    for name in ("httpx", "httpcore"):
-        logging.getLogger(name).setLevel(logging.WARNING)
+    quiet_http_loggers()
 
 
 quiet_http_client_logs()
@@ -456,6 +459,8 @@ async def heartbeat(stop_event: asyncio.Event | None = None):
                 logger.warning("=" * 60)
 
         await state.init_db()
+        from sellbird.signals import seed_signal_catalog
+        await seed_signal_catalog(state)
         logger.info("Database initialized.")
 
         # Import agents here to avoid circular imports
@@ -720,10 +725,10 @@ async def heartbeat(stop_event: asyncio.Event | None = None):
 
 def _needs_setup() -> bool:
     """Check if Sellbird needs first-time setup."""
-    from sellbird.paths import PROJECT_ROOT
     from sellbird.config import _find_config_file, ConfigFileNotFoundError
+    from sellbird.workspace_home import current_home
 
-    env_file = PROJECT_ROOT / ".env"
+    env_file = current_home().env_file
 
     # If .env doesn't exist, definitely needs setup
     if not env_file.exists():
@@ -733,19 +738,19 @@ def _needs_setup() -> bool:
     # resolution order the real config loader uses (see config.py).
     try:
         config_file = _find_config_file()
-    except ConfigFileNotFoundError:
-        return True
-
-    try:
         import yaml
         from sellbird.textio import read_user_text
         config = yaml.safe_load(read_user_text(config_file))
-        if not isinstance(config, dict):
-            return True
-        company = (config.get("persona") or {}).get("company", "")
-        if company in ("Your Company", ""):
-            return True
-    except Exception:
+    except (FileNotFoundError, ConfigFileNotFoundError):
+        return True
+
+    if not isinstance(config, dict):
+        return True
+    persona = config.get("persona")
+    if not isinstance(persona, dict):
+        return True
+    company = persona.get("company", "")
+    if company in ("Your Company", ""):
         return True
 
     return False
@@ -776,7 +781,11 @@ async def _run_with_signals():
                 def _handler(s, f):
                     name = signal.Signals(s).name if isinstance(s, int) else sig_obj.name
                     if stop_event.is_set():
-                        logger.info("Second shutdown signal — exiting immediately.")
+                        try:
+                            sys.stderr.write("Second shutdown signal — exiting immediately.\n")
+                            sys.stderr.flush()
+                        except Exception:
+                            pass
                         raise SystemExit(1)
                     try:
                         loop.call_soon_threadsafe(_request_shutdown, name)

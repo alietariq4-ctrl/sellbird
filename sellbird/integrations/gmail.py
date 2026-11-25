@@ -16,8 +16,10 @@ rest.
 
 import base64
 import codecs
+import http.server
 import json
 import logging
+import socket
 import time
 import webbrowser
 from collections.abc import Callable
@@ -620,6 +622,14 @@ def _store_authorized(record: dict, access_token: str, *,
         lambda: authorized_address(access_token, transport), save or _save_token)
 
 
+class _LoopbackServer(http.server.HTTPServer):
+    allow_reuse_address = True
+
+
+class _LoopbackServerV6(_LoopbackServer):
+    address_family = socket.AF_INET6
+
+
 def run_auth_flow(client_id: str, client_secret: str, *,
                   save: Callable[[dict], None] | None = None,
                   expected_address: str | None = None) -> bool:
@@ -671,17 +681,30 @@ def run_auth_flow(client_id: str, client_secret: str, *,
         def log_message(self, *args):
             pass
 
-    server = http.server.HTTPServer(("localhost", LOOPBACK_PORT), Handler)
-    thread = threading.Thread(target=server.serve_forever, daemon=True)
-    thread.start()
+    servers = [_LoopbackServer(("127.0.0.1", LOOPBACK_PORT), Handler)]
+    try:
+        servers.append(_LoopbackServerV6(("::1", LOOPBACK_PORT), Handler))
+    except OSError:
+        pass  # no IPv6 loopback on this machine
+    try:
+        for server in servers:
+            threading.Thread(target=server.serve_forever, daemon=True).start()
 
-    print(f"\n  Opening browser for Google sign-in...\n  {auth_url}\n")
-    webbrowser.open(auth_url)
-    if not done.wait(timeout=300):
-        server.shutdown()
-        print("  Timed out waiting for the browser round-trip.")
-        return False
-    server.shutdown()
+        print(f"\n  Opening browser for Google sign-in...\n  {auth_url}\n")
+        webbrowser.open(auth_url)
+        if not done.wait(timeout=300):
+            print("  Timed out waiting for the browser round-trip.")
+            return False
+    finally:
+        for server in servers:
+            try:
+                server.shutdown()
+            except Exception:
+                pass
+            try:
+                server.server_close()
+            except Exception:
+                pass
 
     if result.get("error") or not result.get("code"):
         print(f"  Authorization failed: {result.get('error') or 'no code returned'}")

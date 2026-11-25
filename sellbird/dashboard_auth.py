@@ -382,16 +382,19 @@ class DashboardGuard:
 
         # 2. Browser provenance.
         public = is_public_path(method, path)
+        # Inbound Cal.com webhooks authenticate via HMAC-SHA256, not browser provenance.
+        webhook = method == "POST" and path == "/api/webhooks/calcom"
         navigation = (method in ("GET", "HEAD") and path == "/"
                       and headers.get("sec-fetch-mode", [""])[0] == "navigate"
                       and headers.get("sec-fetch-dest", [""])[0] == "document")
-        origins = headers.get("origin", [])
-        if origins and (len(origins) != 1 or origins[0].lower() != f"http://{host_header}"):
-            if not navigation:
-                return await deny(403, "cross_origin", "Cross-origin requests are refused.")
-        site = headers.get("sec-fetch-site", [])
-        if site and site[0].lower() not in ("same-origin", "none") and not navigation:
-            return await deny(403, "cross_origin", "Cross-site requests are refused.")
+        if not webhook:
+            origins = headers.get("origin", [])
+            if origins and (len(origins) != 1 or origins[0].lower() != f"http://{host_header}"):
+                if not navigation:
+                    return await deny(403, "cross_origin", "Cross-origin requests are refused.")
+            site = headers.get("sec-fetch-site", [])
+            if site and site[0].lower() not in ("same-origin", "none") and not navigation:
+                return await deny(403, "cross_origin", "Cross-site requests are refused.")
 
         if public:
             return await self.app(scope, receive, send_secured)

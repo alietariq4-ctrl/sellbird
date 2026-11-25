@@ -175,7 +175,7 @@ class RouterTransport:
             return None
         key, profile = picked
         transport = profiles_mod.resolve(profile, self.chain)
-        if transport is None:
+        if transport is None or getattr(transport, "paused_reason", ""):
             return None
         return key, transport, profiles_mod.overrides(profile)
 
@@ -215,31 +215,32 @@ class RouterTransport:
         routed = self._route(agent, task)
         if routed is not None:
             key, transport, knobs = routed
-            safe_knobs = _filter_knobs(transport, knobs)
-            tried_model = str(safe_knobs.get("model") or getattr(transport, "model", ""))
-            tried_url = str(safe_knobs.get("base_url") or "")
-            text = await transport(
-                prompt, agent=agent, task=task, timeout=deadline - monotonic(),
-                expect_json=expect_json, **safe_knobs,
-            )
-            if text:
-                self.last_profile = key
-                self.last_provider = str(getattr(transport, "name", ""))
-                self.last_usage = getattr(transport, "last_usage", None)
-                if isinstance(self.last_usage, Usage):
-                    self._sync_spend_day()
-                    self.spend_usd = round(self.spend_usd + self.last_usage.cost_usd, 6)
-                    await self._fire_usage(self.last_usage, transport)
-                self.last_error = ""
-                return text
-            already_tried = (id(transport), tried_model, tried_url)
-            # The role's model failed: fall through to the chain rather than
-            # failing the call, because the chain is the configured safety net.
-            failures.append((
-                f"profile:{key}",
-                str(getattr(transport, "last_error", "") or "empty reply")[:120],
-            ))
-            logger.warning("task profile %s failed; walking the chain", key)
+            if not getattr(transport, "paused_reason", ""):
+                safe_knobs = _filter_knobs(transport, knobs)
+                tried_model = str(safe_knobs.get("model") or getattr(transport, "model", ""))
+                tried_url = str(safe_knobs.get("base_url") or "")
+                text = await transport(
+                    prompt, agent=agent, task=task, timeout=deadline - monotonic(),
+                    expect_json=expect_json, **safe_knobs,
+                )
+                if text:
+                    self.last_profile = key
+                    self.last_provider = str(getattr(transport, "name", ""))
+                    self.last_usage = getattr(transport, "last_usage", None)
+                    if isinstance(self.last_usage, Usage):
+                        self._sync_spend_day()
+                        self.spend_usd = round(self.spend_usd + self.last_usage.cost_usd, 6)
+                        await self._fire_usage(self.last_usage, transport)
+                    self.last_error = ""
+                    return text
+                already_tried = (id(transport), tried_model, tried_url)
+                # The role's model failed: fall through to the chain rather than
+                # failing the call, because the chain is the configured safety net.
+                failures.append((
+                    f"profile:{key}",
+                    str(getattr(transport, "last_error", "") or "empty reply")[:120],
+                ))
+                logger.warning("task profile %s failed; walking the chain", key)
 
         for transport in self.chain:
             default_model = str(getattr(transport, "model", ""))

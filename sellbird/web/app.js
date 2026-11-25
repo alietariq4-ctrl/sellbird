@@ -26,8 +26,9 @@ function setTheme(mode) {
 }
 
 function toggleOledTheme() {
-  const current = document.documentElement.getAttribute('data-theme');
-  setTheme(current === 'dark' ? 'light' : 'dark');
+  const attr = document.documentElement.getAttribute('data-theme');
+  const isDark = attr === 'dark' || (!attr && window.matchMedia && window.matchMedia('(prefers-color-scheme: dark)').matches);
+  setTheme(isDark ? 'light' : 'dark');
 }
 
 (function initTheme() {
@@ -401,9 +402,9 @@ async function downloadCsv(path, filename, btn) {
   }
 }
 
-function showToast(msg, type) {
+function showToast(msg, type = 'info') {
   const t = document.createElement('div');
-  t.className = 'toast ' + type;
+  t.className = 'toast ' + (type || 'info');
   t.textContent = msg;
   document.body.appendChild(t);
   setTimeout(() => t.remove(), 2600);
@@ -416,14 +417,14 @@ function toggleVisibility(inputId) {
 
 // ── Tabs ──
 
-function showTab(id, btn) {
+function showTab(id, btn, skipLoad) {
   currentTab = id;
   if (id === 'companies') companyDrill = false;
   document.querySelectorAll('.section').forEach(s => s.classList.remove('active'));
   document.querySelectorAll('nav button').forEach(b => b.classList.remove('active'));
   document.getElementById(id).classList.add('active');
   if (btn) btn.classList.add('active');
-  loadCurrentTab();
+  if (!skipLoad) loadCurrentTab();
 }
 
 // The container each tab refills, painted with loadingState() while its
@@ -512,12 +513,18 @@ async function loadToday() {
   const glyph = {bad: 'alert', warn: 'flag', good: 'check'};
   el.innerHTML = '<div class="queue">' + items.map(it => {
     const tone = escHtml(it.tone || 'warn');
+    const href = safeHref(it.url);
+    const linkBtn = href
+      ? '<a class="btn btn-primary btn-sm" href="' + href + '" target="_blank" rel="noopener noreferrer">' +
+          escHtml(it.url_label || 'Open') + '</a>'
+      : '';
     return '<div class="queue-item ' + tone + '">' +
       '<div class="queue-icon">' + icon(glyph[it.tone] || 'flag') + '</div>' +
       '<div class="qtext">' +
         '<div class="qtitle">' + escHtml(it.title) + '</div>' +
         '<div class="qdetail">' + escHtml(it.detail) + '</div>' +
       '</div>' +
+      linkBtn +
       '<button class="btn btn-secondary btn-sm" onclick="goTab(' + jsq(it.tab) + ')">' +
         escHtml(it.action) + icon('arrow') + '</button>' +
     '</div>';
@@ -683,10 +690,10 @@ function navCount(id, n) {
 }
 
 // Jump to a tab from a link that isn't itself a nav button.
-function goTab(id) {
+function goTab(id, skipLoad) {
   const btns = [...document.querySelectorAll('nav button')];
   const btn = btns.find(b => (b.getAttribute('onclick') || '').includes("'" + id + "'"));
-  showTab(id, btn);
+  showTab(id, btn, skipLoad);
 }
 
 async function loadRuns() {
@@ -729,8 +736,14 @@ async function loadRenameNotice() {
 }
 
 async function dismissRenameNotice() {
-  document.getElementById('today-renamed').innerHTML = '';
-  await api('/api/rename-notice/dismiss', {method: 'POST'});
+  const el = document.getElementById('today-renamed');
+  const prev = el ? el.innerHTML : '';
+  if (el) el.innerHTML = '';
+  const data = await api('/api/rename-notice/dismiss', {method: 'POST'});
+  if (!data || !data.success) {
+    if (el) el.innerHTML = prev;
+    showToast(failMsg(data, 'Could not dismiss notice.'), 'error');
+  }
 }
 
 async function loadSetupStatus() {
@@ -811,6 +824,7 @@ async function connectTrulyInbox() {
 async function useOtherWarmup() {
   const data = await api('/api/trulyinbox/other', {method: 'POST'});
   if (data && data.success) loadSetupStatus();
+  else showToast(failMsg(data, 'Could not save warmup preference.'), 'error');
 }
 
 // ── Signals: Sellbird proposes, you confirm ──
@@ -1509,21 +1523,21 @@ async function saveEnv(payload, okMsg) {
 function saveInstantly() {
   const key = document.getElementById('instantly-key').value.trim();
   if (!key) { showToast('Enter a new key first. The saved one is kept.', 'error'); return; }
-  saveEnv({INSTANTLY_API_KEY: key}, 'Instantly API key saved.');
+  saveEnv({INSTANTLY_API_KEY: key}, 'Instantly API key saved.').then(loadSettings);
 }
 
 function saveLinkedIn() {
   const payload = {LINKEDIN_EMAIL: document.getElementById('linkedin-email').value.trim()};
   const pass = document.getElementById('linkedin-password').value;
   if (pass) payload.LINKEDIN_PASSWORD = pass;
-  saveEnv(payload, 'LinkedIn credentials saved.');
+  saveEnv(payload, 'LinkedIn credentials saved.').then(loadSettings);
 }
 
 function saveCloudflare() {
   const payload = {CLOUDFLARE_ACCOUNT_ID: document.getElementById('cf-account-id').value.trim()};
   const token = document.getElementById('cf-api-token').value.trim();
   if (token) payload.CLOUDFLARE_API_TOKEN = token;
-  saveEnv(payload, 'Cloudflare credentials saved.');
+  saveEnv(payload, 'Cloudflare credentials saved.').then(loadSettings);
 }
 
 async function testInstantly() {
@@ -1585,31 +1599,51 @@ async function loadSellbirdStatus() {
 async function startSellbird() {
   const btn = document.getElementById('btn-start');
   btn.disabled = true;
-  const data = await api('/api/sellbird/start', {method: 'POST'});
-  if (data && data.success) showToast('Sellbird started.', 'success');
-  else showToast((data && data.message) || 'Failed to start.', 'error');
-  btn.disabled = false;
+  try {
+    const data = await api('/api/sellbird/start', {method: 'POST'});
+    if (data && data.success) showToast('Sellbird started.', 'success');
+    else showToast((data && data.message) || 'Failed to start.', 'error');
+  } finally {
+    btn.disabled = false;
+  }
   loadSellbirdStatus();
+  loadLogs();
 }
 
 async function stopSellbird() {
   const btn = document.getElementById('btn-stop');
+  const origText = btn.textContent || 'Stop Sellbird';
+  btn.textContent = 'Stopping…';
   btn.disabled = true;
-  const data = await api('/api/sellbird/stop', {method: 'POST'});
-  if (data && data.success) showToast('Sellbird stopped.', 'success');
-  else showToast((data && data.message) || 'Failed to stop.', 'error');
-  btn.disabled = false;
+  try {
+    const data = await api('/api/sellbird/stop', {method: 'POST'});
+    if (data && data.success) showToast('Sellbird stopped.', 'success');
+    else showToast((data && data.message) || 'Failed to stop.', 'error');
+  } finally {
+    btn.textContent = origText;
+    btn.disabled = false;
+  }
   loadSellbirdStatus();
+  loadLogs();
 }
 
 async function loadLogs() {
   const data = await api('/api/sellbird/logs');
   const el = document.getElementById('log-viewer');
-  if (data && data.lines && data.lines.length) {
+  if (!el) return;
+  if (!data) {
+    if (!el.dataset.hasLogs) {
+      el.textContent = "Can't reach Sellbird right now — logs unavailable.";
+    }
+    return;
+  }
+  if (data.lines && data.lines.length) {
     const stick = el.scrollTop + el.clientHeight >= el.scrollHeight - 30;
     el.textContent = data.lines.join('\n');
+    el.dataset.hasLogs = '1';
     if (stick) el.scrollTop = el.scrollHeight;
   } else {
+    delete el.dataset.hasLogs;
     el.textContent = 'No logs yet. Start Sellbird to see activity.';
   }
 }
@@ -2099,26 +2133,34 @@ function deskBusy() {
   return true;
 }
 
+let _outboxBusy = false;
+
 async function deskSave(id) {
+  if (_outboxBusy) return;
   const subject = document.getElementById('desk-subject').value.trim();
   const body = document.getElementById('desk-body').value.trim();
   if (!subject || !body) { showToast('Subject and body are both required.', 'error'); return; }
-  let data = null;
+  _outboxBusy = true;
   try {
-    const r = await authFetch('/api/outbox/' + encodeURIComponent(id) + '/edit', {
-      method: 'POST', headers: {'Content-Type': 'application/json'},
-      body: JSON.stringify({subject: subject, body: body}),
-    });
-    if (await lockIfRefused(r)) return;
-    data = await r.json();
-  } catch {}
-  if (data && data.success) {
-    _desk.editing = null;
-    _desk.unsaved = null;
-    showToast('Saved. Still waiting for your approval.', 'success');
-    loadOutbox();
-  } else {
-    showToast((data && data.message) || 'Save failed.', 'error');
+    let data = null;
+    try {
+      const r = await authFetch('/api/outbox/' + encodeURIComponent(id) + '/edit', {
+        method: 'POST', headers: {'Content-Type': 'application/json'},
+        body: JSON.stringify({subject: subject, body: body}),
+      });
+      if (await lockIfRefused(r)) return;
+      data = await r.json();
+    } catch {}
+    if (data && data.success) {
+      _desk.editing = null;
+      _desk.unsaved = null;
+      showToast('Saved. Still waiting for your approval.', 'success');
+      await loadOutbox();
+    } else {
+      showToast((data && data.message) || 'Save failed.', 'error');
+    }
+  } finally {
+    _outboxBusy = false;
   }
 }
 
@@ -2151,28 +2193,44 @@ document.addEventListener('keydown', e => {
 });
 
 async function outboxAct(id, action) {
-  if (deskBusy()) return;
-  const data = await api('/api/outbox/' + encodeURIComponent(id) + '/' + action, {method: 'POST'});
-  if (data && data.success) showToast(action === 'approve' ? 'Approved — will send on schedule.' : 'Rejected.', 'success');
-  else showToast(failMsg(data, 'Action failed.'), 'error');
-  loadOutbox();
+  if (deskBusy() || _outboxBusy) return;
+  _outboxBusy = true;
+  try {
+    const data = await api('/api/outbox/' + encodeURIComponent(id) + '/' + action, {method: 'POST'});
+    if (data && data.success) showToast(action === 'approve' ? 'Approved — will send on schedule.' : 'Rejected.', 'success');
+    else showToast(failMsg(data, 'Action failed.'), 'error');
+    await loadOutbox();
+  } finally {
+    _outboxBusy = false;
+  }
 }
 
 async function outboxApproveAll() {
-  if (deskBusy()) return;
-  const data = await api('/api/outbox/approve-all', {method: 'POST'});
-  if (data && data.success) showToast('Approved ' + data.approved + ' email(s).' + (data.held
-    ? ' ' + data.held + ' Sellbird held ' + (data.held === 1 ? 'is' : 'are') + ' left for you to read and approve one by one.'
-    : ''), 'success');
-  else showToast(failMsg(data, 'Approve-all failed.'), 'error');
-  loadOutbox();
+  if (deskBusy() || _outboxBusy) return;
+  _outboxBusy = true;
+  try {
+    const data = await api('/api/outbox/approve-all', {method: 'POST'});
+    if (data && data.success) showToast('Approved ' + data.approved + ' email(s).' + (data.held
+      ? ' ' + data.held + ' Sellbird held ' + (data.held === 1 ? 'is' : 'are') + ' left for you to read and approve one by one.'
+      : ''), 'success');
+    else showToast(failMsg(data, 'Approve-all failed.'), 'error');
+    await loadOutbox();
+  } finally {
+    _outboxBusy = false;
+  }
 }
 
 async function sendingToggle(action) {
-  const data = await api('/api/sending/' + action, {method: 'POST'});
-  if (data && data.success) showToast(action === 'pause' ? 'Sending paused.' : 'Sending resumed.', 'success');
-  else showToast(failMsg(data, action === 'pause' ? 'Could not pause sending.' : 'Could not resume sending.'), 'error');
-  loadOutbox();
+  if (_outboxBusy) return;
+  _outboxBusy = true;
+  try {
+    const data = await api('/api/sending/' + action, {method: 'POST'});
+    if (data && data.success) showToast(action === 'pause' ? 'Sending paused.' : 'Sending resumed.', 'success');
+    else showToast(failMsg(data, action === 'pause' ? 'Could not pause sending.' : 'Could not resume sending.'), 'error');
+    await loadOutbox();
+  } finally {
+    _outboxBusy = false;
+  }
 }
 
 const COMPANIES_PER_PAGE = 50;
@@ -2284,10 +2342,16 @@ async function showCompanyContacts(index) {
   if (!company) return;
   companyDrill = true;
   const el = document.getElementById('companies-list');
+  el.innerHTML = loadingState();
   const [data, profile] = await Promise.all([
     api('/api/companies/' + encodeURIComponent(company.id) + '/contacts'),
     api('/api/companies/' + encodeURIComponent(company.id) + '/profile'),
   ]);
+  if (!data) {
+    el.innerHTML = '<button class="btn btn-ghost btn-sm" onclick="loadCompanies()" style="margin-bottom:12px">' +
+      '&larr; All companies</button>' + offlineState();
+    return;
+  }
   let html = '<button class="btn btn-ghost btn-sm" onclick="loadCompanies()" style="margin-bottom:12px">' +
     '&larr; All companies</button>' + companyInfoCard(company, profile) +
     '<div class="card flush"><div class="card-head"><h3>Contacts</h3>' +
@@ -2347,9 +2411,10 @@ const CONTACT_FILTERS = [
   ['closed', 'Closed out', null],
 ];
 
-async function loadProspects() {
+async function loadProspects(ensureId) {
   const el = document.getElementById('prospects-table');
-  const data = await api('/api/prospects');
+  const qs = ensureId ? '?prospect_id=' + encodeURIComponent(ensureId) : '';
+  const data = await api('/api/prospects' + qs);
   if (!data) { el.innerHTML = offlineState(); return; }
   _prospects = data;
   if (!data.length) {
@@ -2507,11 +2572,13 @@ async function undoOptOut() {
 
 // From a conversation: the contact, with the opt-out record open.
 async function showOptOut(prospectId, email) {
-  goTab('prospects');
+  _contactFilter = 'all';
   _contactQuery = email || '';
+  goTab('prospects', true);
+  showTabLoading('prospects');
+  await loadProspects(prospectId);
   const search = document.getElementById('contact-search');
   if (search) search.value = _contactQuery;
-  await loadProspects();
   const i = _prospects.findIndex(p => p.id === prospectId);
   if (i >= 0 && _optOut.id !== prospectId) toggleOptOut(i);
 }
@@ -2677,13 +2744,15 @@ async function runDnsCheck() {
 
 let _cwWatches = [];
 let _cwLoaded = false;
+let _cwEnabled = false;
 
 async function loadCompetitorWatch() {
   const data = await api('/api/competitor-watch');
   if (!data) { document.getElementById('cw-watches').innerHTML = offlineState(); return; }
   _cwWatches = (data.watches || []).map(w => ({name: w.name, url: w.url, kind: w.kind}));
   _cwLoaded = true;
-  document.getElementById('cw-enabled').checked = !!data.enabled;
+  _cwEnabled = !!data.enabled;
+  document.getElementById('cw-enabled').checked = _cwEnabled;
   renderCompetitorWatches();
   const changes = data.changes || [];
   document.getElementById('cw-changes').innerHTML = changes.length
@@ -2744,6 +2813,8 @@ async function saveCompetitorWatch() {
   });
   btn.disabled = false;
   if (!data || data.success === false) {
+    const chk = document.getElementById('cw-enabled');
+    if (chk) chk.checked = _cwEnabled;
     status.textContent = failMsg(data, 'Could not save the watches.');
     return;
   }
@@ -3420,7 +3491,6 @@ setInterval(() => {
     case 'campaigns': loadCampaigns(); break;
     case 'conversations': loadConversations(); break;
     case 'activity': loadActivity(); break;
-    case 'brain': loadBrainStudio(); break;
     case 'enrichment': loadEnrichment(); break;
     case 'inboxes': loadInboxes(); break;
     case 'usage': loadUsage(); break;
@@ -3543,8 +3613,7 @@ async function loadCompany() {
   </section>` : ''}`;
   _offerIdeas = (o.entry_ideas || []).map(x => ({offer: x}));
   renderOfferIdeas();
-  const badge = document.getElementById('nav-company');
-  if (badge) badge.textContent = o.proposed ? '1' : '';
+  navCount('nav-company', o.proposed ? 1 : 0);
 }
 
 function objectionRow(k, v, i) {
@@ -3681,6 +3750,24 @@ const KNOWN_PROVIDERS = [
   'together', 'mistral', 'fireworks', 'cerebras', 'ollama', 'lmstudio', 'vllm', 'custom'
 ];
 
+const PROVIDER_DEFAULTS = {
+  deepseek:      { model: 'deepseek-chat',                                   url: 'https://api.deepseek.com/v1',                           env: 'DEEPSEEK_API_KEY' },
+  openrouter:    { model: 'openai/gpt-4o-mini',                              url: 'https://openrouter.ai/api/v1',                          env: 'OPENROUTER_API_KEY' },
+  openai:        { model: 'gpt-4o-mini',                                     url: 'https://api.openai.com/v1',                             env: 'OPENAI_API_KEY' },
+  openai_compat: { model: 'gpt-4o-mini',                                     url: '',                                                      env: 'OPENAI_API_KEY' },
+  gemini:        { model: 'gemini-2.5-flash',                                url: 'https://generativelanguage.googleapis.com/v1beta/openai', env: 'GEMINI_API_KEY' },
+  groq:          { model: 'llama-3.3-70b-versatile',                         url: 'https://api.groq.com/openai/v1',                        env: 'GROQ_API_KEY' },
+  xai:           { model: 'grok-3-mini',                                     url: 'https://api.x.ai/v1',                                   env: 'XAI_API_KEY' },
+  mistral:       { model: 'mistral-small-latest',                            url: 'https://api.mistral.ai/v1',                             env: 'MISTRAL_API_KEY' },
+  together:      { model: 'meta-llama/Llama-3.3-70B-Instruct-Turbo',         url: 'https://api.together.xyz/v1',                           env: 'TOGETHER_API_KEY' },
+  fireworks:     { model: 'accounts/fireworks/models/llama-v3p3-70b-instruct', url: 'https://api.fireworks.ai/inference/v1',               env: 'FIREWORKS_API_KEY' },
+  cerebras:      { model: 'llama-3.3-70b',                                   url: 'https://api.cerebras.ai/v1',                            env: 'CEREBRAS_API_KEY' },
+  ollama:        { model: 'llama3.1',                                        url: 'http://localhost:11434/v1',                             env: '' },
+  lmstudio:      { model: 'local-model',                                     url: 'http://localhost:1234/v1',                              env: '' },
+  vllm:          { model: 'local-model',                                     url: 'http://localhost:8000/v1',                              env: '' },
+  custom:        { model: '',                                                url: '',                                                      env: '' },
+};
+
 async function loadBrainStudio() {
   const data = await api('/api/brain/config');
   if (!data) {
@@ -3693,10 +3780,13 @@ async function loadBrainStudio() {
   }
   _brainConfig = data;
 
+  const routerToggle = document.getElementById('brain-activate-router');
+  if (routerToggle) routerToggle.checked = !!data.transport_active;
+
   // Render budget & spend
   const maxUsd = (data.budget && data.budget.max_usd_per_day != null) ? Number(data.budget.max_usd_per_day) : 5.0;
   const spentUsd = (data.spend && data.spend.spend_today_usd != null) ? Number(data.spend.spend_today_usd) : 0.0;
-  
+
   const spendEl = document.getElementById('brain-spend-usd');
   if (spendEl) spendEl.textContent = '$' + spentUsd.toFixed(4);
   const capEl = document.getElementById('brain-spend-cap');
@@ -3704,11 +3794,24 @@ async function loadBrainStudio() {
   const inpEl = document.getElementById('brain-max-usd');
   if (inpEl) inpEl.value = maxUsd;
 
+  const pct = maxUsd > 0 ? Math.min(100, Math.round((spentUsd / maxUsd) * 100)) : 0;
   const barEl = document.getElementById('brain-budget-bar');
   if (barEl) {
-    const pct = Math.min(100, Math.round((spentUsd / (maxUsd || 1)) * 100));
     barEl.style.width = pct + '%';
     barEl.className = 'progress-fill ' + (pct >= 90 ? 'red' : pct >= 70 ? 'yellow' : 'emerald');
+  }
+  const statusEl = document.getElementById('brain-budget-status');
+  if (statusEl) {
+    if (maxUsd > 0 && spentUsd >= maxUsd) {
+      statusEl.textContent = 'Budget Exhausted';
+      statusEl.className = 'badge t-bad';
+    } else if (maxUsd > 0 && pct >= 80) {
+      statusEl.textContent = 'Near Limit';
+      statusEl.className = 'badge t-waiting';
+    } else {
+      statusEl.textContent = 'Active';
+      statusEl.className = 'tag accent';
+    }
   }
 
   // Render Chain
@@ -3718,6 +3821,29 @@ async function loadBrainStudio() {
   renderBrainRoles(data.profiles || {});
 }
 
+function onChainProviderChange(selectEl) {
+  const row = selectEl && selectEl.closest('.chain-row');
+  if (!row) return;
+  const prov = (selectEl.value || '').toLowerCase();
+  const def = own(PROVIDER_DEFAULTS, prov);
+  if (!def) return;
+  const modelEl = row.querySelector('.chain-model');
+  const urlEl = row.querySelector('.chain-url');
+  const envEl = row.querySelector('.chain-env');
+  const knownModels = new Set(Object.values(PROVIDER_DEFAULTS).map(d => d.model).filter(Boolean));
+  const knownUrls = new Set(Object.values(PROVIDER_DEFAULTS).map(d => d.url).filter(Boolean));
+  const knownEnvs = new Set(Object.values(PROVIDER_DEFAULTS).map(d => d.env).filter(Boolean));
+  if (modelEl && (!modelEl.value.trim() || knownModels.has(modelEl.value.trim()))) {
+    modelEl.value = def.model;
+  }
+  if (urlEl && (!urlEl.value.trim() || knownUrls.has(urlEl.value.trim()))) {
+    urlEl.value = def.url;
+  }
+  if (envEl && (!envEl.value.trim() || knownEnvs.has(envEl.value.trim()))) {
+    envEl.value = def.env;
+  }
+}
+
 function renderBrainChain(chain) {
   const container = document.getElementById('brain-chain-container');
   if (!container) return;
@@ -3725,35 +3851,44 @@ function renderBrainChain(chain) {
     container.innerHTML = '<div class="inset" style="text-align:center;color:var(--text-2);padding:14px;">No fallback chain configured. Requests will use default openai_compat.</div>';
     return;
   }
-  container.innerHTML = chain.map((item, idx) => `
-    <div class="chain-row" data-idx="${idx}">
-      <span class="chain-idx">${idx + 1}</span>
-      <select class="form-input chain-prov">
-        ${KNOWN_PROVIDERS.map(p => `<option value="${p}" ${p === (item.provider || '').toLowerCase() ? 'selected' : ''}>${p}</option>`).join('')}
-      </select>
-      <input type="text" class="form-input chain-model" placeholder="Model ID (e.g. deepseek-chat)" value="${escHtml(item.model || '')}">
-      <input type="text" class="form-input chain-url" placeholder="Base URL (optional)" value="${escHtml(item.base_url || '')}">
-      <input type="text" class="form-input chain-env" placeholder="API Key Env (e.g. DEEPSEEK_API_KEY)" value="${escHtml(item.api_key_env || '')}">
-      <button class="btn btn-ghost" title="Remove" onclick="removeChainRow(this)"><svg class="icon"><use href="#i-close"/></svg></button>
-    </div>
-  `).join('');
+  container.innerHTML = chain.map((item, idx) => {
+    const rawProv = (item.provider || '').trim();
+    const provLower = rawProv.toLowerCase();
+    const opts = (!rawProv || KNOWN_PROVIDERS.includes(provLower))
+      ? KNOWN_PROVIDERS
+      : [rawProv, ...KNOWN_PROVIDERS];
+    return `
+      <div class="chain-row" data-idx="${idx}">
+        <span class="chain-idx">${idx + 1}</span>
+        <select class="form-input chain-prov" onchange="onChainProviderChange(this)">
+          ${opts.map(p => `<option value="${escHtml(p)}" ${p.toLowerCase() === provLower ? 'selected' : ''}>${escHtml(p)}</option>`).join('')}
+        </select>
+        <input type="text" class="form-input chain-model" placeholder="Model ID (e.g. deepseek-chat)" value="${escHtml(item.model || '')}">
+        <input type="text" class="form-input chain-url" placeholder="Base URL (optional)" value="${escHtml(item.base_url || '')}">
+        <input type="text" class="form-input chain-env" placeholder="API Key Env (e.g. DEEPSEEK_API_KEY)" value="${escHtml(item.api_key_env || '')}">
+        <button class="btn btn-ghost" title="Remove" onclick="removeChainRow(this)"><svg class="icon"><use href="#i-close"/></svg></button>
+      </div>
+    `;
+  }).join('');
 }
 
 function addChainRow() {
   const container = document.getElementById('brain-chain-container');
   if (!container) return;
   const idx = container.querySelectorAll('.chain-row').length;
+  const defProv = 'deepseek';
+  const def = PROVIDER_DEFAULTS[defProv];
   const div = document.createElement('div');
   div.className = 'chain-row';
   div.dataset.idx = idx;
   div.innerHTML = `
     <span class="chain-idx">${idx + 1}</span>
-    <select class="form-input chain-prov">
-      ${KNOWN_PROVIDERS.map(p => `<option value="${p}">${p}</option>`).join('')}
+    <select class="form-input chain-prov" onchange="onChainProviderChange(this)">
+      ${KNOWN_PROVIDERS.map(p => `<option value="${escHtml(p)}" ${p === defProv ? 'selected' : ''}>${escHtml(p)}</option>`).join('')}
     </select>
-    <input type="text" class="form-input chain-model" placeholder="Model ID" value="deepseek-chat">
-    <input type="text" class="form-input chain-url" placeholder="Base URL (optional)" value="">
-    <input type="text" class="form-input chain-env" placeholder="API Key Env (e.g. DEEPSEEK_API_KEY)" value="DEEPSEEK_API_KEY">
+    <input type="text" class="form-input chain-model" placeholder="Model ID" value="${escHtml(def.model)}">
+    <input type="text" class="form-input chain-url" placeholder="Base URL (optional)" value="${escHtml(def.url)}">
+    <input type="text" class="form-input chain-env" placeholder="API Key Env (e.g. DEEPSEEK_API_KEY)" value="${escHtml(def.env)}">
     <button class="btn btn-ghost" title="Remove" onclick="removeChainRow(this)"><svg class="icon"><use href="#i-close"/></svg></button>
   `;
   container.appendChild(div);
@@ -3769,12 +3904,42 @@ function removeChainRow(btn) {
   });
 }
 
-async function saveBrainBudget() {
-  const val = parseFloat((document.getElementById('brain-max-usd') || {}).value || '5');
+async function toggleActivateRouter(enabled) {
+  const toggle = document.getElementById('brain-activate-router');
+  const payload = {
+    activate_router: !!enabled,
+    chain: (_brainConfig && Array.isArray(_brainConfig.chain) && _brainConfig.chain.length)
+      ? _brainConfig.chain : undefined,
+    profiles: (_brainConfig && _brainConfig.profiles) ? _brainConfig.profiles : undefined,
+  };
   const res = await api('/api/brain/config', {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ max_usd_per_day: val, chain: _brainConfig ? _brainConfig.chain : [] })
+    body: JSON.stringify(payload),
+  });
+  if (res && res.success) {
+    showToast(enabled ? 'AI Router activated.' : 'AI Router deactivated.', 'success');
+    loadBrainStudio();
+  } else {
+    if (toggle) toggle.checked = !enabled;
+    showToast((res && res.message) || 'Failed to update AI Router state.', 'error');
+  }
+}
+
+async function saveBrainBudget() {
+  const val = parseFloat((document.getElementById('brain-max-usd') || {}).value || '5');
+  const payload = {
+    budget: { max_usd_per_day: val },
+    max_usd_per_day: val,
+    profiles: _brainConfig ? (_brainConfig.profiles || {}) : {}
+  };
+  if (_brainConfig && Array.isArray(_brainConfig.chain) && _brainConfig.chain.length) {
+    payload.chain = _brainConfig.chain;
+  }
+  const res = await api('/api/brain/config', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(payload)
   });
   if (res && res.success) { showToast('Daily budget updated.', 'success'); loadBrainStudio(); }
   else showToast((res && res.message) || 'Failed to update budget.', 'error');
@@ -3859,48 +4024,77 @@ async function saveBrainRoles() {
 }
 
 async function runBrainDoctor() {
+  const btn = document.getElementById('brain-doctor-btn');
   const statusEl = document.getElementById('brain-doctor-status');
   const panel = document.getElementById('brain-doctor-results');
+  if (btn) btn.disabled = true;
   if (statusEl) statusEl.textContent = 'Probing endpoints...';
   if (panel) panel.style.display = 'none';
 
-  const data = await api('/api/brain/doctor');
-  if (!data) {
-    if (statusEl) statusEl.textContent = 'Doctor check failed.';
-    return;
-  }
-  if (statusEl) statusEl.textContent = `Completed — ${data.active_providers || 0} active providers verified.`;
-  if (panel) {
-    const checks = data.checks || [];
-    panel.innerHTML = checks.map(c => `
-      <div class="doctor-row">
-        <div>
-          <b>${escHtml(c.name || c.provider || '')}</b>
-          <div class="meta" style="font-size:11px;color:var(--text-2)">${escHtml(c.model || '')} &middot; ${escHtml(c.base_url || '')}</div>
-        </div>
-        <div style="display:flex;align-items:center;gap:8px;">
-          <span class="email-tag ${c.ok ? 'verified' : 'invalid'}">${c.ok ? 'Ready' : (c.error || 'Failed')}</span>
-          ${c.latency_ms ? `<span class="meta">${c.latency_ms}ms</span>` : ''}
-        </div>
-      </div>
-    `).join('') || '<div class="meta">No provider checks returned.</div>';
-    panel.style.display = 'block';
+  try {
+    const data = await api('/api/brain/doctor?network=1');
+    if (!data) {
+      if (statusEl) statusEl.textContent = 'Doctor check failed.';
+      return;
+    }
+    const providers = data.providers || data.checks || [];
+    const readyCount = providers.filter(c => c && c.ok).length;
+    if (statusEl) {
+      statusEl.textContent = data.summary || `Completed — ${readyCount}/${providers.length} provider(s) ready.`;
+    }
+    if (panel) {
+      panel.innerHTML = providers.map(c => {
+        const sub = [c.model, c.base_url].filter(Boolean).map(escHtml).join(' &middot; ');
+        const statusText = c.ok ? 'Ready' : escHtml(c.error || c.detail || 'Failed');
+        const latNum = Number(c.latency_ms);
+        const latHtml = (c.latency_ms != null && c.latency_ms !== '' && Number.isFinite(latNum))
+          ? `<span class="meta">${Math.round(latNum * 10) / 10}ms</span>` : '';
+        return `
+          <div class="doctor-row">
+            <div>
+              <b>${escHtml(c.name || c.provider || '')}</b>
+              ${sub ? `<div class="meta" style="font-size:11px;color:var(--text-2)">${sub}</div>` : ''}
+            </div>
+            <div style="display:flex;align-items:center;gap:8px;">
+              <span class="email-tag ${c.ok ? 'verified' : 'invalid'}" title="${escHtml(c.detail || '')}">${statusText}</span>
+              ${latHtml}
+            </div>
+          </div>
+        `;
+      }).join('') || '<div class="meta">No provider checks returned.</div>';
+      panel.style.display = 'block';
+    }
+  } finally {
+    if (btn) btn.disabled = false;
   }
 }
 
 async function runBrainProbe() {
   const role = (document.getElementById('probe-role') || {}).value || 'scout';
-  const domain = (document.getElementById('probe-domain') || {}).value || 'stripe.com';
+  const domain = ((document.getElementById('probe-domain') || {}).value || '').trim();
+  const promptEl = document.getElementById('probe-prompt');
+  const customPrompt = promptEl ? (promptEl.value || '').trim() : '';
+  const prompt = customPrompt || (domain ? `Verify connectivity for ${domain}. Reply with OK.` : 'Reply with the single word OK.');
+  const btn = document.getElementById('probe-btn');
   const out = document.getElementById('probe-output');
+  if (btn) btn.disabled = true;
   if (out) { out.style.display = 'block'; out.textContent = 'Sending probe via ' + role + '...'; }
 
-  const data = await api('/api/brain/probe', {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ agent: role, domain: domain })
-  });
-  if (out) {
-    out.textContent = JSON.stringify(data, null, 2);
+  try {
+    const payload = { live: true, role, prompt };
+    if (domain) payload.domain = domain;
+    const data = await api('/api/brain/probe', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(payload)
+    });
+    if (out) {
+      out.textContent = data
+        ? JSON.stringify(data, null, 2)
+        : 'Error: Probe request failed or dashboard server unreachable.';
+    }
+  } finally {
+    if (btn) btn.disabled = false;
   }
 }
 
@@ -3920,20 +4114,34 @@ async function loadEnrichment() {
       'Click <b>+ Add AI Column</b> to create the first one.');
     return;
   }
-  list.innerHTML = cols.map(col => `
-    <div class="clay-col-item">
-      <div>
-        <h4>${escHtml(col.name)} <span class="tag" style="text-transform:none;font-weight:normal">${escHtml(col.key)}</span> <span class="tag accent">${escHtml(col.output_type || 'text')}</span></h4>
-        <p>${escHtml(col.prompt || 'No instruction prompt.')}</p>
+  list.innerHTML = cols.map(col => {
+    const colKey = col.key || col.id || '';
+    const colType = col.output_type || col.output_format || col.value_type || 'text';
+    return `
+      <div class="clay-col-item">
+        <div>
+          <h4>${escHtml(col.name)} <span class="tag" style="text-transform:none;font-weight:normal">${escHtml(colKey)}</span> <span class="tag accent">${escHtml(colType)}</span>${col.use_web_search ? ' <span class="tag">Web Search</span>' : ''}</h4>
+          <p>${escHtml(col.prompt || 'No instruction prompt.')}</p>
+        </div>
+        <button class="btn btn-ghost" title="Delete Column" onclick="deleteEnrichmentCol(${jsq(col.id || col.key)})">
+          <svg class="icon"><use href="#i-close"/></svg>
+        </button>
       </div>
-      <button class="btn btn-ghost" title="Delete Column" onclick="deleteEnrichmentCol('${escHtml(col.id || col.key)}')">
-        <svg class="icon"><use href="#i-close"/></svg>
-      </button>
-    </div>
-  `).join('');
+    `;
+  }).join('');
 }
 
 function openAddColumnModal() {
+  const nameEl = document.getElementById('col-name');
+  const keyEl = document.getElementById('col-key');
+  const promptEl = document.getElementById('col-prompt');
+  const typeEl = document.getElementById('col-type');
+  const webEl = document.getElementById('col-web-search');
+  if (nameEl) nameEl.value = '';
+  if (keyEl) keyEl.value = '';
+  if (promptEl) promptEl.value = '';
+  if (typeEl) typeEl.value = 'text';
+  if (webEl) webEl.checked = false;
   const d = document.getElementById('enrichment-dialog');
   if (d && d.showModal) d.showModal();
 }
@@ -3942,6 +4150,12 @@ function closeAddColumnModal() {
   const d = document.getElementById('enrichment-dialog');
   if (d && d.close) d.close();
 }
+
+(function wireEnrichmentDialog() {
+  const d = document.getElementById('enrichment-dialog');
+  if (!d) return;
+  d.addEventListener('click', e => { if (e.target === d) closeAddColumnModal(); });
+})();
 
 function autoSlugColKey(val) {
   const keyEl = document.getElementById('col-key');
@@ -3953,13 +4167,22 @@ async function submitAddColumn() {
   const key = ((document.getElementById('col-key') || {}).value || '').trim();
   const prompt = ((document.getElementById('col-prompt') || {}).value || '').trim();
   const type = ((document.getElementById('col-type') || {}).value || 'text').trim();
+  const useWebSearch = !!(document.getElementById('col-web-search') || {}).checked;
 
   if (!name || !key || !prompt) { showToast('Please enter Name, Key, and AI Prompt.', 'error'); return; }
 
   const res = await api('/api/enrichment/columns', {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ name: name, key: key, prompt: prompt, output_type: type })
+    body: JSON.stringify({
+      name: name,
+      key: key,
+      prompt: prompt,
+      output_type: type,
+      output_format: type,
+      value_type: type,
+      use_web_search: useWebSearch
+    })
   });
 
   if (res && res.success) {
@@ -3979,14 +4202,21 @@ async function deleteEnrichmentCol(colId) {
 }
 
 async function triggerEnrichmentRun() {
+  const btn = document.getElementById('enrichment-run-btn');
   const statusEl = document.getElementById('enrichment-run-status');
+  if (btn) btn.disabled = true;
   if (statusEl) statusEl.textContent = 'Enrichment started in background...';
-  const res = await api('/api/enrichment/run', { method: 'POST' });
-  if (res && res.success) {
-    showToast('Batch enrichment running.', 'success');
-    if (statusEl) statusEl.textContent = 'Enriched: ' + (res.enriched_count || 0) + ' items processed.';
-  } else {
-    showToast((res && res.message) || 'Enrichment trigger failed.', 'error');
-    if (statusEl) statusEl.textContent = 'Ready';
+  try {
+    const res = await api('/api/enrichment/run', { method: 'POST' });
+    if (res && res.success) {
+      const count = res.enriched_cells ?? res.result ?? res.enriched_count ?? 0;
+      showToast('Batch enrichment completed.', 'success');
+      if (statusEl) statusEl.textContent = 'Enriched: ' + count + ' items processed.';
+    } else {
+      showToast((res && res.message) || 'Enrichment trigger failed.', 'error');
+      if (statusEl) statusEl.textContent = 'Ready';
+    }
+  } finally {
+    if (btn) btn.disabled = false;
   }
 }

@@ -186,11 +186,12 @@ def _prepare_doctor_rows(
         entries = [ChainEntry(provider=name) for name in PROVIDERS]
 
     prepared: list[tuple[dict[str, Any], Any, str]] = []
-    seen: set[str] = set()
+    seen: set[tuple[str, str]] = set()
     for entry in entries:
-        if entry.provider in seen:
+        key_pair = (entry.provider, entry.model)
+        if key_pair in seen:
             continue
-        seen.add(entry.provider)
+        seen.add(key_pair)
         try:
             spec = get_provider(
                 entry.provider,

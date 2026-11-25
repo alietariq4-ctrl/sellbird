@@ -21,6 +21,7 @@ already learned.
 """
 
 import asyncio
+import inspect
 import os
 import time
 import base64
@@ -2091,6 +2092,26 @@ async def run_discovery(
                 if provider.last_error:
                     report.errors.append(f"{query.keyword()}: {provider.last_error}")
                 report.found += len(found)
+                suppressed_domains: set[str] = set()
+                suppressed_among = getattr(state, "suppressed_among", None)
+                is_suppressed = getattr(state, "is_suppressed", None)
+                if callable(suppressed_among):
+                    probes = [
+                        f"__domain_check__@{normalize_domain(b.domain)}"
+                        for b in found
+                        if getattr(b, "domain", "")
+                    ]
+                    if probes:
+                        try:
+                            res = suppressed_among(probes)
+                            if inspect.isawaitable(res):
+                                res = await res
+                            suppressed_domains = {
+                                k.split("@", 1)[1] for k in (res or {}) if "@" in k
+                            }
+                        except Exception as e:
+                            logger.debug("discover suppressed_among failed: %s", e)
+
                 batch = []
                 for biz in found:
                     if query.preset == "hiring" and biz.domain and not is_junk(biz.domain):
@@ -2108,6 +2129,20 @@ async def run_discovery(
                     if do_not_contact_domain_match(biz.domain, do_not_contact):
                         report.excluded += 1
                         continue
+                    norm_dom = normalize_domain(biz.domain)
+                    if norm_dom and norm_dom in suppressed_domains:
+                        report.excluded += 1
+                        continue
+                    if norm_dom and not callable(suppressed_among) and callable(is_suppressed):
+                        try:
+                            res = is_suppressed(f"__domain_check__@{norm_dom}")
+                            if inspect.isawaitable(res):
+                                res = await res
+                            if res:
+                                report.excluded += 1
+                                continue
+                        except Exception:
+                            pass
                     ident = biz.identity()
                     if not ident:
                         continue

@@ -263,7 +263,7 @@ class MailboxStore(StateManager):
     async def sent_since(self, mailbox_id: str, since_iso: str, kind: str | None = None) -> int:
         """Emails this inbox sent since a naive UTC time."""
         query = ("SELECT COUNT(*) FROM outbox WHERE COALESCE(mailbox_id, '') = ?"
-                 " AND status = 'sent' AND sent_at >= ?")
+                 " AND status = 'sent' AND datetime(sent_at) >= datetime(?)")
         args: tuple = (mailbox_id, since_iso)
         if kind:
             query += " AND kind = ?"

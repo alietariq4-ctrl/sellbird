@@ -9,6 +9,7 @@ list tracked with SQLite's ``PRAGMA user_version`` so existing user DBs
 upgrade cleanly in place.
 """
 
+import asyncio
 import json
 import sqlite3
 import uuid
@@ -637,6 +638,15 @@ MIGRATIONS: list[str] = [
     """
     ALTER TABLE campaigns ADD COLUMN framework TEXT DEFAULT '';
     """,
+    # ── v21: outbox/conversation hot-path indexes (+ safe enrichment cols) ──
+    """
+    CREATE INDEX IF NOT EXISTS idx_outbox_message_id
+        ON outbox(message_id) WHERE message_id != '';
+    CREATE INDEX IF NOT EXISTS idx_outbox_thread
+        ON outbox(prospect_id, campaign_id, kind, step);
+    CREATE INDEX IF NOT EXISTS idx_conversations_prospect_updated
+        ON conversations(prospect_id, updated_at DESC, created_at DESC);
+    """,
 ]
 
 BRAIN_PROVIDERS = ("claude", "codex", "openrouter")
@@ -665,6 +675,69 @@ _CONVERSATION_COLUMNS = frozenset({
     "prospect_id", "campaign_id", "channel",
     "thread_json", "intent", "stage", "status", "mailbox_id",
 })
+
+
+_INIT_LOCKS_BY_LOOP: weakref.WeakKeyDictionary = weakref.WeakKeyDictionary()
+
+
+def _init_lock_for(key: str) -> asyncio.Lock:
+    """Per-DB-path asyncio lock scoped to the running event loop."""
+    loop = asyncio.get_running_loop()
+    locks = _INIT_LOCKS_BY_LOOP.get(loop)
+    if locks is None:
+        locks = {}
+        _INIT_LOCKS_BY_LOOP[loop] = locks
+    lock = locks.get(key)
+    if lock is None:
+        lock = asyncio.Lock()
+        locks[key] = lock
+    return lock
+
+
+def _split_sql(script: str) -> list[str]:
+    """Split a migration script into individual SQL statements (trigger-safe)."""
+    stmts: list[str] = []
+    buf = ""
+    for line in script.splitlines(keepends=True):
+        buf += line
+        if sqlite3.complete_statement(buf):
+            stmt = buf.strip()
+            if stmt and any(
+                ln.strip() and not ln.lstrip().startswith("--")
+                for ln in stmt.splitlines()
+            ):
+                stmts.append(stmt)
+            buf = ""
+    tail = buf.strip()
+    if tail and any(
+        ln.strip() and not ln.lstrip().startswith("--")
+        for ln in tail.splitlines()
+    ):
+        stmts.append(tail)
+    return stmts
+
+
+async def _ensure_enrichment_columns_v21(db) -> None:
+    """Safely add v21 columns on enrichment_columns when missing."""
+    async with db.execute("PRAGMA table_info(enrichment_columns)") as cur:
+        cols = {row[1] for row in await cur.fetchall()}
+    if not cols:
+        return
+    if "col_key" not in cols:
+        await db.execute("ALTER TABLE enrichment_columns ADD COLUMN col_key TEXT DEFAULT ''")
+    if "output_format" not in cols:
+        await db.execute(
+            "ALTER TABLE enrichment_columns ADD COLUMN output_format TEXT DEFAULT 'text'"
+        )
+        if "value_type" in cols:
+            await db.execute(
+                "UPDATE enrichment_columns SET output_format = value_type "
+                "WHERE COALESCE(value_type, '') != '' AND value_type != 'text'"
+            )
+    if "use_web_search" not in cols:
+        await db.execute(
+            "ALTER TABLE enrichment_columns ADD COLUMN use_web_search INTEGER DEFAULT 0"
+        )
 
 
 class StateManager:
@@ -712,22 +785,38 @@ class StateManager:
         )
         if not is_mem:
             Path(self.db_path).parent.mkdir(parents=True, exist_ok=True)
-        async with self._connect() as db:
-            if not is_mem:
-                # WAL is persistent in the DB file: readers (dashboard) never
-                # block the writer (agent) and vice versa.
-                await db.execute("PRAGMA journal_mode=WAL")
-            await db.execute("PRAGMA synchronous=NORMAL")
-            await db.execute("PRAGMA busy_timeout=5000")
+            try:
+                lock_key = str(Path(self.db_path).resolve())
+            except OSError:
+                lock_key = self._sqlite_locator
+        else:
+            lock_key = self._sqlite_locator
 
-            async with db.execute("PRAGMA user_version") as cursor:
-                (version,) = await cursor.fetchone()
+        async with _init_lock_for(lock_key):
+            async with self._connect() as db:
+                if not is_mem:
+                    # WAL is persistent in the DB file: readers (dashboard) never
+                    # block the writer (agent) and vice versa.
+                    await db.execute("PRAGMA journal_mode=WAL")
+                await db.execute("PRAGMA synchronous=NORMAL")
+                await db.execute("PRAGMA busy_timeout=5000")
 
-            for target, script in enumerate(MIGRATIONS, start=1):
-                if version < target:
-                    await db.executescript(script)
-                    await db.execute(f"PRAGMA user_version = {target}")
+                await db.execute("BEGIN IMMEDIATE")
+                try:
+                    async with db.execute("PRAGMA user_version") as cursor:
+                        (version,) = await cursor.fetchone()
+
+                    for target, script in enumerate(MIGRATIONS, start=1):
+                        if version < target:
+                            for stmt in _split_sql(script):
+                                await db.execute(stmt)
+                            if target == 21:
+                                await _ensure_enrichment_columns_v21(db)
+                            await db.execute(f"PRAGMA user_version = {target}")
                     await db.commit()
+                except Exception:
+                    await db.rollback()
+                    raise
 
     # ── Companies ──
 
@@ -1628,12 +1717,33 @@ class StateManager:
             domain covers its subdomains."""
             labels = domain.split(".")
             return [".".join(labels[i:]) for i in range(len(labels) - 1)]
-        domains = {d for e in wanted for d in parents(e.split("@")[-1])}
-        keys = [("address", e) for e in wanted] + [("domain", d) for d in domains]
+
+        def split_addr(addr: str) -> tuple[str, str]:
+            if "@" not in addr:
+                return "", addr
+            local, _, host = addr.rpartition("@")
+            base_local = local.split("+", 1)[0]
+            return f"{base_local}@{host}", host
+
+        domains = {d for e in wanted for d in parents(split_addr(e)[1])}
+        key_set: list[tuple[str, str]] = []
+        seen_keys: set[tuple[str, str]] = set()
+        for e in wanted:
+            base_addr, _ = split_addr(e)
+            for pair in (("address", e), ("address", base_addr)) if base_addr else (("address", e),):
+                if pair not in seen_keys:
+                    seen_keys.add(pair)
+                    key_set.append(pair)
+        for d in domains:
+            pair = ("domain", d)
+            if pair not in seen_keys:
+                seen_keys.add(pair)
+                key_set.append(pair)
+
         found: dict[tuple[str, str], str] = {}
         async with self._connect() as db:
-            for start in range(0, len(keys), 500):
-                chunk = keys[start:start + 500]
+            for start in range(0, len(key_set), 400):
+                chunk = key_set[start:start + 400]
                 where = " OR ".join("(kind = ? AND value = ?)" for _ in chunk)
                 params = [x for pair in chunk for x in pair]
                 async with db.execute(f"SELECT kind, value, reason FROM suppressions WHERE {where}",
@@ -1642,8 +1752,15 @@ class StateManager:
                         found[(kind, value)] = reason
         out = {}
         for e in wanted:
-            reason = found.get(("address", e)) or next(
-                (found[("domain", d)] for d in parents(e.split("@")[-1]) if ("domain", d) in found), None)
+            base_addr, host = split_addr(e)
+            reason = (
+                found.get(("address", e))
+                or (found.get(("address", base_addr)) if base_addr else None)
+                or next(
+                    (found[("domain", d)] for d in parents(host) if ("domain", d) in found),
+                    None,
+                )
+            )
             if reason:
                 out[e] = reason
         return out
@@ -1694,7 +1811,7 @@ class StateManager:
         ISO time); only one kind ("sequence", "reply") if given, and only
         from one inbox if `mailbox_id` is given ('' = the main mailbox)."""
         if since:
-            sql = "SELECT COUNT(*) FROM outbox WHERE status = 'sent' AND sent_at >= ?"
+            sql = "SELECT COUNT(*) FROM outbox WHERE status = 'sent' AND datetime(sent_at) >= datetime(?)"
             params: tuple = (since,)
         else:
             sql = ("SELECT COUNT(*) FROM outbox WHERE status = 'sent' "
@@ -1778,6 +1895,23 @@ class StateManager:
             db.row_factory = aiosqlite.Row
             async with db.execute(
                 "SELECT * FROM outbox WHERE message_id = ?", (message_id,)
+            ) as cursor:
+                row = await cursor.fetchone()
+                return dict(row) if row else None
+
+    async def get_latest_sent_outbox_for_recipient(self, to_email: str) -> dict | None:
+        """Return the most recent sent outbox row with a non-empty campaign_id for `to_email`."""
+        email = _norm(to_email)
+        if not email:
+            return None
+        async with self._connect() as db:
+            db.row_factory = aiosqlite.Row
+            async with db.execute(
+                "SELECT * FROM outbox "
+                "WHERE status = 'sent' AND LOWER(TRIM(to_email)) = ? "
+                "AND COALESCE(campaign_id, '') != '' "
+                "ORDER BY datetime(sent_at) DESC, rowid DESC LIMIT 1",
+                (email,),
             ) as cursor:
                 row = await cursor.fetchone()
                 return dict(row) if row else None
@@ -1958,6 +2092,11 @@ class StateManager:
         row = await self._latest_yes(company_id, "FUNDING_ROUND")
         return parse_funding(row.get("value_text") or "") if row else None
 
+    _OBS_COLUMNS = (
+        "id, company_id, prospect_id, signal_code, collector, "
+        "value_num, value_text, confidence, evidence_url, observed_at, run_id"
+    )
+
     async def get_observations(
         self,
         company_id: str = "",
@@ -1972,18 +2111,20 @@ class StateManager:
         if signal_code:
             where.append("signal_code = ?")
             params.append(signal_code)
-        sql = "SELECT * FROM observations"
-        if where:
-            sql += " WHERE " + " AND ".join(where)
+        where_sql = (" WHERE " + " AND ".join(where)) if where else ""
         if latest_only:
             # Newest observation per (company, signal) — the current view of
             # the world, with history still on disk underneath.
             sql = (
-                "SELECT * FROM (" + sql + " ORDER BY observed_at DESC) "
-                "GROUP BY company_id, signal_code"
+                f"SELECT {self._OBS_COLUMNS} FROM ("
+                "SELECT *, ROW_NUMBER() OVER ("
+                "PARTITION BY company_id, signal_code "
+                "ORDER BY observed_at DESC, rowid DESC"
+                f") AS rn FROM observations{where_sql}"
+                ") WHERE rn = 1 ORDER BY observed_at DESC"
             )
         else:
-            sql += " ORDER BY observed_at DESC"
+            sql = f"SELECT * FROM observations{where_sql} ORDER BY observed_at DESC"
         sql += " LIMIT ?"
         params.append(int(limit))
         async with self._connect() as db:
@@ -2011,13 +2152,14 @@ class StateManager:
     _RANK_CODES = "('SERP_RANK', 'IN_LOCAL_PACK', 'MAPS_RANK')"
     _CURRENT_CTE = f"""
     WITH latest AS (
-        SELECT o.* FROM observations o
-        JOIN (SELECT company_id, signal_code, MAX(observed_at) AS t
-              FROM observations GROUP BY company_id, signal_code) newest
-          ON newest.company_id = o.company_id
-         AND newest.signal_code = o.signal_code
-         AND newest.t = o.observed_at
-        WHERE o.signal_code NOT IN {_RANK_CODES}
+        SELECT {_OBS_COLUMNS} FROM (
+            SELECT *, ROW_NUMBER() OVER (
+                PARTITION BY company_id, signal_code
+                ORDER BY observed_at DESC, rowid DESC
+            ) AS rn
+            FROM observations
+            WHERE signal_code NOT IN {_RANK_CODES}
+        ) WHERE rn = 1
     ),
     ranked AS (
         SELECT o.* FROM observations o
@@ -2149,16 +2291,19 @@ class StateManager:
         async with self._connect() as db:
             db.row_factory = aiosqlite.Row
             await db.execute("BEGIN")
-            async with db.execute(base.format(columns="COUNT(*)"), params) as cursor:
-                size = (await cursor.fetchone())[0]
-            sql = base.format(columns="id, name, domain, website, industry, location")
-            sql += " ORDER BY LOWER(COALESCE(name, '')), id"
-            page_params = list(params)
-            if limit is not None:
-                sql += " LIMIT ? OFFSET ?"
-                page_params.extend([limit, offset])
-            async with db.execute(sql, page_params) as cursor:
-                return size, [dict(row) for row in await cursor.fetchall()]
+            try:
+                async with db.execute(base.format(columns="COUNT(*)"), params) as cursor:
+                    size = (await cursor.fetchone())[0]
+                sql = base.format(columns="id, name, domain, website, industry, location")
+                sql += " ORDER BY LOWER(COALESCE(name, '')), id"
+                page_params = list(params)
+                if limit is not None:
+                    sql += " LIMIT ? OFFSET ?"
+                    page_params.extend([limit, offset])
+                async with db.execute(sql, page_params) as cursor:
+                    return size, [dict(row) for row in await cursor.fetchall()]
+            finally:
+                await db.rollback()
 
     async def companies_needing_profile(
         self, limit: int = 100, stale_days: int = 90
@@ -2420,6 +2565,18 @@ class StateManager:
 
     # ── Custom AI Enrichment Columns & Values (v18) ──
 
+    @staticmethod
+    def _normalize_enrichment_col(r: dict) -> dict:
+        r["enabled"] = bool(r.get("enabled", 1))
+        r["use_web_search"] = bool(r.get("use_web_search", 0))
+        r["key"] = r.get("col_key") or ""
+        fmt = r.get("output_format") or r.get("value_type") or "text"
+        if fmt == "text" and r.get("value_type") and r["value_type"] != "text":
+            fmt = r["value_type"]
+        r["output_format"] = fmt
+        r["value_type"] = r.get("value_type") or fmt
+        return r
+
     async def add_enrichment_column(
         self,
         name: str,
@@ -2427,7 +2584,10 @@ class StateManager:
         value_type: str = "text",
         entity_type: str = "company",
         *,
+        key: str = "",
+        output_format: str = "",
         column_type: str = "",
+        use_web_search: bool = False,
         model: str = "",
         enabled: bool = True,
         column_id: str = "",
@@ -2437,24 +2597,33 @@ class StateManager:
         if not clean_name:
             raise ValueError("enrichment column name cannot be empty")
         eff_entity = (entity_type or "company").strip().lower()
-        eff_type = (column_type or value_type or "text").strip().lower()
+        eff_type = (output_format or column_type or value_type or "text").strip().lower()
+        clean_key = (key or "").strip()
         col_id = column_id or _new_id()
         async with self._connect() as db:
             await db.execute(
                 """INSERT INTO enrichment_columns
-                       (id, name, entity_type, prompt, value_type, model, enabled,
+                       (id, name, col_key, entity_type, prompt, value_type,
+                        output_format, use_web_search, model, enabled,
                         created_at, updated_at)
-                   VALUES (?, ?, ?, ?, ?, ?, ?, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)
+                   VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)
                    ON CONFLICT(entity_type, LOWER(name)) DO UPDATE SET
                        name = excluded.name,
+                       col_key = CASE WHEN excluded.col_key != ''
+                                      THEN excluded.col_key
+                                      ELSE enrichment_columns.col_key END,
                        prompt = excluded.prompt,
                        value_type = excluded.value_type,
+                       output_format = excluded.output_format,
+                       use_web_search = excluded.use_web_search,
                        model = excluded.model,
                        enabled = excluded.enabled,
                        updated_at = CURRENT_TIMESTAMP""",
                 (
-                    col_id, clean_name, eff_entity, (prompt or "").strip(),
-                    eff_type, (model or "").strip(), 1 if enabled else 0,
+                    col_id, clean_name, clean_key, eff_entity,
+                    (prompt or "").strip(), eff_type, eff_type,
+                    1 if use_web_search else 0, (model or "").strip(),
+                    1 if enabled else 0,
                 ),
             )
             await db.commit()
@@ -2486,10 +2655,10 @@ class StateManager:
         async with self._connect() as db:
             db.row_factory = aiosqlite.Row
             async with db.execute(sql, params) as cursor:
-                rows = [dict(r) for r in await cursor.fetchall()]
-                for r in rows:
-                    r["enabled"] = bool(r.get("enabled", 1))
-                return rows
+                return [
+                    self._normalize_enrichment_col(dict(r))
+                    for r in await cursor.fetchall()
+                ]
 
     async def delete_enrichment_column(self, column_id: str) -> bool:
         """Delete a custom enrichment column (by id or name) and its stored values."""
@@ -2602,8 +2771,9 @@ class StateManager:
         if entity_type:
             where.append("v.entity_type = ?")
             params.append(entity_type.strip().lower())
-        sql = """SELECT v.*, c.name AS column_name, c.value_type AS value_type,
-                        c.prompt AS column_prompt
+        sql = """SELECT v.*, c.name AS column_name, c.col_key AS col_key,
+                        c.value_type AS value_type, c.output_format AS output_format,
+                        c.use_web_search AS use_web_search, c.prompt AS column_prompt
                  FROM enrichment_values v
                  LEFT JOIN enrichment_columns c ON c.id = v.column_id"""
         if where:
@@ -2612,7 +2782,18 @@ class StateManager:
         async with self._connect() as db:
             db.row_factory = aiosqlite.Row
             async with db.execute(sql, params) as cursor:
-                return [dict(r) for r in await cursor.fetchall()]
+                rows = [dict(r) for r in await cursor.fetchall()]
+        for r in rows:
+            r["key"] = r.get("col_key") or ""
+            r["use_web_search"] = bool(r.get("use_web_search", 0))
+            fmt = r.get("output_format") or r.get("value_type") or "text"
+            if fmt == "text" and r.get("value_type") and r["value_type"] != "text":
+                fmt = r["value_type"]
+            r["output_format"] = fmt
+            r["value_type"] = r.get("value_type") or fmt
+            if r.get("entity_type") == "company" and "company_id" not in r:
+                r["company_id"] = r.get("entity_id") or ""
+        return rows
 
     async def prospect_exists(
         self, email: str = "", linkedin_url: str = "",
@@ -2645,16 +2826,20 @@ class StateManager:
         return False
 
     async def count_writable_prospects(self) -> int:
-        """New prospects the Writer can draft for (a deliverable email)."""
+        """New prospects the Writer can draft for (a deliverable, unsuppressed email)."""
         marks = ",".join("?" for _ in WRITABLE_EMAIL_STATUSES)
         async with self._connect() as db:
             async with db.execute(
-                f"""SELECT COUNT(*) FROM prospects p
+                f"""SELECT email FROM prospects p
                     WHERE status = 'new' AND email != ''
                       AND email_status IN ({marks}) AND NOT {_company_answered('p')}""",
                 WRITABLE_EMAIL_STATUSES,
             ) as cursor:
-                return (await cursor.fetchone())[0]
+                emails = [row[0] for row in await cursor.fetchall()]
+        if not emails:
+            return 0
+        suppressed = await self.suppressed_among(emails)
+        return sum(1 for e in emails if _norm(e) not in suppressed)
 
     async def count_recent_unusable_prospects(self, hours: int = 24) -> int:
         """New prospects found in the last ``hours`` that the Writer can't use."""
@@ -2840,12 +3025,13 @@ class StateManager:
         async with self._connect() as db:
             await db.execute(
                 """INSERT INTO conversations
-                   (id, prospect_id, campaign_id, channel, thread_json,
+                   (id, prospect_id, campaign_id, channel, mailbox_id, thread_json,
                     intent, stage, status, created_at, updated_at)
-                   VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+                   VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
                 (
                     convo.id, convo.prospect_id, convo.campaign_id,
-                    convo.channel, convo.thread_json(), convo.intent,
+                    convo.channel, getattr(convo, "mailbox_id", "") or "",
+                    convo.thread_json(), convo.intent,
                     convo.stage, convo.status, convo.created_at.isoformat(),
                     convo.updated_at.isoformat(),
                 ),
@@ -2863,6 +3049,7 @@ class StateManager:
                 if not row:
                     return None
                 d = dict(row)
+                d["mailbox_id"] = d.get("mailbox_id") or ""
                 d["thread"] = Conversation.thread_from_json(d.pop("thread_json"))
                 return Conversation(**d)
 
@@ -2876,6 +3063,7 @@ class StateManager:
                 convos = []
                 for r in rows:
                     d = dict(r)
+                    d["mailbox_id"] = d.get("mailbox_id") or ""
                     d["thread"] = Conversation.thread_from_json(d.pop("thread_json"))
                     convos.append(Conversation(**d))
                 return convos
@@ -3069,7 +3257,7 @@ class StateManager:
         sql = (
             f"SELECT {group_expr} AS {alias}, {self._USAGE_SUM} "
             f"FROM usage_events "
-            f"WHERE created_at >= datetime('now', ?) "
+            f"WHERE datetime(created_at) >= datetime('now', ?) "
             f"GROUP BY {alias} ORDER BY cost_usd DESC"
         )
         async with self._connect() as db:
@@ -3099,7 +3287,7 @@ class StateManager:
         sql = (
             f"SELECT date(created_at) AS day, {self._USAGE_SUM} "
             f"FROM usage_events "
-            f"WHERE created_at >= datetime('now', ?) "
+            f"WHERE datetime(created_at) >= datetime('now', ?) "
             f"GROUP BY day ORDER BY day ASC"
         )
         async with self._connect() as db:
@@ -3114,8 +3302,8 @@ class StateManager:
             db.row_factory = aiosqlite.Row
             for label, where in (
                 ("today", "date(created_at) = date('now')"),
-                ("week", "created_at >= datetime('now', '-7 days')"),
-                ("month", "created_at >= datetime('now', '-30 days')"),
+                ("week", "datetime(created_at) >= datetime('now', '-7 days')"),
+                ("month", "datetime(created_at) >= datetime('now', '-30 days')"),
             ):
                 async with db.execute(
                     f"SELECT {self._USAGE_SUM} FROM usage_events WHERE {where}"

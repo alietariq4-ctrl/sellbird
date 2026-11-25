@@ -3,6 +3,7 @@
 import asyncio
 import dataclasses
 import inspect
+import io
 import ipaddress
 import json
 import logging
@@ -19,10 +20,11 @@ import uuid
 from collections.abc import Sequence
 from datetime import date, datetime, timezone
 from pathlib import Path
+from urllib.parse import urlparse
 
 import aiosqlite
 import yaml
-from dotenv import load_dotenv
+from dotenv import dotenv_values, load_dotenv
 from fastapi import APIRouter, FastAPI, Request
 from fastapi.responses import (
     HTMLResponse, JSONResponse, PlainTextResponse, Response,
@@ -31,7 +33,23 @@ from pydantic import BaseModel, Field
 from starlette.middleware import Middleware
 from starlette.routing import Mount
 
+from sellbird.logsafety import RedactSecrets, quiet_http_loggers
+
 logger = logging.getLogger("sellbird.dashboard")
+
+
+def _attach_secret_redaction() -> None:
+    """Attach RedactSecrets filter to dashboard & root logger handlers."""
+    quiet_http_loggers()
+    for target in (logger, logging.getLogger(), logging.getLogger("uvicorn.error"), logging.getLogger("uvicorn.access")):
+        if not any(isinstance(f, RedactSecrets) for f in target.filters):
+            target.addFilter(RedactSecrets())
+        for handler in getattr(target, "handlers", ()):
+            if not any(isinstance(f, RedactSecrets) for f in handler.filters):
+                handler.addFilter(RedactSecrets())
+
+
+_attach_secret_redaction()
 
 from sellbird import agent_policy  # noqa: E402
 from sellbird import dashboard_auth as auth  # noqa: E402
@@ -39,7 +57,7 @@ from sellbird.paths import PACKAGE_ROOT, PROJECT_ROOT, is_checkout  # noqa: E402
 from sellbird import storage  # noqa: E402
 from sellbird.pidfile import LOCK_FILE, loop_lock_held, pid_alive  # noqa: E402
 from sellbird.textio import read_user_text  # noqa: E402
-from sellbird.workspace_home import NotOnHosted, current_home, default_home, use_home  # noqa: E402
+from sellbird.workspace_home import NotOnHosted, current_home, default_home, require_self_hosted, use_home  # noqa: E402
 DB_PATH = PROJECT_ROOT / "data" / "sellbird.db"
 ENV_FILE = PROJECT_ROOT / ".env"
 CONFIG_FILE = PROJECT_ROOT / "sellbird.yaml"
@@ -171,7 +189,9 @@ async def _not_on_hosted(request: Request, exc: NotOnHosted):
 
 # Sellbird process tracking
 _sellbird_process: subprocess.Popen | None = None
+_sellbird_process_new_group: bool = False
 _sellbird_started_at: datetime | None = None
+_sellbird_lock = asyncio.Lock()
 _env_lock = asyncio.Lock()
 
 
@@ -206,16 +226,22 @@ def _mask_key(key: str) -> str:
 
 
 def _read_env_file() -> dict[str, str]:
-    """Read .env file and return as dict."""
+    """Read .env file and return as dict (quote/comment/export-aware)."""
     env_file = _env_file()
-    env_vars = {}
-    if env_file.exists():
-        for line in read_user_text(env_file).splitlines():
-            line = line.strip()
-            if line and not line.startswith("#") and "=" in line:
-                key, _, value = line.partition("=")
-                env_vars[key.strip()] = value.strip()
-    return env_vars
+    if not env_file.exists():
+        return {}
+    raw = dotenv_values(stream=io.StringIO(read_user_text(env_file)))
+    return {k: (v if v is not None else "") for k, v in raw.items() if k}
+
+
+def _format_env_value(val: str) -> str:
+    """Format a .env value, quoting if it contains comments, whitespace, quotes, or backslashes."""
+    if val == "":
+        return ""
+    if any(ch in val for ch in ("#", " ", "\t", '"', "'", "\\")):
+        escaped = val.replace("\\", "\\\\").replace('"', '\\"')
+        return f'"{escaped}"'
+    return val
 
 
 def _env_key(line: str) -> str:
@@ -252,11 +278,11 @@ def _write_env_file(updates: dict[str, str]):
         if key in updates:
             if key in written:
                 continue  # a later duplicate would override the new value
-            out.append(f"{key}={updates[key]}")
+            out.append(f"{key}={_format_env_value(updates[key])}")
             written.add(key)
         else:
             out.append(line)
-    out += [f"{k}={v}" for k, v in updates.items() if k not in written]
+    out += [f"{k}={_format_env_value(v)}" for k, v in updates.items() if k not in written]
 
     env_file.parent.mkdir(parents=True, exist_ok=True)
     fd, tmp = tempfile.mkstemp(prefix=".env.", suffix=".tmp", dir=str(env_file.parent))
@@ -325,7 +351,7 @@ async def get_setup_status():
 
     # 2. Env file
     env_vars = _read_env_file()
-    env_exists = env_file.exists() and bool(env_vars)
+    env_exists = env_file.exists() and any(str(v or "").strip() for v in env_vars.values())
     checks.append({
         "id": "env_file", "label": "Environment file (.env)",
         "done": env_exists,
@@ -351,7 +377,7 @@ async def get_setup_status():
         provider_done = _has("SMTP_HOST", "SMTP_USERNAME", "SMTP_PASSWORD")
         provider_help = "Enter your SMTP host, username, and password in Settings."
     else:
-        instantly_key = env_vars.get("INSTANTLY_API_KEY", "") or os.getenv("INSTANTLY_API_KEY", "")
+        instantly_key = (env_vars.get("INSTANTLY_API_KEY", "") or os.getenv("INSTANTLY_API_KEY", "")).strip()
         provider_done = bool(instantly_key) and instantly_key != "your_instantly_api_key_here"
         provider_help = "Enter your Instantly API key in Settings."
     checks.append({
@@ -399,21 +425,17 @@ async def get_setup_status():
     })
 
     # 7. LinkedIn (optional)
-    linkedin_email = env_vars.get("LINKEDIN_EMAIL", "") or os.getenv("LINKEDIN_EMAIL", "")
-    linkedin_pass = env_vars.get("LINKEDIN_PASSWORD", "") or os.getenv("LINKEDIN_PASSWORD", "")
     checks.append({
         "id": "linkedin", "label": "LinkedIn credentials",
-        "done": bool(linkedin_email) and bool(linkedin_pass),
+        "done": _has("LINKEDIN_EMAIL", "LINKEDIN_PASSWORD"),
         "required": False,
         "help": "Optional. Enter your LinkedIn credentials in Settings to enable LinkedIn prospecting.",
     })
 
     # 8. Cloudflare (optional)
-    cf_id = env_vars.get("CLOUDFLARE_ACCOUNT_ID", "") or os.getenv("CLOUDFLARE_ACCOUNT_ID", "")
-    cf_token = env_vars.get("CLOUDFLARE_API_TOKEN", "") or os.getenv("CLOUDFLARE_API_TOKEN", "")
     checks.append({
         "id": "cloudflare", "label": "Cloudflare deep crawling",
-        "done": bool(cf_id) and bool(cf_token),
+        "done": _has("CLOUDFLARE_ACCOUNT_ID", "CLOUDFLARE_API_TOKEN"),
         "required": False,
         "help": "Optional. For JavaScript-rendered website crawling during training.",
     })
@@ -567,6 +589,7 @@ async def get_settings():
 @app.post("/api/settings/env")
 async def save_env_settings(request: Request):
     """Save environment variables to .env file."""
+    require_self_hosted("env_settings")
     try:
         data = await request.json()
     except Exception:
@@ -865,12 +888,17 @@ async def dismiss_proposed_offer():
 
 @app.post("/api/settings/test-instantly")
 async def test_instantly(request: Request):
-    """Test an Instantly API key."""
+    """Test an Instantly API key (falls back to the saved key when empty)."""
     try:
         data = await request.json()
     except Exception:
         data = {}
-    api_key = str(data.get("api_key", "") or "")
+    api_key = str((data.get("api_key") if isinstance(data, dict) else "") or "").strip()
+    if not api_key:
+        env_val = _read_env_file().get("INSTANTLY_API_KEY", "")
+        if not env_val and not (_in_custom_home() and current_home().hosted):
+            env_val = os.getenv("INSTANTLY_API_KEY", "")
+        api_key = env_val.strip()
     if not api_key:
         return {"success": False, "message": "No API key provided."}
     try:
@@ -1026,9 +1054,34 @@ async def get_feedback(entity_type: str, entity_id: str):
 # ── Sellbird Controls ──
 
 
+def _sellbird_needs_setup() -> bool:
+    """Check whether Sellbird needs setup using resolved workspace paths."""
+    if (_in_custom_home()
+            or Path(ENV_FILE) != PROJECT_ROOT / ".env"
+            or Path(CONFIG_FILE) != PROJECT_ROOT / "sellbird.yaml"):
+        if not _env_file().exists():
+            return True
+        config_file = _resolve_config_file()
+        if not config_file.exists():
+            return True
+        try:
+            cfg = yaml.safe_load(read_user_text(config_file))
+            if not isinstance(cfg, dict):
+                return True
+            company = (cfg.get("persona") or {}).get("company", "")
+            if company in ("Your Company", ""):
+                return True
+        except Exception:
+            return True
+        return False
+    from sellbird.main import _needs_setup
+    return bool(_needs_setup())
+
+
 @app.get("/api/sellbird/status")
 async def get_sellbird_status():
     """Check if Sellbird is currently running."""
+    require_self_hosted("local_ai_loop")
     pid = _check_sellbird_pid()
     started = _sellbird_started_at.isoformat() if _sellbird_started_at else None
     try:
@@ -1044,68 +1097,92 @@ async def get_sellbird_status():
 @app.post("/api/sellbird/start")
 async def start_sellbird():
     """Start Sellbird's heartbeat loop as a subprocess."""
-    global _sellbird_process, _sellbird_started_at
+    global _sellbird_process, _sellbird_process_new_group, _sellbird_started_at
+    require_self_hosted("local_ai_loop")
 
-    if _check_sellbird_pid():
-        return {"success": False, "message": "Sellbird is already running."}
-    from sellbird.main import _needs_setup
-    if _needs_setup():
-        return {"success": False,
-                "message": "Sellbird isn't set up yet. Run `sellbird setup` in a terminal first."}
+    async with _sellbird_lock:
+        if _check_sellbird_pid():
+            return {"success": False, "message": "Sellbird is already running."}
+        if _sellbird_needs_setup():
+            return {"success": False,
+                    "message": "Sellbird isn't set up yet. Run `sellbird setup` in a terminal first."}
 
-    data_dir = _data_dir()
-    log_file = _log_file()
-    data_dir.mkdir(parents=True, exist_ok=True)
-    log_file.parent.mkdir(parents=True, exist_ok=True)
+        data_dir = _data_dir()
+        log_file = _log_file()
+        data_dir.mkdir(parents=True, exist_ok=True)
+        log_file.parent.mkdir(parents=True, exist_ok=True)
 
-    # Clear any stale stop sentinel before launching a new loop.
-    (data_dir / "sellbird.stop").unlink(missing_ok=True)
+        # Clear any stale stop sentinel before launching a new loop.
+        (data_dir / "sellbird.stop").unlink(missing_ok=True)
 
-    # The native Claude CLI installer puts claude in ~/.local/bin without
-    # always adding it to PATH; the heartbeat can't think without it.
-    env = os.environ.copy()
-    local_bin = Path.home() / ".local" / "bin"
-    if not shutil.which("claude") and local_bin.is_dir():
-        env["PATH"] = str(local_bin) + os.pathsep + env.get("PATH", "")
+        # The native Claude CLI installer puts claude in ~/.local/bin without
+        # always adding it to PATH; the heartbeat can't think without it.
+        env = os.environ.copy()
+        env["SELLBIRD_HOME"] = str(_home_root())
+        env["PYTHONUNBUFFERED"] = "1"
+        env["PYTHONSAFEPATH"] = "1"
+        local_bin = Path.home() / ".local" / "bin"
+        if not shutil.which("claude") and local_bin.is_dir():
+            env["PATH"] = str(local_bin) + os.pathsep + env.get("PATH", "")
 
-    popen_kwargs: dict = {}
-    if sys.platform == "win32":
-        popen_kwargs["creationflags"] = (
-            getattr(subprocess, "CREATE_NEW_PROCESS_GROUP", 0)
-            | getattr(subprocess, "CREATE_NO_WINDOW", 0)
-        )
-    else:
-        popen_kwargs["start_new_session"] = True
-
-    try:
-        log_handle = open(log_file, "a", encoding="utf-8")
-        try:
-            _sellbird_process = subprocess.Popen(
-                [sys.executable, "-m", "sellbird", "run"],
-                cwd=str(_home_root()),
-                stdin=subprocess.DEVNULL,
-                stdout=log_handle,
-                stderr=log_handle,
-                env=env,
-                **popen_kwargs,
+        popen_kwargs: dict = {}
+        new_group = False
+        if sys.platform == "win32":
+            new_group_flag = getattr(subprocess, "CREATE_NEW_PROCESS_GROUP", 0)
+            popen_kwargs["creationflags"] = (
+                new_group_flag
+                | getattr(subprocess, "CREATE_NO_WINDOW", 0)
             )
-        finally:
-            # Child holds its own copies of the fds; don't leak ours.
-            log_handle.close()
-    except Exception as e:
-        logger.warning("Failed to start Sellbird: %s", e)
-        return {"success": False, "message": f"Failed to start Sellbird: {e}"}
-    _sellbird_started_at = datetime.now()
-    # The loop writes its own PID file once it holds the loop lock. Writing
-    # the child's PID here would overwrite a running loop's record if this
-    # child then finds the lock taken and exits.
-    return {"success": True, "pid": _sellbird_process.pid}
+            new_group = bool(new_group_flag)
+        else:
+            popen_kwargs["start_new_session"] = True
+
+        try:
+            log_handle = open(log_file, "a", encoding="utf-8")
+            try:
+                proc = subprocess.Popen(
+                    [sys.executable, "-m", "sellbird", "run"],
+                    cwd=str(_home_root()),
+                    stdin=subprocess.DEVNULL,
+                    stdout=log_handle,
+                    stderr=log_handle,
+                    env=env,
+                    **popen_kwargs,
+                )
+            finally:
+                # Child holds its own copies of the fds; don't leak ours.
+                log_handle.close()
+        except Exception as e:
+            logger.warning("Failed to start Sellbird: %s", e)
+            return {"success": False, "message": f"Failed to start Sellbird: {e}"}
+
+        # Wait briefly and verify the child didn't exit immediately on startup.
+        await asyncio.sleep(0.35)
+        rc = proc.poll()
+        if rc is not None:
+            _sellbird_process = None
+            _sellbird_process_new_group = False
+            _sellbird_started_at = None
+            return {"success": False,
+                    "message": f"Sellbird exited immediately (code {rc}). Check the logs."}
+
+        try:
+            setattr(proc, "_sellbird_new_group", new_group)
+        except Exception:
+            pass
+        _sellbird_process = proc
+        _sellbird_started_at = datetime.now()
+        # The loop writes its own PID file once it holds the loop lock. Writing
+        # the child's PID here would overwrite a running loop's record if this
+        # child then finds the lock taken and exits.
+        return {"success": True, "pid": _sellbird_process.pid}
 
 
 @app.post("/api/sellbird/stop")
 async def stop_sellbird():
     """Stop the Sellbird subprocess."""
-    global _sellbird_process, _sellbird_started_at
+    global _sellbird_process, _sellbird_process_new_group, _sellbird_started_at
+    require_self_hosted("local_ai_loop")
 
     pid = _check_sellbird_pid()
     if not pid:
@@ -1123,13 +1200,21 @@ async def stop_sellbird():
     stop_file = _data_dir() / "sellbird.stop"
     if sys.platform == "win32":
         # On Windows os.kill(pid, signal.SIGTERM) calls TerminateProcess immediately,
-        # which can cut off active SMTP sends mid-flight. Write sellbird.stop first
-        # so the loop exits cleanly, and only force-terminate after 10s!
+        # which can cut off active SMTP sends mid-flight. Write sellbird.stop and
+        # send CTRL_BREAK_EVENT first (when in a new process group), then fall back
+        # to TerminateProcess / taskkill after waiting.
         try:
             stop_file.parent.mkdir(parents=True, exist_ok=True)
             stop_file.write_text(str(pid), encoding="utf-8")
         except OSError as e:
             logger.warning("Couldn't write stop sentinel %s: %s", stop_file, e)
+
+        own_new_group = bool(getattr(own, "_sellbird_new_group", False) or _sellbird_process_new_group)
+        if own is not None and own_new_group and hasattr(signal, "CTRL_BREAK_EVENT"):
+            try:
+                os.kill(pid, signal.CTRL_BREAK_EVENT)
+            except OSError as e:
+                logger.warning("Couldn't send CTRL_BREAK_EVENT to Sellbird (pid %s): %s", pid, e)
 
         for _ in range(20):
             if not alive():
@@ -1141,6 +1226,16 @@ async def stop_sellbird():
             except OSError as e:
                 logger.warning("Couldn't signal Sellbird (pid %s): %s", pid, e)
             await asyncio.sleep(0.5)
+            if alive():
+                try:
+                    subprocess.run(
+                        ["taskkill", "/PID", str(pid), "/T", "/F"],
+                        capture_output=True,
+                        timeout=5,
+                    )
+                except Exception as e:
+                    logger.warning("taskkill failed for Sellbird (pid %s): %s", pid, e)
+                await asyncio.sleep(0.3)
     else:
         try:
             os.kill(pid, signal.SIGTERM)
@@ -1170,6 +1265,7 @@ async def stop_sellbird():
                 "message": f"Couldn't stop Sellbird (pid {pid}). Stop it where it was started."}
 
     _sellbird_process = None
+    _sellbird_process_new_group = False
     _sellbird_started_at = None
     _pid_file().unlink(missing_ok=True)
 
@@ -1179,6 +1275,7 @@ async def stop_sellbird():
 @app.get("/api/sellbird/logs")
 async def get_sellbird_logs():
     """Get recent log lines."""
+    require_self_hosted("process_logs")
     log_file = _log_file()
     if not log_file.exists():
         return {"lines": []}
@@ -1526,8 +1623,13 @@ async def get_usage():
 
 
 @app.get("/api/prospects")
-async def get_prospects():
+async def get_prospects(prospect_id: str = ""):
     rows = await query_db("SELECT * FROM prospects ORDER BY created_at DESC LIMIT 200")
+    pid = (prospect_id or "").strip()
+    if pid and all(r.get("id") != pid for r in rows):
+        extra = await query_db("SELECT * FROM prospects WHERE id = ?", (pid,))
+        if extra:
+            rows.insert(0, extra[0])
     # Someone whose opt-out was undone keeps a way to see what happened.
     undone = {r["pid"] for r in await query_db(
         "SELECT DISTINCT json_extract(details_json, '$.prospect_id') AS pid FROM actions "
@@ -2552,6 +2654,7 @@ async def start_discovery(request: Request):
     would just time out. Progress shows up in the run log.
     """
     global _discovery_task, _discovery_report
+    require_self_hosted("local_discovery")
 
     if _discovery_task and not _discovery_task.done():
         return JSONResponse({"success": False, "message": "a run is already going"},
@@ -2614,6 +2717,7 @@ async def start_profile():
     Free and model-free, so there is nothing to estimate and no cap to set.
     """
     global _discovery_task, _discovery_report
+    require_self_hosted("local_discovery")
 
     if _discovery_task and not _discovery_task.done():
         return JSONResponse({"success": False, "message": "a run is already going"},
@@ -3571,11 +3675,123 @@ _PROVIDER_DEFAULTS: dict[str, tuple[str, str]] = {
 _ENV_VAR_RE = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*$")
 _ROLE_NAME_RE = re.compile(r"^[a-z_][a-z0-9_-]{0,39}$")
 
+_ALLOWED_BRAIN_ENV_VARS = frozenset({
+    "OPENROUTER_API_KEY",
+    "GEMINI_API_KEY",
+    "OPENAI_API_KEY",
+    "XAI_API_KEY",
+    "DEEPSEEK_API_KEY",
+    "GROQ_API_KEY",
+    "MISTRAL_API_KEY",
+    "TOGETHER_API_KEY",
+    "FIREWORKS_API_KEY",
+    "CEREBRAS_API_KEY",
+    "ANTHROPIC_API_KEY",
+})
+
+_LOCAL_INFERENCE_PROVIDERS = frozenset({
+    "ollama", "lmstudio", "vllm", "local", "openai_compat",
+})
+
+_VALID_CHAIN_KEYS = frozenset({
+    "provider", "model", "base_url", "api_key_env", "extra_headers",
+    "timeout", "max_retries", "json_mode", "reasoning_effort",
+    "max_output_tokens", "temperature",
+})
+
+_VALID_PROFILE_KEYS = frozenset({
+    "provider", "model", "base_url", "max_output_tokens",
+    "temperature", "json_mode", "reasoning_effort",
+})
+
+
+def _is_loopback_url(url: str) -> bool:
+    """True when URL points strictly to a loopback host (127.0.0.0/8, ::1, localhost)."""
+    try:
+        parsed = urlparse(url)
+    except ValueError:
+        return False
+    host = (parsed.hostname or "").rstrip(".").lower()
+    if not host:
+        return False
+    if host == "localhost" or host.endswith(".localhost"):
+        return True
+    try:
+        ip = ipaddress.ip_address(host)
+        if isinstance(ip, ipaddress.IPv6Address) and ip.ipv4_mapped:
+            ip = ip.ipv4_mapped
+        return ip.is_loopback
+    except ValueError:
+        return False
+
+
+def _validate_brain_base_url(base_url: str, provider: str = "") -> str:
+    """Reject non-HTTP(S), cloud metadata, private/link-local targets, and non-local loopback."""
+    if not base_url:
+        return ""
+    try:
+        parsed = urlparse(base_url)
+    except ValueError as exc:
+        raise ValueError(f"Invalid base_url: {base_url!r}") from exc
+    if parsed.scheme.lower() not in ("http", "https"):
+        raise ValueError(f"base_url for {provider or 'provider'!r} must start with http:// or https://.")
+    if parsed.username or parsed.password:
+        raise ValueError("base_url must not contain embedded credentials.")
+    host = (parsed.hostname or "").rstrip(".").lower()
+    if not host or "%" in host:
+        raise ValueError("base_url must include a valid hostname.")
+    try:
+        port = parsed.port
+    except ValueError as exc:
+        raise ValueError("base_url has an invalid port.") from exc
+    if port is not None and not (1 <= port <= 65535):
+        raise ValueError("base_url port must be between 1 and 65535.")
+
+    if host in ("metadata.google.internal", "metadata", "169.254.169.254", "fd00:ec2::254"):
+        raise ValueError("Cloud metadata endpoints are not permitted in base_url.")
+
+    is_local_prov = (provider or "").strip().lower() in _LOCAL_INFERENCE_PROVIDERS
+    if host == "localhost" or host.endswith(".localhost"):
+        if not is_local_prov:
+            raise ValueError(f"Loopback base_url is only allowed for local inference providers, not {provider!r}.")
+        return base_url
+
+    try:
+        ip = ipaddress.ip_address(host)
+    except ValueError:
+        ip = None
+
+    if ip is not None:
+        if isinstance(ip, ipaddress.IPv6Address) and ip.ipv4_mapped:
+            ip = ip.ipv4_mapped
+        if ip.is_link_local or ip.is_multicast or ip.is_reserved or ip.is_unspecified:
+            raise ValueError(f"Non-routable or metadata IP address {host!r} is not permitted in base_url.")
+        if ip.is_loopback:
+            if not is_local_prov:
+                raise ValueError(f"Loopback base_url is only allowed for local inference providers, not {provider!r}.")
+            return base_url
+        if ip.is_private or not ip.is_global:
+            raise ValueError(f"Private IP address {host!r} is not permitted in base_url.")
+
+    return base_url
+
+
+def _validate_api_key_env(api_key_env: str) -> str:
+    """Restrict api_key_env to the explicit allowlist of known AI provider env vars."""
+    if not api_key_env:
+        return ""
+    if not _ENV_VAR_RE.match(api_key_env) or api_key_env not in _ALLOWED_BRAIN_ENV_VARS:
+        raise ValueError(
+            f"api_key_env {api_key_env!r} is not in the allowed AI provider env var list."
+        )
+    return api_key_env
+
 
 class _EnrichmentColumnCreate(BaseModel):
     model_config = {"extra": "ignore"}
 
     name: str = Field(..., min_length=1, max_length=120)
+    key: str = Field(default="", max_length=120)
     prompt: str = Field(..., min_length=1, max_length=4000)
     use_web_search: bool = False
     output_format: str = Field(default="text", max_length=40)
@@ -3591,53 +3807,59 @@ def _normalize_chain_entry(item: dict) -> dict:
     if len(provider) > 80 or len(model) > 200:
         raise ValueError("Chain provider or model name is too long.")
 
-    base_url = str(item.get("base_url") or "").strip()
-    if base_url and not base_url.startswith(("http://", "https://")):
-        raise ValueError(f"base_url for {provider!r} must start with http:// or https://.")
-
-    api_key_env = str(item.get("api_key_env") or "").strip()
-    if api_key_env and not _ENV_VAR_RE.match(api_key_env):
-        raise ValueError(f"api_key_env {api_key_env!r} must be a valid environment variable name.")
+    base_url = _validate_brain_base_url(str(item.get("base_url") or "").strip(), provider)
+    api_key_env = _validate_api_key_env(str(item.get("api_key_env") or "").strip())
 
     out: dict = {"provider": provider, "model": model}
     if base_url:
         out["base_url"] = base_url
     if api_key_env:
         out["api_key_env"] = api_key_env
-    for extra_key in ("timeout_s", "max_tokens", "temperature", "headers",
-                      "input_cost_per_1m", "output_cost_per_1m", "name"):
-        if extra_key in item and item[extra_key] is not None:
-            out[extra_key] = item[extra_key]
+
+    # Map legacy/UI aliases into harvey_brain ChainEntry keys and skip unsupported keys.
+    mapped = dict(item)
+    if "max_output_tokens" not in mapped and mapped.get("max_tokens") is not None:
+        mapped["max_output_tokens"] = mapped["max_tokens"]
+    if "timeout" not in mapped and mapped.get("timeout_s") is not None:
+        mapped["timeout"] = mapped["timeout_s"]
+    if "extra_headers" not in mapped and mapped.get("headers") is not None:
+        mapped["extra_headers"] = mapped["headers"]
+
+    for key in ("extra_headers", "timeout", "max_retries", "json_mode",
+                "reasoning_effort", "max_output_tokens", "temperature"):
+        if key in mapped and mapped[key] is not None:
+            out[key] = mapped[key]
     return out
 
 
-def _normalize_profile_entry(role: str, val) -> dict | list | str | None:
+def _normalize_profile_entry(role: str, val) -> dict | bool | None:
     if val is None:
         return None
+    if isinstance(val, bool):
+        return False if val is False else None
     if isinstance(val, str):
         s = val.strip()
-        return s if s else None
+        return {"model": s} if s else None
     if isinstance(val, list):
-        cleaned = [_normalize_chain_entry(x) for x in val if isinstance(x, dict)
-                   and (str(x.get("provider") or "").strip() or str(x.get("model") or "").strip())]
-        return cleaned or None
+        for x in val:
+            if isinstance(x, dict) and (str(x.get("provider") or "").strip() or str(x.get("model") or "").strip()):
+                return _normalize_profile_entry(role, x)
+        return None
     if isinstance(val, dict):
+        source = val
         if isinstance(val.get("chain"), list):
-            chain_items = [
-                _normalize_chain_entry(x) for x in val["chain"]
-                if isinstance(x, dict) and (str(x.get("provider") or "").strip()
-                                            or str(x.get("model") or "").strip())
-            ]
-            if not chain_items:
+            first = next(
+                (x for x in val["chain"]
+                 if isinstance(x, dict) and (str(x.get("provider") or "").strip()
+                                             or str(x.get("model") or "").strip())),
+                None,
+            )
+            if first is None:
                 return None
-            out_chain: dict = {"chain": chain_items}
-            for k in ("temperature", "max_tokens", "timeout_s"):
-                if k in val and val[k] is not None:
-                    out_chain[k] = val[k]
-            return out_chain
+            source = {**val, **first}
 
-        provider = str(val.get("provider") or "").strip()
-        model = str(val.get("model") or "").strip()
+        provider = str(source.get("provider") or "").strip()
+        model = str(source.get("model") or "").strip()
         if not provider and not model:
             return None
         if not model:
@@ -3645,19 +3867,17 @@ def _normalize_profile_entry(role: str, val) -> dict | list | str | None:
         out: dict = {"model": model}
         if provider:
             out["provider"] = provider
-        base_url = str(val.get("base_url") or "").strip()
+        base_url = _validate_brain_base_url(str(source.get("base_url") or "").strip(), provider)
         if base_url:
-            if not base_url.startswith(("http://", "https://")):
-                raise ValueError(f"Profile {role!r} base_url must start with http:// or https://.")
             out["base_url"] = base_url
-        api_key_env = str(val.get("api_key_env") or "").strip()
-        if api_key_env:
-            if not _ENV_VAR_RE.match(api_key_env):
-                raise ValueError(f"Profile {role!r} api_key_env is invalid.")
-            out["api_key_env"] = api_key_env
-        for k in ("temperature", "max_tokens", "timeout_s"):
-            if k in val and val[k] is not None:
-                out[k] = val[k]
+
+        mapped = dict(source)
+        if "max_output_tokens" not in mapped and mapped.get("max_tokens") is not None:
+            mapped["max_output_tokens"] = mapped["max_tokens"]
+
+        for key in ("max_output_tokens", "temperature", "json_mode", "reasoning_effort"):
+            if key in mapped and mapped[key] is not None:
+                out[key] = mapped[key]
         return out
     raise ValueError(f"Invalid profile configuration for role {role!r}.")
 
@@ -3850,10 +4070,15 @@ async def get_brain_config():
         "CEREBRAS_API_KEY", "XAI_API_KEY",
     )
     brain = _active_brain()
+    spend_today = await _spend_today_usd()
     return {
         "exists": path.exists(),
         "file": path.name,
         "budget": {"max_usd_per_day": round(max_usd, 2)},
+        "spend": {
+            "spend_today_usd": spend_today,
+            "max_daily_usd": round(max_usd, 2),
+        },
         "chain": chain,
         "profiles": profiles,
         "roles": list(BRAIN_ROLES),
@@ -3877,54 +4102,76 @@ async def save_brain_config(request: Request):
         return JSONResponse({"success": False, "message": "Request body must be a JSON object."},
                             status_code=400)
 
-    budget_in = body.get("budget") if isinstance(body.get("budget"), dict) else {}
-    raw_usd = budget_in.get("max_usd_per_day", body.get("max_usd_per_day", 5.0))
-    try:
-        if isinstance(raw_usd, bool):
-            raise ValueError("max_usd_per_day must be a number")
-        max_usd = float(raw_usd)
-    except (TypeError, ValueError):
-        return JSONResponse({"success": False, "message": "budget.max_usd_per_day must be a number."},
-                            status_code=400)
-    if max_usd != max_usd or max_usd < 0 or max_usd > 100000:
-        return JSONResponse({"success": False, "message": "budget.max_usd_per_day must be between 0 and 100000."},
-                            status_code=400)
-
-    chain_in = body.get("chain")
-    if not isinstance(chain_in, list) or not chain_in:
-        return JSONResponse({"success": False, "message": "chain must be a non-empty list of providers."},
-                            status_code=400)
-    if len(chain_in) > 20:
-        return JSONResponse({"success": False, "message": "chain cannot exceed 20 entries."},
-                            status_code=400)
-
-    try:
-        chain = [_normalize_chain_entry(item) for item in chain_in]
-    except ValueError as exc:
-        return JSONResponse({"success": False, "message": str(exc)}, status_code=400)
-
-    profiles_in = body.get("profiles") if isinstance(body.get("profiles"), dict) else {}
-    profiles: dict = {}
-    try:
-        for role_key, role_val in profiles_in.items():
-            role = str(role_key or "").strip().lower()
-            if not _ROLE_NAME_RE.match(role):
-                raise ValueError(f"Invalid role name: {role_key!r}")
-            norm = _normalize_profile_entry(role, role_val)
-            if norm is not None:
-                profiles[role] = norm
-    except ValueError as exc:
-        return JSONResponse({"success": False, "message": str(exc)}, status_code=400)
-
     existing = _read_brain_yaml_raw()
+    existing_budget = existing.get("budget") if isinstance(existing.get("budget"), dict) else {}
+
+    if "budget" in body or "max_usd_per_day" in body:
+        budget_in = body.get("budget") if isinstance(body.get("budget"), dict) else {}
+        raw_usd = budget_in.get("max_usd_per_day", body.get("max_usd_per_day", 5.0))
+        try:
+            if isinstance(raw_usd, bool):
+                raise ValueError("max_usd_per_day must be a number")
+            max_usd = float(raw_usd)
+        except (TypeError, ValueError):
+            return JSONResponse({"success": False, "message": "budget.max_usd_per_day must be a number."},
+                                status_code=400)
+        if max_usd != max_usd or max_usd < 0 or max_usd > 100000:
+            return JSONResponse({"success": False, "message": "budget.max_usd_per_day must be between 0 and 100000."},
+                                status_code=400)
+    else:
+        try:
+            max_usd = float(existing_budget.get("max_usd_per_day", _active_max_daily_usd()))
+        except (TypeError, ValueError):
+            max_usd = _active_max_daily_usd()
+
+    if "chain" in body:
+        chain_in = body.get("chain")
+        if not isinstance(chain_in, list) or not chain_in:
+            return JSONResponse({"success": False, "message": "chain must be a non-empty list of providers."},
+                                status_code=400)
+        if len(chain_in) > 20:
+            return JSONResponse({"success": False, "message": "chain cannot exceed 20 entries."},
+                                status_code=400)
+        try:
+            chain = [_normalize_chain_entry(item) for item in chain_in]
+        except ValueError as exc:
+            return JSONResponse({"success": False, "message": str(exc)}, status_code=400)
+    else:
+        existing_chain = existing.get("chain")
+        if not isinstance(existing_chain, list) or not existing_chain:
+            return JSONResponse({"success": False, "message": "chain must be a non-empty list of providers."},
+                                status_code=400)
+        try:
+            chain = [_normalize_chain_entry(item) for item in existing_chain]
+        except ValueError as exc:
+            return JSONResponse({"success": False, "message": str(exc)}, status_code=400)
+
+    profiles_present = "profiles" in body
+    profiles_raw = body.get("profiles") if profiles_present else existing.get("profiles")
+    profiles: dict | bool = {}
+    if profiles_raw is False:
+        profiles = False
+    elif isinstance(profiles_raw, dict):
+        try:
+            for role_key, role_val in profiles_raw.items():
+                role = str(role_key or "").strip().lower()
+                if not _ROLE_NAME_RE.match(role):
+                    raise ValueError(f"Invalid role name: {role_key!r}")
+                norm = _normalize_profile_entry(role, role_val)
+                if norm is not None:
+                    profiles[role] = norm
+        except ValueError as exc:
+            return JSONResponse({"success": False, "message": str(exc)}, status_code=400)
+
     doc: dict = {}
     for k, v in existing.items():
         if k not in ("budget", "chain", "profiles"):
             doc[k] = v
-    existing_budget = existing.get("budget") if isinstance(existing.get("budget"), dict) else {}
     doc["budget"] = {**existing_budget, "max_usd_per_day": round(max_usd, 4)}
     doc["chain"] = chain
-    if profiles:
+    if profiles is False:
+        doc["profiles"] = False
+    elif profiles:
         doc["profiles"] = profiles
 
     try:
@@ -3939,8 +4186,12 @@ async def save_brain_config(request: Request):
     try:
         _write_yaml_atomic(target, validated_doc)
         activate_flag = body.get("activate_router")
-        if isinstance(activate_flag, bool):
-            _sync_router_in_sellbird_yaml(activate_flag, max_usd=max_usd)
+        if isinstance(activate_flag, bool) or "budget" in body or "max_usd_per_day" in body:
+            if _resolve_config_file().exists():
+                _sync_router_in_sellbird_yaml(
+                    activate_flag if isinstance(activate_flag, bool) else None,
+                    max_usd=max_usd,
+                )
     except ValueError as exc:
         return JSONResponse({"success": False, "message": str(exc)}, status_code=400)
     except OSError as exc:
@@ -4048,9 +4299,9 @@ async def _fallback_brain_doctor(use_network: bool) -> dict:
         base_url = str(entry.get("base_url") or def_url).rstrip("/")
         key_env = str(entry.get("api_key_env") or def_env)
         api_key = env_map.get(key_env, "").strip() if key_env else ""
-        key_present = bool(api_key) or (prov.lower() in ("ollama", "local", "openai_compat")
-                                        and base_url.startswith("http://127.0.0.1")
-                                        or base_url.startswith("http://localhost"))
+        key_present = bool(api_key) or (
+            prov.lower() in _LOCAL_INFERENCE_PROVIDERS and _is_loopback_url(base_url)
+        )
         row: dict = {
             "provider": prov,
             "model": model,
@@ -4065,6 +4316,7 @@ async def _fallback_brain_doctor(use_network: bool) -> dict:
         if use_network and row["ok"] and base_url:
             t0 = time.perf_counter()
             try:
+                _validate_brain_base_url(base_url, prov)
                 headers = {"Authorization": f"Bearer {api_key}"} if api_key else {}
                 async with httpx.AsyncClient(timeout=6.0, trust_env=False) as client:
                     resp = await client.get(f"{base_url}/models", headers=headers)
@@ -4153,8 +4405,15 @@ async def brain_probe(request: Request):
     else:
         live = False
 
-    role = str(body.get("role") or "writer").strip().lower()
-    prompt_text = str(body.get("prompt") or "Reply with the single word OK.").strip()[:500] or "OK"
+    role = str(body.get("role") or body.get("agent") or "writer").strip().lower()
+    domain = str(body.get("domain") or "").strip()
+    raw_prompt = str(body.get("prompt") or "").strip()
+    if not raw_prompt:
+        raw_prompt = (
+            f"Verify connectivity for target domain {domain}. Reply with the single word OK."
+            if domain else "Reply with the single word OK."
+        )
+    prompt_text = raw_prompt[:500] or "OK"
 
     if not live:
         doc = await brain_doctor(request, network="0")
@@ -4184,6 +4443,14 @@ async def brain_probe(request: Request):
     override_base = str(body.get("base_url") or "").strip()
     override_prov = str(body.get("provider") or "").strip()
     override_env = str(body.get("api_key_env") or "").strip()
+
+    try:
+        if override_base:
+            override_base = _validate_brain_base_url(override_base, override_prov or "openai_compat")
+        if override_env:
+            override_env = _validate_api_key_env(override_env)
+    except ValueError as exc:
+        return JSONResponse({"ok": False, "mode": "live", "error": str(exc)}, status_code=400)
 
     # Try harvey_brain.router_factory transport when no ad-hoc endpoint override was requested
     if not (override_model and override_base):
@@ -4321,6 +4588,13 @@ async def brain_probe(request: Request):
     def_url, def_env = _PROVIDER_DEFAULTS.get(prov.lower(), ("https://openrouter.ai/api/v1", "OPENROUTER_API_KEY"))
     base_url = str(target_entry["base_url"] or def_url).rstrip("/")
     key_env = str(target_entry["api_key_env"] or def_env)
+    try:
+        if base_url:
+            _validate_brain_base_url(base_url, prov)
+        if key_env:
+            _validate_api_key_env(key_env)
+    except ValueError as exc:
+        return JSONResponse({"ok": False, "mode": "live", "error": str(exc)}, status_code=400)
     api_key = env_map.get(key_env, "").strip() if key_env else ""
     model = str(target_entry["model"] or "").strip()
 
@@ -4329,7 +4603,7 @@ async def brain_probe(request: Request):
             {"ok": False, "mode": "live", "error": "Configure a provider base_url and model first."},
             status_code=400,
         )
-    if not api_key and not base_url.startswith(("http://127.0.0.1", "http://localhost")):
+    if not api_key and not (_is_loopback_url(base_url) and prov.lower() in _LOCAL_INFERENCE_PROVIDERS):
         return JSONResponse(
             {"ok": False, "mode": "live", "error": f"Missing API key ({key_env}) in .env."},
             status_code=400,
@@ -4454,13 +4728,26 @@ async def get_enrichment_columns():
     norm_cols = []
     for c in (cols or []):
         if isinstance(c, dict):
+            col_id = str(c.get("id") or "")
+            col_name = str(c.get("name") or c.get("title") or "")
+            col_key = str(c.get("key") or "").strip() or col_id
+            fmt = str(
+                c.get("output_type")
+                or c.get("output_format")
+                or c.get("value_type")
+                or c.get("dtype")
+                or "text"
+            )
             norm_cols.append({
                 **c,
-                "id": str(c.get("id") or ""),
-                "name": str(c.get("name") or c.get("title") or ""),
+                "id": col_id,
+                "key": col_key,
+                "name": col_name,
                 "prompt": str(c.get("prompt") or c.get("instruction") or ""),
                 "use_web_search": bool(c.get("use_web_search") or c.get("web_search")),
-                "output_format": str(c.get("output_format") or c.get("dtype") or "text"),
+                "output_format": fmt,
+                "output_type": fmt,
+                "value_type": fmt,
             })
 
     values_map: dict[str, dict[str, dict]] = {}
@@ -4473,8 +4760,12 @@ async def get_enrichment_columns():
                 }
     elif isinstance(raw_vals, list):
         for r in raw_vals:
-            if isinstance(r, dict) and r.get("company_id") is not None and r.get("column_id") is not None:
-                values_map.setdefault(str(r["company_id"]), {})[str(r["column_id"])] = {
+            if not isinstance(r, dict):
+                continue
+            comp_id = r.get("company_id") if r.get("company_id") is not None else r.get("entity_id")
+            col_ref = r.get("column_id")
+            if comp_id is not None and col_ref is not None:
+                values_map.setdefault(str(comp_id), {})[str(col_ref)] = {
                     "value": str(r.get("value") or r.get("result") or ""),
                     "status": str(r.get("status") or "done"),
                     "updated_at": str(r.get("updated_at") or ""),
@@ -4494,11 +4785,22 @@ async def create_enrichment_column(request: Request):
     if not isinstance(body, dict):
         return JSONResponse({"success": False, "message": "Request body must be an object."}, status_code=400)
 
+    raw_fmt = (
+        body.get("output_type")
+        or body.get("output_format")
+        or body.get("value_type")
+        or body.get("dtype")
+        or "text"
+    )
+    raw_key = str(body.get("key") or "").strip()
+    if raw_key:
+        raw_key = re.sub(r"[^a-zA-Z0-9_-]+", "_", raw_key).strip("_")
     mapped = {
         "name": str(body.get("name") or body.get("title") or "").strip(),
+        "key": raw_key,
         "prompt": str(body.get("prompt") or body.get("instruction") or "").strip(),
         "use_web_search": bool(body.get("use_web_search", body.get("web_search", False))),
-        "output_format": str(body.get("output_format") or body.get("dtype") or "text").strip() or "text",
+        "output_format": str(raw_fmt).strip() or "text",
     }
     try:
         validated = _EnrichmentColumnCreate.model_validate(mapped)
@@ -4521,32 +4823,48 @@ async def create_enrichment_column(request: Request):
                     kwargs[p_name] = validated.prompt
                 elif p_name in ("use_web_search", "web_search"):
                     kwargs[p_name] = validated.use_web_search
-                elif p_name in ("output_format", "dtype", "kind"):
+                elif p_name in ("output_format", "output_type", "value_type", "column_type", "dtype", "kind"):
                     kwargs[p_name] = validated.output_format
-            res = fn(**kwargs) if kwargs else fn(validated.name, validated.prompt)
-            created = (await res) if inspect.isawaitable(res) else res
+                elif p_name in ("column_id", "col_id", "key") and validated.key:
+                    kwargs[p_name] = validated.key
+            try:
+                res = fn(**kwargs) if kwargs else fn(validated.name, validated.prompt)
+                created = (await res) if inspect.isawaitable(res) else res
+            except Exception as exc:
+                msg = str(exc)
+                if "UNIQUE" in msg.upper() or "PRIMARY KEY" in msg.upper():
+                    return JSONResponse({"success": False, "message": "Column key already in use."}, status_code=400)
+                raise
             if isinstance(created, dict):
                 col_id = str(created.get("id") or "")
+                col_key = str(created.get("key") or validated.key or col_id)
                 col_obj = {
                     **created,
                     "id": col_id,
+                    "key": col_key,
                     "name": validated.name,
                     "prompt": validated.prompt,
                     "use_web_search": validated.use_web_search,
                     "output_format": validated.output_format,
+                    "output_type": validated.output_format,
+                    "value_type": validated.output_format,
                 }
             else:
                 col_id = str(created)
+                col_key = validated.key or col_id
                 col_obj = {
                     "id": col_id,
+                    "key": col_key,
                     "name": validated.name,
                     "prompt": validated.prompt,
                     "use_web_search": validated.use_web_search,
                     "output_format": validated.output_format,
+                    "output_type": validated.output_format,
+                    "value_type": validated.output_format,
                 }
-            return {"success": True, "id": col_id, "column": col_obj}
+            return {"success": True, "id": col_id, "key": col_key, "column": col_obj}
 
-    col_id = "col_" + uuid.uuid4().hex[:10]
+    col_id = validated.key or ("col_" + uuid.uuid4().hex[:10])
     db_path = _db_path()
     db_path.parent.mkdir(parents=True, exist_ok=True)
     async with storage.connect(str(db_path)) as db:
@@ -4560,12 +4878,15 @@ async def create_enrichment_column(request: Request):
 
     col_obj = {
         "id": col_id,
+        "key": validated.key or col_id,
         "name": validated.name,
         "prompt": validated.prompt,
         "use_web_search": validated.use_web_search,
         "output_format": validated.output_format,
+        "output_type": validated.output_format,
+        "value_type": validated.output_format,
     }
-    return {"success": True, "id": col_id, "column": col_obj}
+    return {"success": True, "id": col_id, "key": col_obj["key"], "column": col_obj}
 
 
 @_agentic_router.delete("/api/enrichment/columns/{col_id}")
@@ -4758,6 +5079,9 @@ async def run_deep_research_route(request: Request):
                 status_code=429,
             )
         from sellbird.config import load_env
+        from sellbird.signals import seed_signal_catalog
+
+        await seed_signal_catalog(state)
         env = load_env()
 
         init_sig = inspect.signature(DeepResearcher)
@@ -4783,10 +5107,29 @@ async def run_deep_research_route(request: Request):
             elif p_name in ("domain", "company") and domain is not None:
                 run_kwargs[p_name] = domain
 
-        if domain and not run_kwargs and hasattr(researcher, "research_domain"):
-            outcome = await researcher.research_domain(domain)
-        elif company_id and not run_kwargs and hasattr(researcher, "research_company"):
-            outcome = await researcher.research_company(company_id)
+        has_target_arg = any(k in run_kwargs for k in ("domain", "company", "company_id"))
+        if domain and not has_target_arg:
+            if hasattr(researcher, "research_domain"):
+                outcome = await researcher.research_domain(domain)
+            else:
+                matched = await query_db(
+                    "SELECT id FROM companies WHERE LOWER(domain) = LOWER(?) LIMIT 1",
+                    (domain,),
+                )
+                target = matched[0]["id"] if matched else {"domain": domain}
+                if "companies" in run_sig.parameters:
+                    outcome = await researcher.run(companies=[target], limit=1)
+                elif hasattr(researcher, "research_company"):
+                    outcome = await researcher.research_company(target)
+                else:
+                    outcome = await researcher.run(**run_kwargs)
+        elif company_id and not has_target_arg:
+            if hasattr(researcher, "research_company"):
+                outcome = await researcher.research_company(company_id)
+            elif "companies" in run_sig.parameters:
+                outcome = await researcher.run(companies=[company_id], limit=1)
+            else:
+                outcome = await researcher.run(**run_kwargs)
         else:
             outcome = await researcher.run(**run_kwargs)
 
@@ -4840,6 +5183,7 @@ def start_dashboard(host: str = "127.0.0.1", port: int = 5555):
     """Start the dashboard server (loopback only, token required)."""
     import uvicorn
 
+    _attach_secret_redaction()
     try:
         bind = _check_loopback_bind(host)
         url = dashboard_url(host, port)

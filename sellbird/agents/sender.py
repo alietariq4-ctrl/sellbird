@@ -227,7 +227,8 @@ class Sender:
         if await self.state.get_setting(KILL_SWITCH_KEY):
             return False
         email = self.config.channels.email
-        if email.max_daily_sends - await self.state.count_outbox_sent_today() <= 0:
+        since = self._today_since_iso()
+        if email.max_daily_sends - await self.state.count_outbox_sent_today(since=since) <= 0:
             return False
         inboxes = await self._load_inboxes()
         if inboxes.several:
@@ -237,10 +238,8 @@ class Sender:
         else:
             if not self.provider.is_configured():
                 return False
-            midnight = datetime.now().astimezone().replace(hour=0, minute=0, second=0, microsecond=0)
             if cold_daily_cap(email) - await self.state.count_outbox_sent_today(
-                    kind="sequence",
-                    since=midnight.astimezone(timezone.utc).replace(tzinfo=None).isoformat()) <= 0:
+                    kind="sequence", since=since) <= 0:
                 return False
         now = _utcnow()
         due_before = datetime.now(timezone.utc).replace(tzinfo=None).isoformat()
@@ -564,6 +563,11 @@ class Sender:
             f"with {len(leads)} leads. Campaign ID: {campaign_id}"
         )
 
+    def _today_since_iso(self) -> str:
+        """Local midnight today, as naive UTC ISO text matching sent_at storage."""
+        midnight = _local_now().replace(hour=0, minute=0, second=0, microsecond=0)
+        return midnight.astimezone(timezone.utc).replace(tzinfo=None).isoformat()
+
     async def _count_sends_today(self) -> int:
         """Count how many prospects were contacted today (the local day).
 
@@ -572,8 +576,7 @@ class Sender:
         against the local date would shift the day by the UTC offset.
         """
         from sellbird import storage
-        midnight = _local_now().replace(hour=0, minute=0, second=0, microsecond=0)
-        since = midnight.astimezone(timezone.utc).replace(tzinfo=None).isoformat()
+        since = self._today_since_iso()
         async with storage.connect(self.state.db_path) as db:
             async with db.execute(
                 "SELECT COUNT(*) FROM prospects "
@@ -922,8 +925,9 @@ class Sender:
             await self.state.note_sends_held(f"{SIGNATURE_HOLD_PREFIX}{problem}")
             return
 
+        since = self._today_since_iso()
         max_daily = self.config.channels.email.max_daily_sends
-        sent_today = await self.state.count_outbox_sent_today()
+        sent_today = await self.state.count_outbox_sent_today(since=since)
         # Each inbox sends up to MAX_SENDS_PER_CYCLE a cycle; max_daily_sends
         # stays the ceiling on everything sent in a day.
         per_cycle = MAX_SENDS_PER_CYCLE * (len(inboxes.sendable()) if inboxes else 1)
@@ -934,10 +938,8 @@ class Sender:
         # Cold email has its own cap under the warmup ramp; replies don't.
         # Counted from local midnight, the day the ramp counts in.
         cold_cap = cold_daily_cap(self.config.channels.email)
-        midnight = datetime.now().astimezone().replace(hour=0, minute=0, second=0, microsecond=0)
         cold_left = cold_cap - await self.state.count_outbox_sent_today(
-            kind="sequence",
-            since=midnight.astimezone(timezone.utc).replace(tzinfo=None).isoformat())
+            kind="sequence", since=since)
 
         now = datetime.now(timezone.utc).replace(tzinfo=None).isoformat()
         # In quiet hours only cold email can go, so only cold email is

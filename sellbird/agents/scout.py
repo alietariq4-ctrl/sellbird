@@ -26,6 +26,7 @@ Hardening notes:
 """
 
 import asyncio
+import inspect
 import json
 import logging
 import random
@@ -227,14 +228,51 @@ class Scout:
             return ""
         return do_not_contact_domain_match(domain, entries)
 
+    async def _is_email_suppressed(self, email: str) -> str:
+        email = (email or "").strip().lower()
+        if not email:
+            return ""
+        state = getattr(self, "state", None)
+        if state is None:
+            return ""
+        fn = getattr(state, "is_suppressed", None)
+        if callable(fn):
+            try:
+                res = fn(email)
+                if inspect.isawaitable(res):
+                    res = await res
+                return str(res or "")
+            except Exception:
+                return ""
+        batch_fn = getattr(state, "suppressed_among", None)
+        if callable(batch_fn):
+            try:
+                res = batch_fn([email])
+                if inspect.isawaitable(res):
+                    res = await res
+                return str((res or {}).get(email) or "")
+            except Exception:
+                return ""
+        return ""
+
+    async def _is_domain_suppressed(self, domain: str) -> str:
+        dom = self._host(domain)
+        if not dom:
+            return ""
+        return await self._is_email_suppressed(f"__domain_check__@{dom}")
+
     async def _skip_listed_company(self, company: dict, domain: str) -> bool:
-        """True when a known company is on the do-not-contact list. It is
-        marked checked so the backfill rotation moves on instead of
+        """True when a known company is on the do-not-contact list or DB-suppressed.
+        It is marked checked so the backfill rotation moves on instead of
         offering it again every cycle."""
         entry = self._do_not_contact_entry(domain)
-        if not entry:
+        reason = entry or await self._is_domain_suppressed(domain)
+        if not reason:
             return False
-        logger.info(f"Scout: {domain} is on compliance.do_not_contact ({entry}); skipping.")
+        if entry:
+            logger.info(f"Scout: {domain} is on compliance.do_not_contact ({entry}); skipping.")
+        else:
+            logger.info(f"Scout: {domain} is suppressed ({reason}); skipping.")
         try:
             await self.state.mark_prospects_checked(company["id"])
         except Exception as e:
@@ -640,55 +678,62 @@ class Scout:
                 break
             await record_hunter_search(self.state)
             people = await hunter_domain_people(domain, api_key)
+
+            saved_for_company = 0
             try:
-                await self.state.mark_prospects_checked(company["id"])
-            except Exception as e:
-                logger.debug(f"mark_prospects_checked failed for {domain}: {e}")
+                for person in people or []:
+                    if not isinstance(person, dict):
+                        continue
+                    title = person.get("position") or ""
+                    if not self._title_matches_icp(title):
+                        continue
 
-            for person in people or []:
-                if not isinstance(person, dict):
-                    continue
-                title = person.get("position") or ""
-                if not self._title_matches_icp(title):
-                    continue
+                    verification = person.get("verification") or {}
+                    hunter_status = (verification.get("status") or "").lower()
+                    email_status = self._HUNTER_STATUS_MAP.get(hunter_status, "guess")
 
-                verification = person.get("verification") or {}
-                hunter_status = (verification.get("status") or "").lower()
-                email_status = self._HUNTER_STATUS_MAP.get(hunter_status, "guess")
+                    prospect = Prospect(
+                        first_name=person.get("first_name") or "",
+                        last_name=person.get("last_name") or "",
+                        email=person.get("value") or "",
+                        email_status=email_status,
+                        email_verified=(email_status == "verified"),
+                        linkedin_url=person.get("linkedin") or "",
+                        company=company.get("name") or self._domain_to_name(domain),
+                        company_id=company["id"],
+                        title=title,
+                        seniority=person.get("seniority") or self._infer_seniority(title),
+                        industry=company.get("industry") or default_industry,
+                        source="hunter_domain_search",
+                        source_url=f"https://{domain}",
+                    )
 
-                prospect = Prospect(
-                    first_name=person.get("first_name") or "",
-                    last_name=person.get("last_name") or "",
-                    email=person.get("value") or "",
-                    email_status=email_status,
-                    email_verified=(email_status == "verified"),
-                    linkedin_url=person.get("linkedin") or "",
-                    company=company.get("name") or self._domain_to_name(domain),
-                    company_id=company["id"],
-                    title=title,
-                    seniority=person.get("seniority") or self._infer_seniority(title),
-                    industry=company.get("industry") or default_industry,
-                    source="hunter_domain_search",
-                    source_url=f"https://{domain}",
-                )
+                    if not prospect.is_valid():
+                        continue
+                    if prospect.email and await self._is_email_suppressed(prospect.email):
+                        continue
+                    if await self._is_duplicate_prospect(prospect):
+                        continue
 
-                if not prospect.is_valid():
-                    continue
-                if await self._is_duplicate_prospect(prospect):
-                    continue
-
-                await self.state.add_prospect(prospect)
-                await self._observe_email_signals(
-                    company["id"], domain, email=prospect.email, status=email_status
-                )
-                self._remember_prospect(prospect)
-                count += 1
-                logger.info(
-                    f"Scout: Added {prospect.full_name()} ({prospect.title}) "
-                    f"at {prospect.company} [hunter]"
-                )
-                if count >= MAX_PROSPECTS_PER_CYCLE:
-                    return count
+                    await self.state.add_prospect(prospect)
+                    await self._observe_email_signals(
+                        company["id"], domain, email=prospect.email, status=email_status
+                    )
+                    self._remember_prospect(prospect)
+                    saved_for_company += 1
+                    count += 1
+                    logger.info(
+                        f"Scout: Added {prospect.full_name()} ({prospect.title}) "
+                        f"at {prospect.company} [hunter]"
+                    )
+                    if count >= MAX_PROSPECTS_PER_CYCLE:
+                        return count
+            finally:
+                if people is not None:
+                    try:
+                        await self.state.mark_prospects_checked(company["id"])
+                    except Exception as e:
+                        logger.debug(f"mark_prospects_checked failed for {domain}: {e}")
 
         return count
 
@@ -803,6 +848,8 @@ class Scout:
                             except Exception:
                                 domain = ""
                             if domain:
+                                if self._do_not_contact_entry(domain) or await self._is_domain_suppressed(domain):
+                                    continue
                                 company_id = await self._ensure_company(
                                     name=company_name,
                                     domain=domain,
@@ -839,6 +886,8 @@ class Scout:
                         )
 
                         if not prospect.is_valid():
+                            continue
+                        if prospect.email and await self._is_email_suppressed(prospect.email):
                             continue
                         if await self._is_duplicate_prospect(prospect):
                             continue
@@ -952,6 +1001,9 @@ class Scout:
                 logger.info(
                     f"Scout: {domain} is on compliance.do_not_contact ({entry}); skipping.")
                 continue
+            if reason := await self._is_domain_suppressed(domain):
+                logger.info(f"Scout: {domain} is suppressed ({reason}); skipping.")
+                continue
             unique.append(c)
         companies = unique[:MAX_COMPANIES_PER_CYCLE]
 
@@ -1029,6 +1081,9 @@ class Scout:
                 domain = self._extract_domain(url)
                 if not self._is_candidate_domain(domain):
                     continue
+                if self._do_not_contact_entry(domain) or await self._is_domain_suppressed(domain):
+                    self._seen_domains.add(domain)
+                    continue
                 if await self.state.company_exists(domain):
                     self._seen_domains.add(domain)
                     continue
@@ -1078,6 +1133,9 @@ class Scout:
                 for domain in self._extract_company_domains_from_snippet(snippet, url):
                     if not self._is_candidate_domain(domain):
                         continue
+                    if self._do_not_contact_entry(domain) or await self._is_domain_suppressed(domain):
+                        self._seen_domains.add(domain)
+                        continue
                     if await self.state.company_exists(domain):
                         self._seen_domains.add(domain)
                         continue
@@ -1099,6 +1157,9 @@ class Scout:
                     for pc in await self._scrape_directory_page(url):
                         pd = pc.get("domain", "")
                         if not self._is_candidate_domain(pd):
+                            continue
+                        if self._do_not_contact_entry(pd) or await self._is_domain_suppressed(pd):
+                            self._seen_domains.add(pd)
                             continue
                         if await self.state.company_exists(pd):
                             self._seen_domains.add(pd)
@@ -1799,6 +1860,8 @@ Respond ONLY with the JSON array."""
 
             if not prospect.is_valid():
                 continue
+            if prospect.email and await self._is_email_suppressed(prospect.email):
+                continue
             if await self._is_duplicate_prospect(prospect):
                 continue
 
@@ -1889,7 +1952,7 @@ Respond ONLY with the JSON array."""
             source_url=f"https://{domain}",
             personalization_notes=signal_note,
         )
-        if not prospect.is_valid() or await self._is_duplicate_prospect(prospect):
+        if not prospect.is_valid() or await self._is_email_suppressed(email) or await self._is_duplicate_prospect(prospect):
             return None
         self._remember_prospect(prospect)
         logger.info(f"Scout: No named owner at {domain}; using its published inbox {email} [{status}]")
@@ -1971,7 +2034,7 @@ Respond ONLY with the JSON array."""
         geo = self.config.icp.geography[0] if self.config.icp.geography else ""
 
         logger.info(f"Scout: Searching job boards for '{search_term}' roles...")
-        loop = asyncio.get_event_loop()
+        loop = asyncio.get_running_loop()
 
         def _search():
             return scrape_jobs(
@@ -2023,6 +2086,9 @@ Respond ONLY with the JSON array."""
             if entry := self._do_not_contact_entry(domain):
                 logger.info(
                     f"Scout: {domain} is on compliance.do_not_contact ({entry}); skipping.")
+                continue
+            if reason := await self._is_domain_suppressed(domain):
+                logger.info(f"Scout: {domain} is suppressed ({reason}); skipping.")
                 continue
             if await self.state.company_exists(domain):
                 self._seen_domains.add(domain)

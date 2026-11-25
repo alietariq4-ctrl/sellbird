@@ -159,7 +159,7 @@ class QuotaClient:
             return result
 
     async def _fetch(self) -> Optional[dict]:
-        token = await asyncio.get_event_loop().run_in_executor(None, get_oauth_token)
+        token = await asyncio.get_running_loop().run_in_executor(None, get_oauth_token)
         if not token:
             logger.debug("Quota: no Claude OAuth token found; falling back.")
             return None

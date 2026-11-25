@@ -119,9 +119,10 @@ class PublicHTTPTransport(httpx.AsyncBaseTransport):
 
 def public_http_client(
     *, timeout: float | httpx.Timeout = 15.0, headers: dict[str, str] | None = None,
+    max_redirects: int = 10,
 ) -> httpx.AsyncClient:
     """A client whose every connection, redirect and TLS identity is checked."""
     return httpx.AsyncClient(
         transport=PublicHTTPTransport(), trust_env=False,
-        timeout=timeout, headers=headers, follow_redirects=True, max_redirects=10,
+        timeout=timeout, headers=headers, follow_redirects=True, max_redirects=max_redirects,
     )

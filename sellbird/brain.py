@@ -601,8 +601,11 @@ class Brain:
                             f"Claude call timed out after {timeout:.0f}s. Killing process.")
                         try:
                             process.kill()
-                            await process.wait()
                         except ProcessLookupError:
+                            pass
+                        try:
+                            await asyncio.wait_for(process.wait(), timeout=5.0)
+                        except (ProcessLookupError, asyncio.TimeoutError):
                             pass
                         stdout = None
                     except BaseException:
@@ -880,29 +883,39 @@ class Brain:
 
     @staticmethod
     def _extract_json(text: str) -> dict | list | None:
-        """Best-effort JSON extraction: strips code fences, then falls back to
-        locating the outermost JSON object/array in surrounding prose."""
-        cleaned = re.sub(r"^```(?:json)?\s*", "", text.strip())
-        cleaned = re.sub(r"\s*```$", "", cleaned)
+        """Best-effort JSON extraction: strips code fences anywhere in prose,
+        then falls back to scanning `{`/`[` candidates with raw_decode."""
+        if not text:
+            return None
+        stripped = text.strip()
         try:
-            return json.loads(cleaned)
+            parsed = json.loads(stripped)
+            if isinstance(parsed, (dict, list)):
+                return parsed
         except json.JSONDecodeError:
             pass
-        # Fall back: model wrapped the JSON in explanation text. Try whichever
-        # outer delimiter ({ vs [) appears earlier in the string first.
-        candidates = [
-            (cleaned.find(open_ch), open_ch, close_ch)
-            for open_ch, close_ch in (("{", "}"), ("[", "]"))
-            if cleaned.find(open_ch) != -1
-        ]
-        candidates.sort(key=lambda item: item[0])
-        for start, _, close_ch in candidates:
-            end = cleaned.rfind(close_ch)
-            if end > start:
-                try:
-                    return json.loads(cleaned[start : end + 1])
-                except json.JSONDecodeError:
-                    continue
+
+        for match in re.finditer(r"```(?:json)?\s*([\s\S]*?)```", stripped, re.IGNORECASE):
+            block = match.group(1).strip()
+            if not block:
+                continue
+            try:
+                parsed = json.loads(block)
+                if isinstance(parsed, (dict, list)):
+                    return parsed
+            except json.JSONDecodeError:
+                pass
+
+        decoder = json.JSONDecoder()
+        for idx, ch in enumerate(stripped):
+            if ch not in ("{", "["):
+                continue
+            try:
+                parsed, _ = decoder.raw_decode(stripped, idx)
+                if isinstance(parsed, (dict, list)):
+                    return parsed
+            except json.JSONDecodeError:
+                continue
         return None
 
     async def check_usage(self) -> float:

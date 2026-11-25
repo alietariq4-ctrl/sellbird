@@ -16,7 +16,9 @@ UNSEEN inbox messages and marks them seen after retrieval.
 import asyncio
 import email
 import email.policy
+import hashlib
 import imaplib
+import inspect
 import logging
 from dataclasses import asdict, dataclass, field
 from email.message import EmailMessage
@@ -50,6 +52,21 @@ _DEFINITE_SMTP_ERRORS = (
     aiosmtplib.SMTPNotSupported, aiosmtplib.SMTPRecipientsRefused,
     aiosmtplib.SMTPSenderRefused, aiosmtplib.SMTPDataError,
 )
+
+
+def _open_imap(host: str, port: int, timeout: float):
+    """Open IMAP4_SSL with timeout when supported by the target class."""
+    try:
+        sig = inspect.signature(imaplib.IMAP4_SSL)
+        accepts_timeout = (
+            "timeout" in sig.parameters
+            or any(p.kind == inspect.Parameter.VAR_KEYWORD for p in sig.parameters.values())
+        )
+    except (TypeError, ValueError):
+        accepts_timeout = True
+    if accepts_timeout:
+        return imaplib.IMAP4_SSL(host, port, timeout=timeout)
+    return imaplib.IMAP4_SSL(host, port)
 
 
 @dataclass
@@ -168,7 +185,7 @@ class SmtpImapProvider(MailProvider):
     def _fetch_unseen(self, limit: int) -> list[InboundMessage]:
         out: list[InboundMessage] = []
         own = self._own_addresses()
-        conn = imaplib.IMAP4_SSL(self.imap_host, self.imap_port)
+        conn = _open_imap(self.imap_host, self.imap_port, 30)
         try:
             conn.login(self.imap_user, self.imap_pass)
             sel_status, _ = conn.select("INBOX")
@@ -177,8 +194,13 @@ class SmtpImapProvider(MailProvider):
             status, data = conn.search(None, "UNSEEN")
             if status != "OK":
                 raise RuntimeError(f"IMAP search UNSEEN failed ({status})")
-            ids = (data[0] or b"").split()[-limit:]
-            for msg_id in ids:
+            all_ids = (data[0] or b"").split()
+            if limit and len(all_ids) > limit:
+                raise RuntimeError(
+                    f"IMAP inbox has {len(all_ids)} UNSEEN messages (> limit {limit}); "
+                    "refusing a partial read"
+                )
+            for msg_id in all_ids:
                 # Use BODY.PEEK[] so unread messages are NOT destructively marked \Seen
                 # before Handler finishes classifying and recording them.
                 status, parts = conn.fetch(msg_id, "(BODY.PEEK[])")
@@ -191,7 +213,8 @@ class SmtpImapProvider(MailProvider):
                         break
                 if not raw_bytes:
                     continue
-                parsed = self._parse_rfc822(raw_bytes)
+                msg_uid = msg_id.decode(errors="replace") if isinstance(msg_id, (bytes, bytearray)) else str(msg_id)
+                parsed = self._parse_rfc822(raw_bytes, uid=msg_uid)
                 if parsed and parsed.from_email.lower() not in own:
                     out.append(parsed)
         finally:
@@ -202,7 +225,7 @@ class SmtpImapProvider(MailProvider):
         return out
 
     @staticmethod
-    def _parse_rfc822(raw: bytes) -> InboundMessage | None:
+    def _parse_rfc822(raw: bytes, uid: str = "") -> InboundMessage | None:
         try:
             msg = email.message_from_bytes(raw, policy=email.policy.default)
         except Exception:
@@ -234,8 +257,20 @@ class SmtpImapProvider(MailProvider):
             pass
 
         message_id = str(msg.get("Message-ID", "")).strip()
+        date_str = str(msg.get("Date", "")).strip()
+        if message_id:
+            provider_id = message_id
+        else:
+            parts = [from_email, subject]
+            if date_str:
+                parts.append(date_str)
+            if uid:
+                parts.append(str(uid))
+            if not date_str and not uid:
+                parts.append(hashlib.sha256(raw).hexdigest()[:12])
+            provider_id = ":".join(parts)
         return InboundMessage(
-            provider_id=message_id or f"{from_email}:{subject}",
+            provider_id=provider_id,
             from_email=from_email,
             subject=subject,
             body=(body or "")[:5000],
@@ -265,10 +300,10 @@ class SmtpImapProvider(MailProvider):
         except Exception as e:
             return False, f"SMTP login failed: {str(e)[:200]}"
         # IMAP handshake
-        loop = asyncio.get_event_loop()
+        loop = asyncio.get_running_loop()
 
         def _imap_check():
-            conn = imaplib.IMAP4_SSL(self.imap_host, self.imap_port)
+            conn = _open_imap(self.imap_host, self.imap_port, 15)
             try:
                 conn.login(self.imap_user, self.imap_pass)
             finally:

@@ -186,6 +186,8 @@ def resolve(profile: TaskProfile, chain: list[Any]) -> Any | None:
 
     # Pass 1: exact (provider, model) match.
     for transport in chain:
+        if getattr(transport, "paused_reason", ""):
+            continue
         spec = getattr(transport, "spec", None)
         if spec is None:                     # delegate transports
             if provider and getattr(transport, "name", "") != provider:

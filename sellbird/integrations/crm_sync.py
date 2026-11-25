@@ -360,7 +360,8 @@ class TwentyInboundSync(_CrmBase):
                 last = people[-1]
                 starting_after = str(last.get("id") or "") if isinstance(last, dict) else ""
                 seen_pages += 1
-                if not starting_after:
+                page_info = data.get("pageInfo") if isinstance(data, dict) else None
+                if (isinstance(page_info, dict) and page_info.get("hasNextPage") is False) or not starting_after:
                     break
         return found[: self.max_records]
 

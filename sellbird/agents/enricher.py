@@ -136,9 +136,9 @@ class ClayEnricher:
         except (TypeError, ValueError):
             param_names, has_var_kw, has_var_pos = [], True, True
 
-        # Mock / AsyncMock typically exposes (*args, **kwargs): call with clear keyword arguments
-        # or standard positional (company_id, column_id, value, source_url) if signature is explicit.
-        if has_var_pos and has_var_kw and not param_names:
+        # Mock / AsyncMock / (**kw) typically exposes **kwargs without named params:
+        # call with clear keyword arguments, or positional if **kwargs is absent.
+        if has_var_kw and not param_names:
             await _maybe_await(
                 setter(
                     company_id=company_id,
@@ -289,11 +289,14 @@ Return ONLY valid JSON:
         raw_val = res.get("value")
         value = "" if raw_val is None else str(raw_val).strip()
         source_url = str(res.get("source_url") or "").strip()
-        if source_url and known_urls:
-            parsed_hosts = {urlparse(u).netloc.lower().removeprefix("www.") for u in known_urls if u}
-            cand_host = urlparse(source_url).netloc.lower().removeprefix("www.")
-            if source_url not in known_urls and cand_host not in parsed_hosts:
+        if source_url:
+            if not known_urls:
                 source_url = ""
+            else:
+                parsed_hosts = {urlparse(u).netloc.lower().removeprefix("www.") for u in known_urls if u}
+                cand_host = urlparse(source_url).netloc.lower().removeprefix("www.")
+                if source_url not in known_urls and cand_host not in parsed_hosts:
+                    source_url = ""
 
         saved = await self._save_value(
             column_id=col_id,
@@ -310,8 +313,26 @@ Return ONLY valid JSON:
             "saved": saved,
         }
 
+    @staticmethod
+    def _is_active_company_column(col: dict, column_id: str | None = None) -> bool:
+        if col.get("enabled") is False or col.get("enabled") == 0 or col.get("disabled") is True:
+            return False
+        etype = str(col.get("entity_type") or "company").strip().lower()
+        if etype not in ("company", "all", ""):
+            return False
+        if column_id:
+            target = str(column_id).strip()
+            candidates = {
+                str(col.get(k) or "").strip()
+                for k in ("id", "column_id", "key", "name")
+            }
+            if target not in candidates:
+                return False
+        return True
+
     async def enrich_company(self, company_id: str, columns: list[dict] | None = None) -> int:
         cols = columns if columns is not None else await self._get_columns()
+        cols = [c for c in cols if self._is_active_company_column(c)]
         if not cols:
             return 0
         company = await self.state.get_company(company_id)
@@ -319,25 +340,52 @@ Return ONLY valid JSON:
             return 0
         written = 0
         for col in cols:
-            if str(col.get("entity_type") or "company") not in ("company", "all", ""):
-                continue
             outcome = await self.enrich_company_column(company, col)
             if outcome and outcome.get("saved"):
                 written += 1
         return written
 
-    async def run(self, companies: list | None = None, limit: int = 10) -> int:
-        """Evaluate all active custom enrichment columns across target companies."""
-        cols = await self._get_columns()
+    async def run(
+        self,
+        companies: list | None = None,
+        limit: int = 10,
+        column_id: str | None = None,
+        company_ids: list[str] | set[str] | tuple[str, ...] | None = None,
+    ) -> int:
+        """Evaluate active custom company enrichment columns across target companies."""
+        cols = [
+            c for c in await self._get_columns()
+            if self._is_active_company_column(c, column_id=column_id)
+        ]
         if not cols:
             return 0
 
+        wanted_ids: list[str] | None = None
+        if company_ids is not None:
+            wanted_ids = [str(cid).strip() for cid in company_ids if str(cid).strip()]
+            if not wanted_ids:
+                return 0
+
         if companies is None:
-            for attr in ("list_companies", "get_companies", "companies_needing_prospects"):
+            if wanted_ids and callable(getattr(self.state, "get_company", None)):
+                fetched = []
+                for cid in wanted_ids:
+                    try:
+                        comp = await _maybe_await(self.state.get_company(cid))
+                    except Exception:
+                        comp = None
+                    if comp is not None:
+                        fetched.append(comp)
+                if fetched:
+                    companies = fetched
+
+        if companies is None:
+            fetch_limit = max(limit, len(wanted_ids)) if wanted_ids else limit
+            for attr in ("list_companies", "get_companies", "get_companies_with_domains", "companies_needing_prospects"):
                 fn = getattr(self.state, attr, None)
                 if fn is not None:
                     try:
-                        companies = await _maybe_await(fn(limit=limit))
+                        companies = await _maybe_await(fn(limit=fetch_limit))
                         break
                     except TypeError:
                         companies = await _maybe_await(fn())
@@ -347,8 +395,16 @@ Return ONLY valid JSON:
         if not companies:
             return 0
 
+        target_list = list(companies)
+        if wanted_ids is not None:
+            wanted_set = set(wanted_ids)
+            target_list = [
+                c for c in target_list
+                if str((c.get("id") if isinstance(c, dict) else getattr(c, "id", "")) or "") in wanted_set
+            ]
+
         total = 0
-        for comp in list(companies)[:limit]:
+        for comp in target_list[:limit]:
             cid = comp.get("id") if isinstance(comp, dict) else getattr(comp, "id", "")
             if not cid:
                 continue

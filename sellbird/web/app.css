@@ -61,6 +61,7 @@
   /* Light — neutral, a touch cool. */
   --bg:          #F6F6F7;
   --surface:     #FFFFFF;
+  --surface-solid:#FFFFFF;
   --surface-2:   #F3F3F4;   /* hover, inset panels */
   --surface-3:   #EBEBED;   /* pressed, tracks */
   --line:        #E7E7EA;
@@ -100,6 +101,7 @@
 :root[data-theme='dark'] {
   --bg:          #020617;
   --surface:     rgba(15, 23, 42, 0.72);
+  --surface-solid:#0F172A;
   --surface-2:   #0F172A;
   --surface-3:   #1E293B;
   --line:        rgba(255, 255, 255, 0.08);
@@ -130,7 +132,7 @@
 
 @media (prefers-color-scheme: dark) {
   :root:not([data-theme='light']) {
-    --bg:#020617; --surface:rgba(15, 23, 42, 0.72); --surface-2:#0F172A; --surface-3:#1E293B;
+    --bg:#020617; --surface:rgba(15, 23, 42, 0.72); --surface-solid:#0F172A; --surface-2:#0F172A; --surface-3:#1E293B;
     --line:rgba(255, 255, 255, 0.08); --line-strong:rgba(255, 255, 255, 0.15);
     --text:#F8FAFC; --text-2:#94A3B8; --text-3:#64748B;
     --accent:#6366F1; --accent-hover:#818CF8; --accent-text:#FFFFFF;
@@ -501,7 +503,7 @@ table { width: 100%; border-collapse: collapse; font-size: var(--fs-ui); }
 th {
   text-align: left; font-size: var(--fs-caption); font-weight: 500; color: var(--text-3);
   padding: 10px 14px; border-bottom: 1px solid var(--line);
-  white-space: nowrap; position: sticky; top: 0; background: var(--surface); z-index: 1;
+  white-space: nowrap; position: sticky; top: 0; background: var(--surface-solid, var(--surface-2)); z-index: 1;
 }
 th.num { text-align: right; }
 td { padding: 10px 14px; border-bottom: 1px solid var(--line); vertical-align: middle; }
@@ -1002,12 +1004,14 @@ textarea.form-input { height: auto; padding: 8px 12px; }
   position: fixed; bottom: var(--sp-5); right: var(--sp-5); z-index: 60;
   max-width: min(420px, calc(100vw - 2 * var(--sp-5)));
   padding: 10px 14px; border-radius: var(--r-md); font-size: var(--fs-ui); font-weight: 500;
+  background: var(--surface-solid, var(--surface)); color: var(--text); border: 1px solid var(--line-strong);
   box-shadow: var(--shadow-pop);
   transition-property: opacity, translate; transition-duration: 250ms; transition-timing-function: var(--ease-out);
   @starting-style { opacity: 0; translate: 0 8px; }
 }
-.toast.success { background: var(--text); color: var(--bg); }
-.toast.error { background: var(--bad); color: #fff; }
+.toast.success { background: var(--text); color: var(--bg); border-color: transparent; }
+.toast.error { background: var(--bad); color: #fff; border-color: transparent; }
+.toast.info { background: var(--surface-solid, var(--surface-2)); color: var(--text); border-color: var(--accent-line); }
 
 /* Lock screen */
 #lock-screen { background: var(--bg); }
@@ -1263,6 +1267,10 @@ dialog.modal::backdrop { background: rgb(0 0 0 / 0.45); }
 :root[data-theme='dark'] .oled-toggle .oled-icon-sun { display: block; color: #FBBF24; }
 :root:not([data-theme='dark']) .oled-toggle .oled-icon-sun { display: none; }
 :root:not([data-theme='dark']) .oled-toggle .oled-icon-moon { display: block; }
+@media (prefers-color-scheme: dark) {
+  :root:not([data-theme='light']) .oled-toggle .oled-icon-moon { display: none; }
+  :root:not([data-theme='light']) .oled-toggle .oled-icon-sun { display: block; color: #FBBF24; }
+}
 
 /* AI Brain & OpenAI-Compatible Model Studio */
 .studio-card {

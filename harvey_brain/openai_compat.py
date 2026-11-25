@@ -15,7 +15,9 @@ from __future__ import annotations
 import asyncio
 from dataclasses import asdict
 import inspect
+import json
 import logging
+import math
 import random
 from time import monotonic
 from typing import Any, Callable, Mapping
@@ -32,6 +34,7 @@ from .base import (
     extract_text,
     is_quota_body,
     nested,
+    redact,
 )
 from .pricing import estimate
 from .schemas import resolve_response_format
@@ -41,6 +44,22 @@ logger = logging.getLogger(__name__)
 
 JsonMode = str  # "auto" | "json_schema" | "json_object" | "none"
 JSON_MODES = frozenset({"auto", "json_schema", "json_object", "none"})
+MAX_RETRY_AFTER = 60.0
+
+
+def _parse_retry_after(response: httpx.Response | None) -> float | None:
+    if response is None:
+        return None
+    raw = (response.headers.get("Retry-After") or "").strip()
+    if not raw:
+        return None
+    try:
+        val = float(raw)
+    except ValueError:
+        return None
+    if not math.isfinite(val) or val < 0:
+        return None
+    return min(val, MAX_RETRY_AFTER)
 
 
 class OpenAICompatTransport:
@@ -266,6 +285,31 @@ class OpenAICompatTransport:
                 f"{name} is paused: the API key was rejected. Check {env}."
             )
 
+    def _classify_payload_error(self, err: Any) -> tuple[int, str, bool]:
+        if isinstance(err, Mapping):
+            raw_code = err.get("code") if err.get("code") is not None else err.get("status")
+            if isinstance(raw_code, int) and not isinstance(raw_code, bool):
+                err_status = raw_code
+            elif isinstance(raw_code, str) and raw_code.strip().isdigit():
+                err_status = int(raw_code.strip())
+            else:
+                err_status = 0
+            err_type = str(err.get("type") or "").strip().lower()
+            err_code_str = str(raw_code or "").strip().lower()
+            raw_text = str(err.get("message") or "") or json.dumps(dict(err), default=str)
+            joined = f"{err_code_str}: {raw_text}".strip(": ") if err_code_str else raw_text
+            err_msg = redact(joined, secret=self.api_key)[:200]
+            is_retryable = (
+                err_status in RETRY_STATUSES
+                or err_type in ("rate_limit_error", "server_error", "overloaded_error")
+                or err_code_str in (
+                    "rate_limit", "rate_limit_exceeded", "overloaded",
+                    "server_error", "temporarily_unavailable", "timeout",
+                )
+            )
+            return err_status, err_msg, is_retryable
+        return 0, redact(str(err), secret=self.api_key)[:200], False
+
     async def _fire_usage(self, usage: Usage) -> None:
         if self.on_usage is None:
             return
@@ -279,11 +323,18 @@ class OpenAICompatTransport:
         except Exception as exc:  # a broken ledger must not lose the answer
             logger.warning("on_usage callback failed: %s", type(exc).__name__)
 
-    async def _sleep(self, attempt: int, deadline: float) -> None:
+    async def _sleep(
+        self, attempt: int, deadline: float, response: httpx.Response | None = None
+    ) -> bool:
         delay = self.retry_base_delay * (2 ** attempt)
         delay *= random.uniform(0.5, 1.5)
+        retry_after = _parse_retry_after(response)
+        sleep_for = max(delay, retry_after) if retry_after is not None else delay
         remaining = deadline - monotonic()
-        await asyncio.sleep(max(0.0, min(delay, remaining)))
+        if remaining <= 0 or sleep_for >= remaining:
+            return False
+        await asyncio.sleep(max(0.0, sleep_for))
+        return True
 
     # ── the seam ──────────────────────────────────────────────────────────
 
@@ -348,7 +399,10 @@ class OpenAICompatTransport:
                         self.name, attempt + 1, type(exc).__name__,
                     )
                     return ""
-                await self._sleep(attempt, deadline)
+                if not await self._sleep(attempt, deadline):
+                    logger.warning("%s call timed out before retry after %s",
+                                   self.name, type(exc).__name__)
+                    return ""
                 attempt += 1
                 continue
 
@@ -365,6 +419,27 @@ class OpenAICompatTransport:
                     logger.warning("%s returned a non-object body (status %d)",
                                    self.name, status)
                     self.last_error = "bad body"
+                    return ""
+                err = payload.get("error")
+                if err:
+                    err_status, err_msg, is_retryable = self._classify_payload_error(err)
+                    self._pause_for(err_status, err_msg)
+                    if self.paused_reason:
+                        logger.warning("%s refused the request (status %d): %s",
+                                       self.name, err_status or status, err_msg)
+                        self.last_error = f"{err_status or status}: {err_msg}"
+                        return ""
+                    if is_retryable and attempt < self.max_retries:
+                        logger.warning("%s %d in 200 payload on attempt %d, retrying: %s",
+                                       self.name, err_status or status, attempt + 1, err_msg)
+                        if not await self._sleep(attempt, deadline, response=response):
+                            self.last_error = f"{err_status or status}: {err_msg}"
+                            return ""
+                        attempt += 1
+                        continue
+                    logger.warning("%s returned error in 200 payload: %s",
+                                   self.name, err_msg)
+                    self.last_error = f"{err_status or status}: {err_msg}"
                     return ""
                 text = self._text(payload)
                 duration_ms = int((monotonic() - started) * 1000)
@@ -417,7 +492,9 @@ class OpenAICompatTransport:
             if status in RETRY_STATUSES and attempt < self.max_retries:
                 logger.warning("%s %d on attempt %d, retrying: %s",
                                self.name, status, attempt + 1, body_excerpt)
-                await self._sleep(attempt, deadline)
+                if not await self._sleep(attempt, deadline, response=response):
+                    self.last_error = f"{status}: {body_excerpt}"
+                    return ""
                 attempt += 1
                 continue
 

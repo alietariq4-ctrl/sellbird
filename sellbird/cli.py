@@ -615,17 +615,24 @@ def cmd_companies(args):
     """Write the company register to a CSV and summarise it."""
     from collections import Counter
     from datetime import date
+    from sellbird import storage
     from sellbird.config import load_config
-    from sellbird.paths import PROJECT_ROOT
     from sellbird.register import build_register, sqlite_query, to_csv
-    from sellbird.state import DB_PATH
+    from sellbird.state import StateManager
+    from sellbird.workspace_home import current_home
 
-    if not DB_PATH.exists():
+    state = StateManager()
+    if not storage.exists(state._sqlite_locator):
         print("\n  No database yet: run 'sellbird discover' or 'sellbird run' first.\n")
         return
-    rows = asyncio.run(build_register(sqlite_query(DB_PATH), load_config()))
+
+    async def _companies():
+        await state.init_db()
+        return await build_register(sqlite_query(state.db_path), load_config())
+
+    rows = asyncio.run(_companies())
     out = Path(args.out) if args.out else (
-        PROJECT_ROOT / "data" / "exports" / f"company-register-{date.today():%Y-%m-%d}.csv")
+        current_home().data_dir / "exports" / f"company-register-{date.today():%Y-%m-%d}.csv")
     out.parent.mkdir(parents=True, exist_ok=True)
     # utf-8-sig so spreadsheet apps open non-ASCII company names correctly.
     out.write_text(to_csv(rows), encoding="utf-8-sig")
@@ -1337,22 +1344,28 @@ def cmd_suppressions(args):
     from sellbird.state import StateManager
 
     async def _run():
+        action = getattr(args, "suppression_action", None)
+        value = (getattr(args, "value", "") or "").strip()
+        if action in ("add", "remove") and not value:
+            label = "address or domain" if action == "add" else "suppression id"
+            print(f"\n  Please provide a non-empty {label}.\n")
+            return 1
         state = StateManager()
         await state.init_db()
-        if args.suppression_action == "add":
-            kind = "domain" if "@" not in args.value else "address"
+        if action == "add":
+            kind = "domain" if "@" not in value else "address"
             try:
-                added = await state.add_suppression(kind, args.value, "manual", source="cli")
+                added = await state.add_suppression(kind, value, "manual", source="cli")
             except ValueError:
-                print(f"\n  That isn't an email address or a domain: {args.value}\n")
+                print(f"\n  That isn't an email address or a domain: {value}\n")
                 return 1
-            key = state.suppression_key(kind, args.value)
+            key = state.suppression_key(kind, value)
             print(f"\n  {'Suppressed' if added else 'Already suppressed'}: {key} ({kind}).\n")
-        elif args.suppression_action == "remove":
-            if await state.remove_suppression(args.value):
+        elif action == "remove":
+            if await state.remove_suppression(value):
                 print("\n  Removed. Sellbird may email them again.\n")
             else:
-                print(f"\n  No suppression with id {args.value}. Run `sellbird suppressions` to see ids.\n")
+                print(f"\n  No suppression with id {value}. Run `sellbird suppressions` to see ids.\n")
                 return 1
         else:
             rows = await state.list_suppressions(limit=1000)
@@ -1389,6 +1402,8 @@ def cmd_research(args):
         env = load_env()
         state = StateManager()
         await state.init_db()
+        from sellbird.signals import seed_signal_catalog
+        await seed_signal_catalog(state)
         brain = Brain(state, config.brain)
         try:
             problem = await brain.preflight()
@@ -1426,8 +1441,21 @@ def cmd_research(args):
                 elif p_name in ("domain", "company") and target:
                     run_kwargs[p_name] = target
 
-            if target and not any(k in run_kwargs for k in ("domain", "company")) and hasattr(researcher, "research_domain"):
-                outcome = await researcher.research_domain(target)
+            if target:
+                if hasattr(researcher, "research_domain"):
+                    outcome = await researcher.research_domain(target)
+                elif any(k in run_kwargs for k in ("domain", "company")):
+                    outcome = await researcher.run(**run_kwargs)
+                elif "companies" in run_sig.parameters or hasattr(researcher, "research_company"):
+                    comp = await state.get_company_by_domain(target) or await state.get_company(target)
+                    if comp is None:
+                        comp = {"domain": target, "name": target}
+                    if "companies" in run_sig.parameters:
+                        outcome = await researcher.run(companies=[comp], limit=1)
+                    else:
+                        outcome = await researcher.research_company(comp)
+                else:
+                    outcome = await researcher.run(**run_kwargs)
             else:
                 outcome = await researcher.run(**run_kwargs)
 

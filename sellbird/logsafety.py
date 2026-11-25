@@ -44,7 +44,7 @@ class RedactSecrets(logging.Filter):
         cleaned = redact(message)
         if cleaned != message:
             record.msg, record.args = cleaned, None
-        if record.exc_info and not record.exc_text:
+        if record.exc_info and record.exc_info[0] is not None and not record.exc_text:
             # httpx errors carry the full URL in their text.
             record.exc_text = logging.Formatter().formatException(record.exc_info)
         if record.exc_text:

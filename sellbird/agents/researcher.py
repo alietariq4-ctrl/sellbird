@@ -490,6 +490,9 @@ Return ONLY valid JSON matching this schema:
 
         observations_written = 0
         if obs_to_write and hasattr(self.state, "add_observations"):
+            if hasattr(self.state, "get_signal_codes") and hasattr(self.state, "upsert_signal_code"):
+                from sellbird.signals import seed_signal_catalog
+                await seed_signal_catalog(self.state)
             observations_written = await self.state.add_observations(obs_to_write)
 
         today = datetime.now(timezone.utc).date().isoformat()
@@ -525,8 +528,44 @@ Return ONLY valid JSON matching this schema:
             "dropped_unverified": dropped_unverified,
         }
 
-    async def run(self, companies: list | None = None, limit: int = 5) -> list[dict]:
-        """Research a batch of companies and return their synthesis reports."""
+    async def research_domain(self, domain: str) -> dict:
+        """Research a company by domain, reusing its DB record if present."""
+        clean_domain = normalize_domain(domain)
+        if not clean_domain:
+            return {"ok": False, "error": "Invalid or empty domain"}
+        company = None
+        getter = getattr(self.state, "get_company_by_domain", None)
+        if callable(getter):
+            company = await getter(clean_domain)
+        if company is None:
+            company = {
+                "id": "",
+                "name": "",
+                "domain": clean_domain,
+                "website": f"https://{clean_domain}",
+            }
+        return await self.research_company(company)
+
+    async def run(
+        self,
+        companies: list | None = None,
+        limit: int = 5,
+        domain: str | None = None,
+        company_id: str | None = None,
+    ) -> list[dict]:
+        """Research a domain, a company_id, or a batch of companies."""
+        if domain:
+            try:
+                return [await self.research_domain(domain)]
+            except Exception as exc:
+                logger.warning("DeepResearcher failed on domain %r: %s", domain, exc)
+                return []
+        if company_id:
+            try:
+                return [await self.research_company(company_id)]
+            except Exception as exc:
+                logger.warning("DeepResearcher failed on company_id %r: %s", company_id, exc)
+                return []
         if companies is None:
             getter = getattr(self.state, "companies_needing_prospects", None) or getattr(self.state, "list_companies", None)
             companies = await getter(limit=limit) if getter else []

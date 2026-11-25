@@ -11,9 +11,10 @@ without ``--yes``, because that is real money.
 from __future__ import annotations
 
 import asyncio
+import inspect
 import json
 import os
-from dataclasses import dataclass
+from dataclasses import asdict, dataclass
 from time import monotonic
 from typing import Any, Callable, Sequence
 
@@ -167,6 +168,19 @@ async def _probe_one(transport: Any, *, timeout: float = 90.0) -> ProbeRow:
     return row
 
 
+async def _close_chain(chain: Sequence[Any]) -> None:
+    for transport in chain:
+        close = getattr(transport, "aclose", None)
+        if close is None:
+            continue
+        try:
+            res = close()
+            if inspect.isawaitable(res):
+                await res
+        except Exception:
+            pass
+
+
 async def live(chain: Sequence[Any], *, http: Any = None,
                confirm: bool = False) -> list[ProbeRow]:
     """ONE minimal real call per HTTP provider. Requires explicit confirmation.
@@ -180,23 +194,26 @@ async def live(chain: Sequence[Any], *, http: Any = None,
             "live probing spends real money: pass --yes to confirm"
         )
     rows: list[ProbeRow] = []
-    for transport in chain:
-        spec = getattr(transport, "spec", None)
-        if spec is None:                       # delegate: nothing to bill here
-            if not getattr(transport, "paused_reason", ""):
-                rows.append(ProbeRow(
-                    provider=str(getattr(transport, "name", "?")),
-                    model=getattr(transport, "model", "") or "(host default)",
-                    endpoint="host runtime",
-                    auth_env="— (subscription)", key_present=True,
-                    key_hint="host session", est_cost_usd=0.0,
-                    status="delegated",
-                ))
-            continue
-        if spec.api_key_env and not getattr(transport, "api_key", ""):
-            continue                            # cannot authenticate: skip
-        rows.append(await _probe_one(transport))
-    return rows
+    try:
+        for transport in chain:
+            spec = getattr(transport, "spec", None)
+            if spec is None:                       # delegate: nothing to bill here
+                if not getattr(transport, "paused_reason", ""):
+                    rows.append(ProbeRow(
+                        provider=str(getattr(transport, "name", "?")),
+                        model=getattr(transport, "model", "") or "(host default)",
+                        endpoint="host runtime",
+                        auth_env="— (subscription)", key_present=True,
+                        key_hint="host session", est_cost_usd=0.0,
+                        status="delegated",
+                    ))
+                continue
+            if spec.api_key_env and not getattr(transport, "api_key", ""):
+                continue                            # cannot authenticate: skip
+            rows.append(await _probe_one(transport))
+        return rows
+    finally:
+        await _close_chain(chain)
 
 
 def render(rows: Sequence[ProbeRow], *, live_mode: bool) -> str:
@@ -263,16 +280,19 @@ def main(argv: list[str] | None = None) -> int:
         print("  no usable provider: every chain entry is missing its API key.")
         return 2
 
-    if args.live:
-        if not args.yes:
-            print("  --live makes real, billable calls. Re-run with --live --yes.")
-            return 2
-        rows = asyncio.run(live(chain, confirm=True))
-    else:
-        rows = dry_run(chain=chain)
+    try:
+        if args.live:
+            if not args.yes:
+                print("  --live makes real, billable calls. Re-run with --live --yes.")
+                return 2
+            rows = asyncio.run(live(chain, confirm=True))
+        else:
+            rows = dry_run(chain=chain)
+    finally:
+        asyncio.run(_close_chain(chain))
 
     if args.json:
-        print(json.dumps([row.__dict__ for row in rows], indent=2, default=str))
+        print(json.dumps([asdict(row) for row in rows], indent=2, default=str))
         return 0
 
     print()

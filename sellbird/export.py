@@ -7,6 +7,7 @@ so a human can eyeball what they're getting.
 """
 
 import csv
+import inspect
 import io
 import logging
 
@@ -76,9 +77,20 @@ async def collect_prospects(
 
     if not include_all:
         # A list for another sequencer is still contact: leave out anyone on
-        # compliance.do_not_contact, as the send gate would.
+        # compliance.do_not_contact, as the send gate would, plus DB suppressions.
         rows = [r for r in rows
                 if not do_not_contact_match(r.get("email") or "", _do_not_contact(config))]
+        suppressed_among = getattr(state, "suppressed_among", None)
+        if callable(suppressed_among) and rows:
+            res = suppressed_among([r.get("email") or "" for r in rows])
+            if inspect.isawaitable(res):
+                res = await res
+            suppressed = res or {}
+            if suppressed:
+                rows = [
+                    r for r in rows
+                    if (r.get("email") or "").strip().lower() not in suppressed
+                ]
 
     out = []
     for r in rows:

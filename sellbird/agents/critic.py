@@ -12,7 +12,7 @@ import logging
 import re
 
 from sellbird.email_style import style_problems, tidy
-from sellbird.gate import BANNED_PHRASES, MERGE_TAG_RE, URL_RE, MAX_LINKS
+from sellbird.gate import BANNED_PHRASES, MAX_SUBJECT_LEN, MERGE_TAG_RE, URL_RE, MAX_LINKS
 from sellbird.untrusted import UNTRUSTED_RULE, fence
 
 logger = logging.getLogger("sellbird.critic")
@@ -73,6 +73,9 @@ class CopyCritic:
             issues.append("missing email body")
         if not subject or not body:
             return issues
+
+        if len(subject) > MAX_SUBJECT_LEN:
+            issues.append(f"subject too long ({len(subject)} > {MAX_SUBJECT_LEN})")
 
         combined = f"{subject}\n{body}"
         lowered = combined.lower()
@@ -217,7 +220,7 @@ RULES:
         if not new_subject or not new_body:
             return {**normalized, "approved": False, "issues": issues, "refined": False}
 
-        candidate = {**normalized, "subject": new_subject[:120], "body": new_body[:2000]}
+        candidate = {**normalized, "subject": new_subject[:MAX_SUBJECT_LEN], "body": new_body[:2000]}
         remaining = self.inspect_draft(
             candidate,
             prospect_context=prospect_context,
