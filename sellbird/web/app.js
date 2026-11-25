@@ -1397,6 +1397,7 @@ async function loadSettings() {
   savedPh('firecrawl-key', data.firecrawl_api_key_set, 'fc-...');
   savedPh('serper-key', data.serper_api_key_set, 'Enter key');
   savedPh('calcom-key', data.calcom_api_key_set, 'cal_live_...');
+  savedPh('calcom-webhook-secret', data.calcom_webhook_secret_set, 'Enter webhook signing secret');
   savedPh('twenty-key', data.twenty_api_key_set, 'Enter API key');
   savedPh('telegram-token', data.telegram_bot_token_set, 'bot123456:ABC-DEF...');
   savedPh('slack-webhook', data.slack_webhook_url_set, 'https://hooks.slack.com/services/...');
@@ -1449,19 +1450,65 @@ function saveSearchTools() {
 
 function saveIntegrations() {
   const payload = {
-    TWENTY_BASE_URL: (document.getElementById('twenty-url') || {}).value.trim(),
-    TELEGRAM_CHAT_ID: (document.getElementById('telegram-chat') || {}).value.trim(),
-    CALCOM_EVENT_TYPE_ID: (document.getElementById('calcom-event-type-id') || {}).value.trim(),
+    TWENTY_BASE_URL: ((document.getElementById('twenty-url') || {}).value || '').trim(),
+    TELEGRAM_CHAT_ID: ((document.getElementById('telegram-chat') || {}).value || '').trim(),
+    CALCOM_EVENT_TYPE_ID: ((document.getElementById('calcom-event-type-id') || {}).value || '').trim(),
   };
   const cc = (document.getElementById('calcom-key') || {}).value;
+  const cws = (document.getElementById('calcom-webhook-secret') || {}).value;
   const tw = (document.getElementById('twenty-key') || {}).value;
   const tg = (document.getElementById('telegram-token') || {}).value;
   const sl = (document.getElementById('slack-webhook') || {}).value;
   if (cc) payload.CALCOM_API_KEY = cc;
+  if (cws) payload.CALCOM_WEBHOOK_SECRET = cws;
   if (tw) payload.TWENTY_API_KEY = tw;
   if (tg) payload.TELEGRAM_BOT_TOKEN = tg;
   if (sl) payload.SLACK_WEBHOOK_URL = sl;
   saveEnv(payload, 'Integrations & alerts updated.').then(loadSettings);
+}
+
+async function testIntegrationConnection(btn) {
+  const service = ((document.getElementById('integration-test-service') || {}).value || 'telegram').trim();
+  const resultEl = document.getElementById('integration-test-result');
+  const sendPing = !!(document.getElementById('integration-test-ping') || {}).checked;
+  const payload = { service };
+  const val = id => ((document.getElementById(id) || {}).value || '').trim();
+  if (service === 'telegram') {
+    const tok = val('telegram-token');
+    const cid = val('telegram-chat');
+    if (tok) payload.telegram_bot_token = tok;
+    if (cid) payload.telegram_chat_id = cid;
+  } else if (service === 'slack') {
+    const hook = val('slack-webhook');
+    if (hook) payload.slack_webhook_url = hook;
+    payload.send_test = sendPing;
+  } else if (service === 'calcom') {
+    const key = val('calcom-key');
+    if (key) payload.calcom_api_key = key;
+  } else if (service === 'twenty') {
+    const url = val('twenty-url');
+    const key = val('twenty-key');
+    if (url) payload.twenty_base_url = url;
+    if (key) payload.twenty_api_key = key;
+  }
+  if (btn) btn.disabled = true;
+  if (resultEl) resultEl.textContent = 'Testing connection…';
+  try {
+    const res = await api('/api/integrations/test', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(payload),
+    });
+    const ok = !!(res && res.success);
+    const msg = (res && res.message) || 'Connection test failed.';
+    if (resultEl) {
+      resultEl.innerHTML = '<span class="email-tag ' + (ok ? 'verified' : 'invalid') + '">' +
+        (ok ? 'Connected' : 'Failed') + '</span> ' + escHtml(msg);
+    }
+    showToast(msg, ok ? 'success' : 'error');
+  } finally {
+    if (btn) btn.disabled = false;
+  }
 }
 
 function saveGmail() {
@@ -1733,11 +1780,16 @@ async function loadUsage() {
   quotaEl.innerHTML = qHtml;
   quotaEl.style.display = qHtml ? 'block' : 'none';
 
-  // Totals cards — usage-first (calls is the headline; tokens as chips).
-  // No dollars: on a subscription plan usage isn't billed per token.
+  // Totals cards — calls as headline; tokens + USD cost (when > 0) as chips.
+  const fmtUsd = v => {
+    const n = Number(v || 0);
+    return n >= 0.1 ? '$' + n.toFixed(2) : '$' + n.toFixed(4);
+  };
   const t = data.totals || {};
   const card = (label, p) => {
     p = p || {};
+    const costVal = Number(p.cost_usd || 0);
+    const costChip = costVal > 0 ? '<span class="chip">cost <b>' + fmtUsd(costVal) + '</b></span>' : '';
     return '<div class="stat-card"><div class="label">' + label + '</div>' +
       '<div class="value">' + (p.calls || 0) + '</div>' +
       '<div class="breakdown">' +
@@ -1745,6 +1797,7 @@ async function loadUsage() {
         '<span class="chip">out <b>' + fmtTokens(p.output_tokens) + '</b></span>' +
         '<span class="chip">in <b>' + fmtTokens(p.input_tokens) + '</b></span>' +
         '<span class="chip">cached <b>' + fmtTokens(p.cache_read_tokens) + '</b></span>' +
+        costChip +
       '</div></div>';
   };
   statsEl.innerHTML = card('Today', t.today) + card('Last 7 Days', t.week) + card('Last 30 Days', t.month);
@@ -1758,7 +1811,8 @@ async function loadUsage() {
       days.length + ' days · peak ' + fmtTokens(maxOut) + '</span></h2>' +
       '<div class="chart-cols" role="img" aria-label="Output tokens per day">' + days.map(d =>
         '<span class="col" title="' + escHtml(d.day || '') + ': ' + fmtTokens(d.output_tokens) + ' out, ' +
-          (d.calls || 0) + ' calls"><i style="height:' + Math.max(2, (d.output_tokens || 0) / maxOut * 100) + '%"></i></span>'
+          (d.calls || 0) + ' calls' + (Number(d.cost_usd || 0) > 0 ? ', ' + fmtUsd(d.cost_usd) : '') +
+          '"><i style="height:' + Math.max(2, (d.output_tokens || 0) / maxOut * 100) + '%"></i></span>'
       ).join('') + '</div>' +
       '<div class="chart-axis"><span>' + escHtml(days[0].day || '') + '</span><span>' +
         escHtml(days[days.length - 1].day || '') + '</span></div>';
@@ -1767,21 +1821,26 @@ async function loadUsage() {
     dailyEl.style.display = 'none';
   }
 
-  // Breakdown tables — calls + tokens, no cost column
+  // Breakdown tables — calls + tokens, plus Cost (USD) when cost_usd > 0
   const tablesEl = document.getElementById('usage-tables');
   const table = (title, rows, keyName) => {
     if (!rows || !rows.length) return '';
     const max = Math.max(...rows.map(r => r.calls || 0), 1);
+    const hasCost = rows.some(r => Number(r.cost_usd || 0) > 0);
     let h = '<div class="card flush"><div class="card-head"><h3>' + title + '</h3></div><table><thead><tr>' +
       '<th>' + keyName + '</th><th>Calls</th><th class="num">Input</th><th class="num">Output</th><th class="num">Cache read</th>' +
+      (hasCost ? '<th class="num">Cost (USD)</th>' : '') +
       '</tr></thead><tbody>';
     for (const r of rows) {
+      const rCost = Number(r.cost_usd || 0);
       h += '<tr><td class="cell-main">' + escHtml(String(r[keyName.toLowerCase()] || '')) + '</td>' +
         '<td><span class="meter-row"><span class="bar" style="width:120px"><span style="width:' +
           (100 * (r.calls || 0) / max) + '%;background:var(--accent)"></span></span><span class="v">' + (r.calls || 0) + '</span></span></td>' +
         '<td class="num muted">' + fmtTokens(r.input_tokens) + '</td>' +
         '<td class="num">' + fmtTokens(r.output_tokens) + '</td>' +
-        '<td class="num muted">' + fmtTokens(r.cache_read_tokens) + '</td></tr>';
+        '<td class="num muted">' + fmtTokens(r.cache_read_tokens) + '</td>' +
+        (hasCost ? '<td class="num">' + (rCost > 0 ? fmtUsd(rCost) : '—') + '</td>' : '') +
+        '</tr>';
     }
     return h + '</tbody></table></div>';
   };
@@ -2291,6 +2350,8 @@ function renderCompaniesPage(page) {
     ' of ' + data.length + ' compan' + (data.length === 1 ? 'y' : 'ies') + pager + '</div>';
 }
 
+let _currentCompanyIndex = -1;
+
 // Basic facts about one company, above its contacts: where it came from,
 // why it fits, what's been done, and what Sellbird saw on its own site.
 function companyInfoCard(company, profile) {
@@ -2314,10 +2375,25 @@ function companyInfoCard(company, profile) {
   ).join('<br>');
   const people = by('DECISION_MAKER_TITLE').length ? by('DECISION_MAKER_TITLE') : by('CONTACT_FOUND');
   const form = by('CONTACT_FORM_URL')[0];
-  const shown = new Set(['DECISION_MAKER_TITLE', 'CONTACT_FOUND', 'CONTACT_FORM_URL', 'HIRING_ROLE', 'FOUND_IN_SERP', 'TECH_STACK']);
+  const dossier = by('REGISTRY_VERIFIED');
+  const dossierHtml = dossier.slice(0, 12).map(o => {
+    const val = escHtml(o.value_text || String(o.value_num || ''));
+    const src = (o.evidence_url && safeHref(o.evidence_url))
+      ? ' <span class="muted">(' + link(o.evidence_url, 'source') + ')</span>'
+      : '';
+    return val + src;
+  }).join('<br>');
+  const shown = new Set(['DECISION_MAKER_TITLE', 'CONTACT_FOUND', 'CONTACT_FORM_URL', 'HIRING_ROLE', 'FOUND_IN_SERP', 'TECH_STACK', 'REGISTRY_VERIFIED']);
   const other = Object.values(latest).filter(o => !shown.has(o.signal_code));
-  let html = '<div class="card" style="margin-bottom:16px"><div class="card-head"><h3>' + escHtml(c.name || c.domain) + '</h3>' +
-    '<span class="meta">' + (typeof company.fit === 'number' ? 'Fit ' + company.fit + ' / 100' : '') + '</span></div>' +
+  const companyId = c.id || company.id || '';
+  const companyDomain = c.domain || company.domain || '';
+  let html = '<div class="card" style="margin-bottom:16px"><div class="card-head" style="flex-wrap:wrap;gap:10px">' +
+    '<div><h3>' + escHtml(c.name || c.domain) + '</h3>' +
+    (typeof company.fit === 'number' ? '<span class="meta">Fit ' + company.fit + ' / 100</span>' : '') + '</div>' +
+    '<div class="page-actions">' +
+      '<button class="btn btn-primary btn-sm" onclick="runCompanyResearch(' + jsq(companyDomain) + ', ' + jsq(companyId) + ', this)">Deep Research</button>' +
+      '<button class="btn btn-secondary btn-sm" onclick="runCompanyEnrichment(' + jsq(companyId) + ', this)">Run AI Columns</button>' +
+    '</div></div>' +
     '<table><tbody>' +
     row('Website', link(website, c.domain || website)) +
     row('Sector', escHtml(c.industry)) +
@@ -2325,6 +2401,7 @@ function companyInfoCard(company, profile) {
     row('Why selected', escHtml(reg.why_selected || (company.fit_reasons || []).join(' · '))) +
     row('Status', '<b>' + escHtml(reg.status || company.register_status || '') + '</b>' +
       (reg.why_not_contacted || company.register_why ? ' — ' + escHtml(reg.why_not_contacted || company.register_why) : '')) +
+    row('Deep Research Dossier', dossierHtml) +
     row('People named on site', list(people, 8)) +
     row('Contact form', form ? link(form.value_text, form.value_text) : '') +
     row('Hiring', list(by('HIRING_ROLE'), 6)) +
@@ -2337,9 +2414,76 @@ function companyInfoCard(company, profile) {
   return html;
 }
 
+async function runBatchResearch(btn) {
+  if (btn) btn.disabled = true;
+  try {
+    const res = await api('/api/research/run', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ limit: 5 }),
+    });
+    if (res && res.success) {
+      showToast('Deep research completed for top companies.', 'success');
+      loadCompanies();
+    } else {
+      showToast((res && res.message) || 'Deep research failed.', 'error');
+    }
+  } finally {
+    if (btn) btn.disabled = false;
+  }
+}
+
+async function runCompanyResearch(domain, companyId, btn) {
+  if (btn) btn.disabled = true;
+  try {
+    const payload = {};
+    if (domain) payload.domain = domain;
+    if (companyId) payload.company_id = companyId;
+    const res = await api('/api/research/run', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(payload),
+    });
+    if (res && res.success) {
+      showToast('Deep research completed.', 'success');
+      if (companyDrill && _currentCompanyIndex >= 0) {
+        showCompanyContacts(_currentCompanyIndex);
+      } else {
+        loadCompanies();
+      }
+    } else {
+      showToast((res && res.message) || 'Deep research failed.', 'error');
+    }
+  } finally {
+    if (btn) btn.disabled = false;
+  }
+}
+
+async function runCompanyEnrichment(companyId, btn) {
+  if (!companyId) return;
+  if (btn) btn.disabled = true;
+  try {
+    const res = await api('/api/enrichment/run', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ company_ids: [companyId], limit: 1 }),
+    });
+    if (res && res.success) {
+      showToast('AI column enrichment completed.', 'success');
+      const enrEl = document.getElementById('enrichment');
+      if (enrEl && enrEl.classList.contains('active')) loadEnrichment();
+    } else {
+      showToast((res && res.message) || 'AI column enrichment failed.', 'error');
+    }
+  } finally {
+    if (btn) btn.disabled = false;
+  }
+}
+
 async function showCompanyContacts(index) {
   const company = _companies[index];
   if (!company) return;
+  _currentCompanyIndex = index;
   companyDrill = true;
   const el = document.getElementById('companies-list');
   el.innerHTML = loadingState();
@@ -2433,6 +2577,69 @@ async function loadProspects(ensureId) {
     document.getElementById('contact-search').value = _contactQuery;
   }
   renderContacts();
+}
+
+function openImportCsvModal() {
+  const fileEl = document.getElementById('import-csv-file');
+  const textEl = document.getElementById('import-csv-text');
+  if (fileEl) fileEl.value = '';
+  if (textEl) textEl.value = '';
+  const d = document.getElementById('import-csv-dialog');
+  if (d && d.showModal) d.showModal();
+}
+
+function closeImportCsvModal() {
+  const d = document.getElementById('import-csv-dialog');
+  if (d && d.close) d.close();
+}
+
+(function wireImportCsvDialog() {
+  const d = document.getElementById('import-csv-dialog');
+  if (!d) return;
+  d.addEventListener('click', e => { if (e.target === d) closeImportCsvModal(); });
+})();
+
+function handleImportCsvFile(input) {
+  const file = input && input.files && input.files[0];
+  if (!file || typeof FileReader === 'undefined') return;
+  const reader = new FileReader();
+  reader.onload = () => {
+    const textEl = document.getElementById('import-csv-text');
+    if (textEl) textEl.value = String(reader.result || '');
+  };
+  reader.readAsText(file);
+}
+
+async function submitImportCsv(btn) {
+  const textEl = document.getElementById('import-csv-text');
+  const csvText = ((textEl && textEl.value) || '').trim();
+  if (!csvText) {
+    showToast('Select a CSV file or paste CSV rows first.', 'error');
+    return;
+  }
+  if (btn) btn.disabled = true;
+  try {
+    const res = await api('/api/prospects/import', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ csv_text: csvText }),
+    });
+    if (res && res.success) {
+      showToast(
+        'Imported ' + (res.imported || 0) + ' contacts (' +
+        (res.skipped_duplicate || 0) + ' duplicates, ' +
+        (res.skipped_suppressed || 0) + ' suppressed, ' +
+        (res.skipped_invalid || 0) + ' invalid skipped).',
+        'success'
+      );
+      closeImportCsvModal();
+      loadProspects();
+    } else {
+      showToast((res && res.message) || 'CSV import failed.', 'error');
+    }
+  } finally {
+    if (btn) btn.disabled = false;
+  }
 }
 
 function contactMatches(p, f) {
@@ -4104,31 +4311,99 @@ async function runBrainProbe() {
 
 async function loadEnrichment() {
   const list = document.getElementById('clay-column-list');
+  const matrixEl = document.getElementById('clay-matrix-table');
   if (!list) return;
   const data = await api('/api/enrichment/columns');
-  if (!data) { list.innerHTML = offlineState(); return; }
+  if (!data) {
+    list.innerHTML = offlineState();
+    if (matrixEl) matrixEl.innerHTML = offlineState();
+    return;
+  }
   const cols = data.columns || [];
+  const vals = data.values || {};
+  const companiesMap = data.companies || {};
   if (!cols.length) {
     list.innerHTML = emptyState(icon('enrichment'), 'No AI columns yet',
       'Define a prompt once and Sellbird runs it against every company it has read. ' +
       'Click <b>+ Add AI Column</b> to create the first one.');
-    return;
-  }
-  list.innerHTML = cols.map(col => {
-    const colKey = col.key || col.id || '';
-    const colType = col.output_type || col.output_format || col.value_type || 'text';
-    return `
-      <div class="clay-col-item">
-        <div>
-          <h4>${escHtml(col.name)} <span class="tag" style="text-transform:none;font-weight:normal">${escHtml(colKey)}</span> <span class="tag accent">${escHtml(colType)}</span>${col.use_web_search ? ' <span class="tag">Web Search</span>' : ''}</h4>
-          <p>${escHtml(col.prompt || 'No instruction prompt.')}</p>
+  } else {
+    list.innerHTML = cols.map(col => {
+      const colId = col.id || col.key || '';
+      const colKey = col.key || col.id || '';
+      const colType = col.output_type || col.output_format || col.value_type || 'text';
+      return `
+        <div class="clay-col-item">
+          <div>
+            <h4>${escHtml(col.name)} <span class="tag" style="text-transform:none;font-weight:normal">${escHtml(colKey)}</span> <span class="tag accent">${escHtml(colType)}</span>${col.use_web_search ? ' <span class="tag">Web Search</span>' : ''}</h4>
+            <p>${escHtml(col.prompt || 'No instruction prompt.')}</p>
+          </div>
+          <div style="display:flex;align-items:center;gap:6px;flex-shrink:0">
+            <button class="btn btn-secondary btn-sm" onclick="runEnrichmentColumn(${jsq(colId)}, this)">Run Column</button>
+            <button class="btn btn-ghost" title="Delete Column" onclick="deleteEnrichmentCol(${jsq(colId)})">
+              <svg class="icon"><use href="#i-close"/></svg>
+            </button>
+          </div>
         </div>
-        <button class="btn btn-ghost" title="Delete Column" onclick="deleteEnrichmentCol(${jsq(col.id || col.key)})">
-          <svg class="icon"><use href="#i-close"/></svg>
-        </button>
-      </div>
-    `;
-  }).join('');
+      `;
+    }).join('');
+  }
+
+  if (matrixEl) {
+    const companyIds = Object.keys(companiesMap);
+    for (const cid of Object.keys(vals)) {
+      if (!Object.prototype.hasOwnProperty.call(companiesMap, cid)) companyIds.push(cid);
+    }
+    if (!companyIds.length || !cols.length) {
+      matrixEl.innerHTML = emptyState(icon('enrichment'), 'No matrix rows yet',
+        'Add at least one AI column and discover companies to view and export enriched matrix data.');
+      return;
+    }
+    let mHtml = '<div class="table-card" style="overflow-x:auto"><table class="nowrap"><thead><tr>' +
+      '<th>Company</th><th>Domain</th>';
+    for (const col of cols) {
+      mHtml += '<th>' + escHtml(col.name || col.key || col.id) + '</th>';
+    }
+    mHtml += '<th>Actions</th></tr></thead><tbody>';
+    for (const cid of companyIds) {
+      const comp = companiesMap[cid] || { id: cid, name: cid, domain: '' };
+      const compVals = vals[cid] || {};
+      const domainUrl = comp.domain ? (isHttpUrl(comp.domain) ? comp.domain : 'https://' + comp.domain) : '';
+      const domainCell = safeHref(domainUrl)
+        ? '<a href="' + safeHref(domainUrl) + '" target="_blank" rel="noopener noreferrer">' + escHtml(comp.domain) + '</a>'
+        : escHtml(comp.domain || '');
+      mHtml += '<tr><td class="cell-main">' + escHtml(comp.name || cid) + '</td><td>' + domainCell + '</td>';
+      for (const col of cols) {
+        const cell = compVals[col.id] || (col.key ? compVals[col.key] : null);
+        const valText = cell && cell.value ? escHtml(cell.value) : '<span class="muted">—</span>';
+        const srcLink = (cell && cell.source_url && safeHref(cell.source_url))
+          ? ' <a href="' + safeHref(cell.source_url) + '" target="_blank" rel="noopener noreferrer" class="hint">[source]</a>'
+          : '';
+        mHtml += '<td class="clay-cell" title="' + escHtml((cell && cell.value) || '') + '">' + valText + srcLink + '</td>';
+      }
+      mHtml += '<td><button class="btn btn-secondary btn-sm" onclick="runCompanyEnrichment(' + jsq(cid) + ', this)">Run</button></td></tr>';
+    }
+    matrixEl.innerHTML = mHtml + '</tbody></table></div>';
+  }
+}
+
+async function runEnrichmentColumn(colId, btn) {
+  if (!colId) return;
+  if (btn) btn.disabled = true;
+  try {
+    const res = await api('/api/enrichment/run', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ column_id: colId }),
+    });
+    if (res && res.success) {
+      showToast('Column enrichment completed.', 'success');
+      loadEnrichment();
+    } else {
+      showToast((res && res.message) || 'Column enrichment failed.', 'error');
+    }
+  } finally {
+    if (btn) btn.disabled = false;
+  }
 }
 
 function openAddColumnModal() {
@@ -4212,6 +4487,7 @@ async function triggerEnrichmentRun() {
       const count = res.enriched_cells ?? res.result ?? res.enriched_count ?? 0;
       showToast('Batch enrichment completed.', 'success');
       if (statusEl) statusEl.textContent = 'Enriched: ' + count + ' items processed.';
+      loadEnrichment();
     } else {
       showToast((res && res.message) || 'Enrichment trigger failed.', 'error');
       if (statusEl) statusEl.textContent = 'Ready';

@@ -1019,19 +1019,25 @@ textarea.form-input { height: auto; padding: 8px 12px; }
 
 /* ── Small screens: the sidebar becomes a top bar ────────────── */
 
-@media (max-width: 900px) {
+@media (max-width: 1000px) {
   .app { grid-template-columns: minmax(0, 1fr); grid-template-rows: auto 1fr; }
   .sidebar {
     position: sticky; top: 0; z-index: 20; height: auto; flex-direction: row; flex-wrap: wrap;
     align-items: center; gap: var(--sp-2) var(--sp-3); padding: var(--sp-2) var(--sp-4);
     border-right: none; border-bottom: 1px solid var(--line); overflow: visible;
+    max-width: 100%; min-width: 0;
   }
   .brand .tagline { display: none; }
-  nav { order: 3; width: 100%; flex-direction: row; gap: 2px; overflow-x: auto; scrollbar-width: thin; margin: 0 calc(-1 * var(--sp-4)); padding: 0 var(--sp-4) 2px; width: calc(100% + 2 * var(--sp-4)); }
+  nav {
+    order: 3; flex: 1 0 100%; width: 100%; max-width: 100%; min-width: 0;
+    flex-direction: row; justify-content: flex-start; align-items: center; gap: 2px;
+    overflow-x: auto; overflow-y: hidden; scrollbar-width: thin;
+    margin: 0; padding: 2px 0 4px; scroll-padding-inline: 0;
+  }
   nav::-webkit-scrollbar { display: none; }
-  .nav-group { flex-direction: row; gap: 2px; }
+  .nav-group { flex-direction: row; gap: 2px; flex-shrink: 0; }
   .nav-label { display: none; }
-  nav button { width: auto; height: 30px; flex: none; }
+  nav button { width: auto; height: 30px; flex: none; white-space: nowrap; }
   .sidebar-foot { margin: 0 0 0 auto; flex-direction: row; align-items: center; border-top: none; padding: 0; }
   main.content { padding: var(--sp-5) var(--sp-4) 80px; }
   .tl-item { grid-template-columns: 52px 24px minmax(0, 1fr); }

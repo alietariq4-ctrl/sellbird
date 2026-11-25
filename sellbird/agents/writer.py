@@ -15,6 +15,7 @@ import logging
 import re
 from datetime import datetime, timezone
 
+from sellbird.agents.critic import CopyCritic
 from sellbird.brain import Brain
 from sellbird.config import EmailRulesError, SellbirdConfig, compliance_of, load_email_rules
 from sellbird.email_style import (
@@ -528,6 +529,7 @@ class Writer:
         provider = self.config.channels.email.provider
 
         pending = []
+        self._personal_facts_cache = {}
         is_suppressed = getattr(self.state, "is_suppressed", None)
         for prospect in prospects:
             if callable(is_suppressed) and prospect.email:
@@ -545,16 +547,42 @@ class Writer:
                 logger.warning(f"Writer: personal draft failed for {prospect.email}: {e}")
                 continue
             if draft:
-                pending.append((prospect, draft))
+                facts = self._personal_facts_cache.pop(id(prospect), None)
+                if facts is None:
+                    facts, _ = await self._collect_personal_facts(prospect)
+                pending.append((prospect, draft, facts))
 
         # One Humanizer pass over the whole batch before anything is staged.
         polished = await humanize(
-            self.brain, [d for _, d in pending], agent="writer",
+            self.brain, [d for _, d, _ in pending], agent="writer",
             enabled=humanizer_enabled(self.config),
         )
 
+        critic = CopyCritic(self.brain, self.config)
         drafted = 0
-        for (prospect, _), draft in zip(pending, polished):
+        for (prospect, _, facts), draft in zip(pending, polished):
+            prospect_context = (
+                f"Company: {prospect.company}"
+                if getattr(prospect, "is_company_inbox", False)
+                else f"Name: {prospect.full_name()}, Title: {prospect.title}, Company: {prospect.company}"
+            )
+            reviewed = await critic.review_and_refine(
+                draft,
+                prospect_context=prospect_context,
+                evidence_facts=facts,
+                step=1,
+                names=_names(prospect),
+                allow_merge_tags=False,
+            )
+            if not reviewed.get("approved"):
+                remaining = reviewed.get("issues") or []
+                if any(not str(issue).startswith("style violation:") for issue in remaining):
+                    logger.warning(
+                        f"Writer: CopyCritic blocked personal draft for {prospect.email}: "
+                        + "; ".join(str(i) for i in remaining)
+                    )
+                    continue
+            draft = {"subject": reviewed["subject"], "body": reviewed["body"]}
             draft = await self._keep_to_rules(draft, step=1, names=_names(prospect))
             if draft is None:
                 continue
@@ -632,18 +660,13 @@ class Writer:
             + lines
         )
 
-    async def _write_personal_email(self, prospect) -> dict | None:
-        """One grounded draft for one person. Facts in, one email out."""
-        inbox_rule = ""
+    async def _collect_personal_facts(self, prospect) -> tuple[list[str], list[str] | None]:
+        """Gather all verified research, site, startup, enrichment, and registry facts."""
         if prospect.is_company_inbox:
             facts = [
                 f"- Name: unknown (the company's general inbox, {prospect.email})",
                 f"- Company: {prospect.company}",
             ]
-            inbox_rule = (
-                "\n- This goes to the company's general inbox, most likely read by the owner"
-                "\n  or the office manager. Use no first name; open with 'Hi there' or"
-                "\n  address the company's team.")
         else:
             facts = [
                 f"- Name: {prospect.full_name()}",
@@ -653,10 +676,13 @@ class Writer:
         if prospect.industry:
             facts.append(f"- Industry: {prospect.industry}")
 
+        state = getattr(self, "state", None)
+        company_id = getattr(prospect, "company_id", "") or ""
+
         company = None
-        if prospect.company_id:
+        if company_id and state is not None:
             try:
-                company = await self.state.get_company(prospect.company_id)
+                company = await state.get_company(company_id)
             except Exception:
                 company = None
         if company:
@@ -670,12 +696,112 @@ class Writer:
                 facts.append(
                     f"- Signal ({signal.get('type', 'signal')}): {signal.get('detail', '')}"
                 )
-        facts.extend(await self._site_facts(prospect.company_id))
+        facts.extend(await self._site_facts(company_id))
         if prospect.personalization_notes:
             facts.append(f"- Research notes: {prospect.personalization_notes}")
-        startup = await self._startup(prospect.company_id)
+        startup = await self._startup(company_id)
         if startup is not None:
             facts.extend(startup)
+
+        # Clay AI custom enrichment values for the company
+        if state is not None and company_id:
+            col_names: dict[str, str] = {}
+            get_cols = getattr(state, "get_enrichment_columns", None)
+            if callable(get_cols):
+                try:
+                    cols = get_cols()
+                    if inspect.isawaitable(cols):
+                        cols = await cols
+                    for col in cols or []:
+                        if isinstance(col, dict) and col.get("id") and col.get("name"):
+                            col_names[str(col["id"])] = str(col["name"]).strip()
+                except Exception:
+                    pass
+
+            get_vals = getattr(state, "get_enrichment_values", None)
+            if callable(get_vals):
+                try:
+                    try:
+                        vals = get_vals(company_id=company_id)
+                    except TypeError:
+                        vals = get_vals(company_id)
+                    if inspect.isawaitable(vals):
+                        vals = await vals
+                    for row in vals or []:
+                        if not isinstance(row, dict):
+                            continue
+                        row_entity = str(row.get("company_id") or row.get("entity_id") or "").strip()
+                        if row_entity and row_entity != company_id:
+                            continue
+                        if str(row.get("status") or "").strip().lower() in ("failed", "error"):
+                            continue
+                        raw_val = row.get("value")
+                        if raw_val is None:
+                            continue
+                        val_str = str(raw_val).strip()
+                        if not val_str:
+                            continue
+                        col_name = (
+                            str(row.get("column_name") or "").strip()
+                            or col_names.get(str(row.get("column_id") or ""), "")
+                            or str(row.get("col_key") or row.get("key") or row.get("column_id") or "Enrichment").strip()
+                        )
+                        line = f"- {col_name}: {val_str}"
+                        if line not in facts:
+                            facts.append(line)
+                except Exception:
+                    pass
+
+            # DeepResearcher REGISTRY_VERIFIED observations (deduplicated against existing facts)
+            get_obs = getattr(state, "get_observations", None)
+            if callable(get_obs):
+                try:
+                    try:
+                        obs_rows = get_obs(
+                            company_id=company_id,
+                            signal_code="REGISTRY_VERIFIED",
+                            latest_only=False,
+                            limit=20,
+                        )
+                    except TypeError:
+                        try:
+                            obs_rows = get_obs(company_id=company_id, signal_code="REGISTRY_VERIFIED")
+                        except TypeError:
+                            obs_rows = get_obs(company_id=company_id)
+                    if inspect.isawaitable(obs_rows):
+                        obs_rows = await obs_rows
+                    existing_blob = "\n".join(facts).lower()
+                    for obs in obs_rows or []:
+                        if not isinstance(obs, dict):
+                            continue
+                        if str(obs.get("signal_code") or "").strip().upper() != "REGISTRY_VERIFIED":
+                            continue
+                        val_text = str(obs.get("value_text") or "").strip()
+                        if not val_text:
+                            continue
+                        if val_text.lower() in existing_blob:
+                            continue
+                        line = f"- Verified public record: {val_text}"
+                        if line not in facts:
+                            facts.append(line)
+                            existing_blob += "\n" + val_text.lower()
+                except Exception:
+                    pass
+
+        return facts, startup
+
+    async def _write_personal_email(self, prospect) -> dict | None:
+        """One grounded draft for one person. Facts in, one email out."""
+        inbox_rule = ""
+        if prospect.is_company_inbox:
+            inbox_rule = (
+                "\n- This goes to the company's general inbox, most likely read by the owner"
+                "\n  or the office manager. Use no first name; open with 'Hi there' or"
+                "\n  address the company's team.")
+        facts, startup = await self._collect_personal_facts(prospect)
+        if not hasattr(self, "_personal_facts_cache") or not isinstance(self._personal_facts_cache, dict):
+            self._personal_facts_cache = {}
+        self._personal_facts_cache[id(prospect)] = facts
 
         prompt = self.brain.load_prompt(
             "writer",
@@ -852,8 +978,31 @@ Return ONLY a JSON array (no markdown fences, no commentary):
             self.brain, [{"subject": s.subject, "body": s.body} for s in steps],
             agent="writer", enabled=humanizer_enabled(self.config),
         )
+        critic = CopyCritic(self.brain, self.config)
         names = [n for p in prospects for n in _names(p)]
         for step, draft in zip(steps, polished):
+            reviewed = await critic.review_and_refine(
+                draft,
+                step=step.step,
+                names=names,
+                allow_merge_tags=True,
+            )
+            if reviewed.get("refined"):
+                before_vars = set(MERGE_VAR.findall(f"{draft.get('subject', '')}\n{draft.get('body', '')}"))
+                after_text = f"{reviewed.get('subject', '')}\n{reviewed.get('body', '')}"
+                after_vars = set(MERGE_VAR.findall(after_text))
+                if (before_vars and not after_vars) or (inbox_batch and PERSON_VAR.search(after_text)):
+                    logger.warning("Writer: CopyCritic repair altered merge variables improperly; keeping pre-critic draft.")
+                else:
+                    draft = {"subject": reviewed["subject"], "body": reviewed["body"]}
+            if not reviewed.get("approved"):
+                remaining = reviewed.get("issues") or []
+                if any(not str(issue).startswith("style violation:") for issue in remaining):
+                    logger.warning(
+                        f"Writer: CopyCritic blocked sequence step {step.step}: "
+                        + "; ".join(str(i) for i in remaining)
+                    )
+                    return []
             kept = await self._keep_to_rules(draft, step=step.step, names=names)
             if kept is None:
                 # One template goes to the whole batch: a step that can't be

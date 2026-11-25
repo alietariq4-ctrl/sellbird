@@ -259,7 +259,10 @@
 <!-- Companies -->
 <div id="companies" class="section">
   <div class="section-head"><div><h2>Companies</h2><p>Organizations Sellbird has researched, best fit first. Click a row to see its contacts.</p></div>
-    <div><button class="btn btn-secondary btn-sm" onclick="downloadCsv('/api/export/companies.csv', 'company-register.csv', this)"><svg class="icon" aria-hidden="true"><use href="#i-download"/></svg>Export register</button></div></div>
+    <div class="page-actions">
+      <button class="btn btn-primary btn-sm" id="companies-batch-research-btn" onclick="runBatchResearch(this)">Deep Research (Top 5)</button>
+      <button class="btn btn-secondary btn-sm" onclick="downloadCsv('/api/export/companies.csv', 'company-register.csv', this)"><svg class="icon" aria-hidden="true"><use href="#i-download"/></svg>Export register</button>
+    </div></div>
   <div id="companies-list"></div>
 </div>
 
@@ -268,6 +271,7 @@
   <div class="section-head">
     <div><h2>Contacts</h2><p>People Sellbird has found, how sure it is of their address, and where each one stands.</p></div>
     <div class="page-actions">
+      <button class="btn btn-primary btn-sm" onclick="openImportCsvModal()">+ Import CSV</button>
       <button class="btn btn-secondary btn-sm" onclick="downloadCsv('/api/export/prospects.csv', 'prospects.csv', this)"><svg class="icon" aria-hidden="true"><use href="#i-download"/></svg>Export deliverable</button>
       <button class="btn btn-ghost btn-sm" onclick="downloadCsv('/api/export/prospects.csv?all=true', 'prospects-all.csv', this)">Export all</button>
     </div>
@@ -352,6 +356,28 @@
   <div class="modal-foot">
     <button class="btn btn-secondary" onclick="closeAddColumnModal()">Cancel</button>
     <button class="btn btn-primary" onclick="submitAddColumn()">Save Column</button>
+  </div>
+</dialog>
+
+<dialog id="import-csv-dialog" class="modal modal-wide" aria-labelledby="import-csv-dialog-title">
+  <div class="modal-head">
+    <h3 id="import-csv-dialog-title">Import Leads from CSV</h3>
+    <button class="btn btn-ghost" onclick="closeImportCsvModal()"><svg class="icon"><use href="#i-close"/></svg></button>
+  </div>
+  <div class="modal-body">
+    <div class="form-group">
+      <label class="form-label" for="import-csv-file">Upload CSV file</label>
+      <input type="file" class="form-input" id="import-csv-file" accept=".csv,text/csv" onchange="handleImportCsvFile(this)">
+    </div>
+    <div class="form-group">
+      <label class="form-label" for="import-csv-text">Or paste CSV rows</label>
+      <textarea class="form-input" id="import-csv-text" rows="7" placeholder="first_name,last_name,email,title,company,domain&#10;Jane,Doe,jane@acme.com,VP Sales,Acme Corp,acme.com"></textarea>
+      <div class="form-hint">Expected columns: <code>first_name</code>, <code>last_name</code> (or <code>full_name</code>), <code>email</code>, <code>title</code> (or <code>role</code>), <code>company</code>, <code>domain</code> (or <code>website</code>), optional <code>linkedin_url</code>, <code>industry</code>, <code>location</code>, <code>email_status</code>. Max 2,000 rows; DNC and suppressed contacts are skipped automatically.</div>
+    </div>
+  </div>
+  <div class="modal-foot">
+    <button class="btn btn-secondary" onclick="closeImportCsvModal()">Cancel</button>
+    <button class="btn btn-primary" id="import-csv-submit-btn" onclick="submitImportCsv(this)">Import Contacts</button>
   </div>
 </dialog>
 
@@ -473,6 +499,19 @@
       <span id="enrichment-run-status" class="hint">Processes un-enriched companies and prospects</span>
     </div>
   </div>
+
+  <div class="card" id="clay-data-matrix">
+    <div style="display: flex; justify-content: space-between; align-items: center; gap: var(--sp-3); flex-wrap: wrap; margin-bottom: var(--sp-4);">
+      <div>
+        <h3>Enriched Company Data Matrix</h3>
+        <p class="desc">Enriched values, clickable source citations, and per-company runs across your custom AI columns.</p>
+      </div>
+      <button class="btn btn-secondary btn-sm" onclick="downloadCsv('/api/export/enrichment.csv', 'enrichment-matrix.csv', this)"><svg class="icon" aria-hidden="true"><use href="#i-download"/></svg>Export CSV</button>
+    </div>
+    <div id="clay-matrix-table">
+      <div class="loading" role="status">Loading…</div>
+    </div>
+  </div>
 </div>
 
 <!-- Activity -->
@@ -483,7 +522,7 @@
 
 <!-- Usage -->
 <div id="usage" class="section">
-  <div class="section-head"><div><h2>Usage</h2><p>Model usage on your subscription (Claude or Codex): calls and tokens by provider, agent and task. Subscription plans aren't billed per token, so there are no dollar costs here.</p></div></div>
+  <div class="section-head"><div><h2>Usage</h2><p>Model calls, tokens, and USD API spend by provider, agent and task. Subscription plans (Claude or Codex) track quota; API and Brain Router providers report dollar cost.</p></div></div>
   <div id="usage-quota" class="card" style="display:none"></div>
   <div class="stats-grid" id="usage-stats"></div>
   <div class="card" id="usage-daily" style="display:none"></div>
@@ -730,6 +769,8 @@
             <input type="password" class="form-input" id="calcom-key" placeholder="cal_live_..." autocomplete="off"></div>
           <div class="form-group"><label class="form-label" for="calcom-event-type-id">Cal.com Event Type ID</label>
             <input type="text" class="form-input" id="calcom-event-type-id" placeholder="e.g. 123456" autocomplete="off"></div>
+          <div class="form-group"><label class="form-label" for="calcom-webhook-secret">Cal.com Webhook Secret</label>
+            <input type="password" class="form-input" id="calcom-webhook-secret" placeholder="Enter webhook signing secret" autocomplete="off"></div>
           <div class="form-group"><label class="form-label" for="twenty-url">Twenty CRM URL</label>
             <input type="text" class="form-input" id="twenty-url" placeholder="https://twenty.example.com" autocomplete="off"></div>
           <div class="form-group"><label class="form-label" for="twenty-key">Twenty CRM API Key</label>
@@ -741,7 +782,18 @@
           <div class="form-group"><label class="form-label" for="slack-webhook">Slack Webhook URL</label>
             <input type="password" class="form-input" id="slack-webhook" placeholder="https://hooks.slack.com/services/..." autocomplete="off"></div>
         </div>
-        <button class="btn btn-primary btn-sm" onclick="saveIntegrations()">Save Integrations</button>
+        <div class="btn-group" style="display:flex;gap:10px;align-items:center;flex-wrap:wrap;margin-top:8px;">
+          <button class="btn btn-primary btn-sm" onclick="saveIntegrations()">Save Integrations</button>
+          <select class="form-input" id="integration-test-service" style="width:auto;min-width:150px;" aria-label="Integration service to test">
+            <option value="telegram">Telegram Bot</option>
+            <option value="slack">Slack Webhook</option>
+            <option value="calcom">Cal.com</option>
+            <option value="twenty">Twenty CRM</option>
+          </select>
+          <label class="check-line"><input type="checkbox" id="integration-test-ping"> Send Slack test ping</label>
+          <button class="btn btn-secondary btn-sm" id="integration-test-btn" onclick="testIntegrationConnection(this)">Test Connection</button>
+        </div>
+        <div id="integration-test-result" class="form-hint" aria-live="polite" style="margin-top:8px;"></div>
       </div>
     </div>
   </div>

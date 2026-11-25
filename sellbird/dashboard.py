@@ -27,7 +27,7 @@ import yaml
 from dotenv import dotenv_values, load_dotenv
 from fastapi import APIRouter, FastAPI, Request
 from fastapi.responses import (
-    HTMLResponse, JSONResponse, PlainTextResponse, Response,
+    HTMLResponse, JSONResponse, PlainTextResponse, Response, StreamingResponse,
 )
 from pydantic import BaseModel, Field
 from starlette.middleware import Middleware
@@ -497,7 +497,7 @@ ALLOWED_ENV_KEYS = (
     "FIRECRAWL_API_KEY", "SERPER_API_KEY", "SCAVIO_API_KEY",
     "TINYFISH_API_KEY",
     # Calendar, CRM & Operator Copilot
-    "CALCOM_API_KEY", "CALCOM_EVENT_TYPE_ID",
+    "CALCOM_API_KEY", "CALCOM_EVENT_TYPE_ID", "CALCOM_WEBHOOK_SECRET",
     "TWENTY_API_KEY", "TWENTY_BASE_URL",
     "WEBHOOK_URL", "TELEGRAM_BOT_TOKEN", "TELEGRAM_CHAT_ID",
     "SLACK_WEBHOOK_URL",
@@ -577,6 +577,7 @@ async def get_settings():
         # Calendar, CRM & Copilot
         "calcom_api_key_set": is_set("CALCOM_API_KEY"),
         "calcom_event_type_id": env_vars.get("CALCOM_EVENT_TYPE_ID", ""),
+        "calcom_webhook_secret_set": is_set("CALCOM_WEBHOOK_SECRET"),
         "twenty_api_key_set": is_set("TWENTY_API_KEY"),
         "twenty_base_url": env_vars.get("TWENTY_BASE_URL", ""),
         "webhook_url_set": is_set("WEBHOOK_URL"),
@@ -914,6 +915,128 @@ async def test_instantly(request: Request):
                 return {"success": False, "message": f"API returned {resp.status_code}. Check your key."}
     except Exception as e:
         return {"success": False, "message": f"Connection failed: {str(e)}"}
+
+
+@app.post("/api/integrations/test")
+async def test_integration_connection(request: Request):
+    """Live connection & SSRF-validated configuration test for Calendar, CRM, and Copilot integrations."""
+    try:
+        data = await request.json()
+    except Exception:
+        data = {}
+    if not isinstance(data, dict):
+        return JSONResponse({"success": False, "message": "Invalid request body."}, status_code=400)
+
+    service = str(data.get("service") or "").strip().lower()
+    if service not in ("telegram", "slack", "calcom", "twenty"):
+        return JSONResponse(
+            {"success": False, "message": "Unsupported integration service."},
+            status_code=400,
+        )
+
+    env_file_vars = _read_env_file()
+    hosted_custom = _in_custom_home() and current_home().hosted
+
+    def _resolve_val(body_keys: tuple[str, ...], env_key: str, default: str = "") -> str:
+        for k in body_keys:
+            raw = data.get(k)
+            if isinstance(raw, str) and raw.strip():
+                return raw.strip()
+        val = (env_file_vars.get(env_key, "") or "").strip()
+        if not val and not hosted_custom:
+            val = (os.getenv(env_key, "") or "").strip()
+        return val or default
+
+    import httpx
+    from sellbird.integrations.stealth_fetch import validate_public_url
+
+    if service == "telegram":
+        token = _resolve_val(("telegram_bot_token", "bot_token", "token"), "TELEGRAM_BOT_TOKEN")
+        if not token:
+            return {"success": False, "service": "telegram", "message": "No Telegram bot token provided."}
+        try:
+            async with httpx.AsyncClient(timeout=10.0, trust_env=False) as client:
+                resp = await client.get(f"https://api.telegram.org/bot{token}/getMe")
+            if resp.status_code == 200:
+                payload = resp.json()
+                if payload.get("ok"):
+                    username = str((payload.get("result") or {}).get("username") or "").strip()
+                    msg = f"Connected to Telegram (@{username})." if username else "Connected to Telegram."
+                    return {"success": True, "service": "telegram", "username": username, "message": msg}
+            return {"success": False, "service": "telegram", "message": f"Telegram API returned {resp.status_code}."}
+        except Exception as exc:
+            safe_err = str(exc).replace(token, "[REDACTED]")
+            return {"success": False, "service": "telegram", "message": f"Connection failed: {safe_err}"}
+
+    if service == "calcom":
+        api_key = _resolve_val(("calcom_api_key", "api_key"), "CALCOM_API_KEY")
+        if not api_key:
+            return {"success": False, "service": "calcom", "message": "No Cal.com API key provided."}
+        try:
+            async with httpx.AsyncClient(timeout=10.0, trust_env=False) as client:
+                resp = await client.get(
+                    "https://api.cal.com/v2/me",
+                    headers={"Authorization": f"Bearer {api_key}"},
+                )
+            if resp.status_code == 200:
+                return {"success": True, "service": "calcom", "message": "Connected to Cal.com."}
+            return {"success": False, "service": "calcom", "message": f"Cal.com API returned {resp.status_code}."}
+        except Exception as exc:
+            return {"success": False, "service": "calcom", "message": f"Connection failed: {exc}"}
+
+    if service == "twenty":
+        base_url = _resolve_val(
+            ("twenty_base_url", "base_url", "url"), "TWENTY_BASE_URL", "https://api.twenty.com"
+        ).rstrip("/")
+        try:
+            await validate_public_url(base_url)
+        except ValueError as exc:
+            return JSONResponse(
+                {"success": False, "service": "twenty", "message": f"Invalid Twenty CRM URL: {exc}"},
+                status_code=400,
+            )
+        api_key = _resolve_val(("twenty_api_key", "api_key"), "TWENTY_API_KEY")
+        if not api_key:
+            return {"success": False, "service": "twenty", "message": "No Twenty CRM API key provided."}
+        try:
+            async with httpx.AsyncClient(timeout=10.0, trust_env=False) as client:
+                resp = await client.get(
+                    f"{base_url}/rest/people?limit=1",
+                    headers={"Authorization": f"Bearer {api_key}"},
+                )
+            if resp.status_code == 200:
+                return {"success": True, "service": "twenty", "message": "Connected to Twenty CRM."}
+            return {"success": False, "service": "twenty", "message": f"Twenty CRM returned {resp.status_code}."}
+        except Exception as exc:
+            return {"success": False, "service": "twenty", "message": f"Connection failed: {exc}"}
+
+    # service == "slack"
+    webhook_url = _resolve_val(("slack_webhook_url", "webhook_url", "url"), "SLACK_WEBHOOK_URL")
+    if not webhook_url:
+        return {"success": False, "service": "slack", "message": "No Slack webhook URL provided."}
+    if not webhook_url.startswith("https://hooks.slack.com/"):
+        return JSONResponse(
+            {"success": False, "service": "slack",
+             "message": "Slack webhook URL must start with https://hooks.slack.com/"},
+            status_code=400,
+        )
+    try:
+        await validate_public_url(webhook_url)
+    except ValueError as exc:
+        return JSONResponse(
+            {"success": False, "service": "slack", "message": f"Invalid Slack webhook URL: {exc}"},
+            status_code=400,
+        )
+    if bool(data.get("send_test")):
+        try:
+            async with httpx.AsyncClient(timeout=10.0, trust_env=False) as client:
+                resp = await client.post(webhook_url, json={"text": "Sellbird integration test"})
+            if resp.status_code in (200, 204):
+                return {"success": True, "service": "slack", "message": "Sent test ping to Slack."}
+            return {"success": False, "service": "slack", "message": f"Slack webhook returned {resp.status_code}."}
+        except Exception as exc:
+            return {"success": False, "service": "slack", "message": f"Connection failed: {exc}"}
+    return {"success": True, "service": "slack", "message": "Slack webhook URL is valid."}
 
 
 # ── Companies ──
@@ -1637,6 +1760,227 @@ async def get_prospects(prospect_id: str = ""):
     for r in rows:
         r["opt_out_undone"] = r.get("id") in undone
     return rows
+
+
+async def _ensure_import_company(
+    state,
+    *,
+    name: str,
+    domain: str,
+    website: str = "",
+    industry: str = "",
+    location: str = "",
+    source: str = "csv_import",
+) -> str:
+    """Resolve or create a Company for an imported prospect, returning company_id."""
+    if not name and not domain:
+        return ""
+    fn = getattr(state, "ensure_company", None)
+    if callable(fn):
+        res = fn(
+            name=name or domain,
+            domain=domain,
+            website=website,
+            industry=industry,
+            location=location,
+            source=source,
+        )
+        return str((await res) if inspect.isawaitable(res) else res)
+    if domain:
+        existing = await state.get_company_by_domain(domain)
+        if existing:
+            return existing.id
+    elif name:
+        rows = await query_db(
+            "SELECT id FROM companies WHERE LOWER(name) = LOWER(?) LIMIT 1",
+            (name,),
+        )
+        if rows:
+            return str(rows[0]["id"])
+    from sellbird.models.company import Company
+
+    company = Company(
+        name=name or domain,
+        domain=domain,
+        website=website or (f"https://{domain}" if domain else ""),
+        industry=industry,
+        location=location,
+        source=source,
+    )
+    return await state.add_company(company)
+
+
+@app.post("/api/prospects/import")
+async def import_prospects_csv(request: Request):
+    """Import prospects from CSV text with validation, suppression filtering, and deduplication."""
+    import csv
+
+    try:
+        body = await request.json()
+    except Exception:
+        return JSONResponse({"success": False, "message": "Invalid JSON body."}, status_code=400)
+    if not isinstance(body, dict):
+        return JSONResponse({"success": False, "message": "Request body must be an object."}, status_code=400)
+
+    csv_text = body.get("csv_text")
+    if not isinstance(csv_text, str) or not csv_text.strip():
+        return JSONResponse({"success": False, "message": "csv_text is required."}, status_code=400)
+
+    cleaned_text = csv_text.lstrip("\ufeff")
+    reader = csv.DictReader(io.StringIO(cleaned_text))
+    if not reader.fieldnames:
+        return JSONResponse({"success": False, "message": "CSV header row is missing."}, status_code=400)
+
+    rows = list(reader)
+    if not rows:
+        return JSONResponse({"success": False, "message": "CSV contains no data rows."}, status_code=400)
+    if len(rows) > 2000:
+        return JSONResponse(
+            {"success": False, "message": "CSV exceeds the maximum of 2,000 rows."},
+            status_code=400,
+        )
+
+    from sellbird.gate import EMAIL_RE, do_not_contact_match
+    from sellbird.models.prospect import Prospect
+
+    state = _state()
+    await state.init_db()
+
+    try:
+        from sellbird.config import do_not_contact_from_file, live_do_not_contact, load_config
+        cfg_path = _resolve_config_file()
+        try:
+            cfg = load_config(str(cfg_path))
+            dnc_entries = live_do_not_contact(cfg)
+        except BaseException:
+            dnc_entries = do_not_contact_from_file(cfg_path) if cfg_path.exists() else []
+    except BaseException:
+        dnc_entries = []
+
+    def _norm_row(raw_row: dict) -> dict[str, str]:
+        out: dict[str, str] = {}
+        for k, v in (raw_row or {}).items():
+            if k is None:
+                continue
+            nk = re.sub(r"[^a-z0-9]+", "_", k.strip().lower()).strip("_")
+            if nk:
+                out[nk] = str(v or "").strip()
+        return out
+
+    def _pick(nr: dict[str, str], *keys: str) -> str:
+        for k in keys:
+            val = nr.get(k, "")
+            if val:
+                return val
+        return ""
+
+    def _extract_domain(raw_dom: str) -> tuple[str, str]:
+        val = (raw_dom or "").strip()
+        if not val:
+            return "", ""
+        website = val if re.match(r"^https?://", val, re.IGNORECASE) else f"https://{val}"
+        host = re.sub(r"^https?://", "", val, flags=re.IGNORECASE)
+        host = host.split("/", 1)[0].split("?", 1)[0].split("#", 1)[0].split(":", 1)[0]
+        host = host.lower().removeprefix("www.").strip(".")
+        return host, website
+
+    parsed_rows = [_norm_row(r) for r in rows]
+    candidate_emails = []
+    for nr in parsed_rows:
+        em = _pick(nr, "email", "email_address", "e_mail").lower()
+        if em and EMAIL_RE.match(em):
+            candidate_emails.append(em)
+
+    suppressed_map: dict[str, str] = {}
+    if candidate_emails:
+        suppressed_map = await state.suppressed_among(candidate_emails)
+
+    existing_rows = await query_db("SELECT LOWER(email) AS e FROM prospects WHERE email != ''")
+    existing_emails = {str(r["e"]).strip().lower() for r in existing_rows if r.get("e")}
+    seen_in_batch: set[str] = set()
+    company_cache: dict[tuple[str, str], str] = {}
+
+    imported = 0
+    skipped_duplicate = 0
+    skipped_suppressed = 0
+    skipped_invalid = 0
+
+    for nr in parsed_rows:
+        email = _pick(nr, "email", "email_address", "e_mail").lower()
+        first_name = _pick(nr, "first_name", "firstname", "first")
+        last_name = _pick(nr, "last_name", "lastname", "last")
+        full_name = _pick(nr, "full_name", "name", "contact_name")
+        if (not first_name or not last_name) and full_name:
+            parts = full_name.split(None, 1)
+            if not first_name and parts:
+                first_name = parts[0]
+            if not last_name and len(parts) > 1:
+                last_name = parts[1]
+
+        company_name = _pick(nr, "company", "company_name", "organization", "account")
+        raw_domain = _pick(nr, "domain", "company_domain", "website", "company_website", "url")
+        domain, website = _extract_domain(raw_domain)
+        title = _pick(nr, "title", "role", "job_title", "position")
+        linkedin_url = _pick(nr, "linkedin_url", "linkedin", "linkedin_profile")
+        industry = _pick(nr, "industry", "sector")
+        location = _pick(nr, "location", "city", "area", "country")
+        raw_email_status = _pick(nr, "email_status", "verification_status").lower()
+        email_status = "verified" if raw_email_status == "verified" else "guess"
+
+        prospect = Prospect(
+            first_name=first_name,
+            last_name=last_name,
+            email=email,
+            email_verified=(email_status == "verified"),
+            email_status=email_status,
+            linkedin_url=linkedin_url,
+            title=title,
+            source="csv_import",
+            company=company_name or domain,
+            industry=industry,
+        )
+        if not email or not EMAIL_RE.match(email) or not prospect.is_valid():
+            skipped_invalid += 1
+            continue
+
+        if do_not_contact_match(email, dnc_entries) or email in suppressed_map:
+            skipped_suppressed += 1
+            continue
+
+        if email in existing_emails or email in seen_in_batch:
+            skipped_duplicate += 1
+            continue
+        seen_in_batch.add(email)
+
+        company_id = ""
+        if domain or company_name:
+            cache_key = (domain, (company_name or "").lower())
+            if cache_key in company_cache:
+                company_id = company_cache[cache_key]
+            else:
+                company_id = await _ensure_import_company(
+                    state,
+                    name=company_name,
+                    domain=domain,
+                    website=website,
+                    industry=industry,
+                    location=location,
+                    source="csv_import",
+                )
+                if company_id:
+                    company_cache[cache_key] = company_id
+        prospect.company_id = company_id
+
+        await state.add_prospect(prospect)
+        imported += 1
+
+    return {
+        "success": True,
+        "imported": imported,
+        "skipped_duplicate": skipped_duplicate,
+        "skipped_suppressed": skipped_suppressed,
+        "skipped_invalid": skipped_invalid,
+    }
 
 
 def _state():
@@ -4761,7 +5105,11 @@ async def get_enrichment_columns():
         for comp_id, inner in raw_vals.items():
             if isinstance(inner, dict):
                 values_map[str(comp_id)] = {
-                    str(cid): (v if isinstance(v, dict) else {"value": str(v or ""), "status": "done"})
+                    str(cid): (
+                        {**v, "source_url": str(v.get("source_url") or v.get("evidence_url") or "")}
+                        if isinstance(v, dict)
+                        else {"value": str(v or ""), "status": "done", "source_url": ""}
+                    )
                     for cid, v in inner.items()
                 }
     elif isinstance(raw_vals, list):
@@ -4774,10 +5122,87 @@ async def get_enrichment_columns():
                 values_map.setdefault(str(comp_id), {})[str(col_ref)] = {
                     "value": str(r.get("value") or r.get("result") or ""),
                     "status": str(r.get("status") or "done"),
+                    "source_url": str(r.get("source_url") or r.get("evidence_url") or ""),
                     "updated_at": str(r.get("updated_at") or ""),
                 }
 
-    return {"columns": norm_cols, "values": values_map}
+    companies_map: dict[str, dict[str, str]] = {}
+    referenced_ids = [cid for cid in values_map.keys() if cid]
+    for i in range(0, len(referenced_ids), 500):
+        chunk = referenced_ids[i:i + 500]
+        ref_rows = await query_db(
+            f"SELECT id, name, domain, industry FROM companies WHERE id IN ({_in(chunk)})",
+            tuple(chunk),
+        )
+        for r in ref_rows:
+            cid = str(r.get("id") or "")
+            if cid:
+                companies_map[cid] = {
+                    "id": cid,
+                    "name": str(r.get("name") or ""),
+                    "domain": str(r.get("domain") or ""),
+                    "industry": str(r.get("industry") or ""),
+                }
+
+    recent_rows = await query_db(
+        "SELECT id, name, domain, industry FROM companies ORDER BY created_at DESC LIMIT 50"
+    )
+    for r in recent_rows:
+        cid = str(r.get("id") or "")
+        if cid and cid not in companies_map:
+            companies_map[cid] = {
+                "id": cid,
+                "name": str(r.get("name") or ""),
+                "domain": str(r.get("domain") or ""),
+                "industry": str(r.get("industry") or ""),
+            }
+
+    return {"columns": norm_cols, "values": values_map, "companies": companies_map}
+
+
+@_agentic_router.get("/api/export/enrichment.csv")
+async def export_enrichment_csv():
+    """Stream a formula-safe CSV of the Clay AI enrichment matrix."""
+    import csv
+
+    payload = await get_enrichment_columns()
+    cols = payload.get("columns") or []
+    values_map = payload.get("values") or {}
+    companies_map = payload.get("companies") or {}
+
+    buf = io.StringIO()
+    writer = csv.writer(buf)
+    header = ["Company", "Domain", "Industry"] + [
+        _csv_cell(c.get("name") or c.get("id") or "") for c in cols
+    ]
+    writer.writerow(header)
+
+    seen_cids: list[str] = list(companies_map.keys())
+    for cid in values_map.keys():
+        if cid not in companies_map:
+            seen_cids.append(cid)
+
+    for cid in seen_cids:
+        comp = companies_map.get(cid) or {}
+        comp_vals = values_map.get(cid) or {}
+        row = [
+            _csv_cell(comp.get("name") or cid),
+            _csv_cell(comp.get("domain") or ""),
+            _csv_cell(comp.get("industry") or ""),
+        ]
+        for col in cols:
+            col_id = str(col.get("id") or "")
+            col_key = str(col.get("key") or "")
+            cell = comp_vals.get(col_id) or (comp_vals.get(col_key) if col_key else None) or {}
+            val = cell.get("value") if isinstance(cell, dict) else cell
+            row.append(_csv_cell(val or ""))
+        writer.writerow(row)
+
+    return StreamingResponse(
+        iter([buf.getvalue()]),
+        media_type="text/csv",
+        headers={"Content-Disposition": 'attachment; filename="enrichment-matrix.csv"'},
+    )
 
 
 @_agentic_router.post("/api/enrichment/columns")
