@@ -3607,7 +3607,13 @@ async def static_file(path: str):
 
 @app.get("/", response_class=HTMLResponse)
 async def dashboard():
-    return (WEB_DIR / "index.html").read_text(encoding="utf-8")
+    html = (WEB_DIR / "index.html").read_text(encoding="utf-8")
+    for asset in ("auth.js", "app.css", "app.js"):
+        asset_path = WEB_DIR / asset
+        if asset_path.is_file():
+            ver = int(asset_path.stat().st_mtime_ns)
+            html = html.replace(f'/static/{asset}"', f'/static/{asset}?v={ver}"')
+    return HTMLResponse(html, headers={"Cache-Control": "no-store"})
 
 
 class DashboardSetupError(Exception):
