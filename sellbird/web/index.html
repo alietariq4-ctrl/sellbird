@@ -281,7 +281,13 @@
 
 <!-- Campaigns -->
 <div id="campaigns" class="section">
-  <div class="section-head"><div><h2>Campaigns</h2><p>Email sequences Sellbird has written, and how far each one has got.</p></div></div>
+  <div class="section-head">
+    <div><h2>Campaigns</h2><p>Email sequences Sellbird has written, and how far each one has got.</p></div>
+    <div class="page-actions">
+      <button class="btn btn-primary btn-sm" id="writer-run-btn" onclick="triggerWriterRun(this)">Write Emails Now</button>
+    </div>
+  </div>
+  <div id="campaigns-funnel"></div>
   <div id="frameworks-card"></div>
   <div id="campaigns-list"></div>
 </div>
@@ -547,6 +553,61 @@
           <input type="text" class="form-input" id="dns-domain" placeholder="yourdomain.com" autocomplete="off"></div>
         <div><button class="btn btn-secondary btn-sm" id="dns-run" onclick="runDnsCheck()">Check DNS</button></div>
         <div id="dns-results" aria-live="polite"></div>
+      </div>
+    </div>
+  </div>
+
+  <div class="card" id="compliance-card">
+    <div class="settings-row">
+      <div>
+        <h3>Compliance &amp; Sending Schedule</h3>
+        <p class="desc">CAN-SPAM footer, daily sending caps, manual approval mode, recipient send windows, and quiet hours stored in your Sellbird config.</p>
+      </div>
+      <div class="fields">
+        <div class="form-group">
+          <label class="form-label" for="comp-postal">Postal address</label>
+          <input type="text" class="form-input" id="comp-postal" placeholder="123 Main St, Suite 400, Austin, TX 78701" autocomplete="off">
+        </div>
+        <div class="form-group">
+          <label class="form-label" for="comp-optout">Opt-out footer line</label>
+          <input type="text" class="form-input" id="comp-optout" placeholder="Not interested? Just let me know and I won't email you again." autocomplete="off">
+        </div>
+        <div class="form-row">
+          <div class="form-group" style="max-width:180px">
+            <label class="form-label" for="comp-daily-limit">Daily email limit</label>
+            <input type="number" min="0" max="10000" class="form-input" id="comp-daily-limit" placeholder="50">
+          </div>
+          <div class="form-group" style="display:flex;align-items:flex-end;padding-bottom:6px">
+            <label class="check-line"><input type="checkbox" id="comp-require-approval"> Require manual approval</label>
+          </div>
+        </div>
+        <div class="schedule-group">
+          <label class="check-line" style="font-weight:600;margin-bottom:8px"><input type="checkbox" id="comp-sw-enabled"> Enable Send Window</label>
+          <div class="compliance-grid">
+            <div class="form-group"><label class="form-label" for="comp-sw-start">Start (HH:MM)</label>
+              <input type="text" class="form-input" id="comp-sw-start" placeholder="08:00" autocomplete="off"></div>
+            <div class="form-group"><label class="form-label" for="comp-sw-end">End (HH:MM)</label>
+              <input type="text" class="form-input" id="comp-sw-end" placeholder="17:00" autocomplete="off"></div>
+            <div class="form-group"><label class="form-label" for="comp-sw-days">Days</label>
+              <input type="text" class="form-input" id="comp-sw-days" placeholder="mon-fri" autocomplete="off"></div>
+            <div class="form-group"><label class="form-label" for="comp-sw-tz">Fallback Timezone</label>
+              <input type="text" class="form-input" id="comp-sw-tz" placeholder="America/New_York" autocomplete="off"></div>
+          </div>
+        </div>
+        <div class="schedule-group">
+          <label class="check-line" style="font-weight:600;margin-bottom:8px"><input type="checkbox" id="comp-qh-enabled"> Enable Quiet Hours</label>
+          <div class="compliance-grid">
+            <div class="form-group"><label class="form-label" for="comp-qh-start">Start (HH:MM)</label>
+              <input type="text" class="form-input" id="comp-qh-start" placeholder="22:00" autocomplete="off"></div>
+            <div class="form-group"><label class="form-label" for="comp-qh-end">End (HH:MM)</label>
+              <input type="text" class="form-input" id="comp-qh-end" placeholder="07:00" autocomplete="off"></div>
+            <div class="form-group"><label class="form-label" for="comp-qh-tz">Timezone</label>
+              <input type="text" class="form-input" id="comp-qh-tz" placeholder="America/New_York" autocomplete="off"></div>
+          </div>
+        </div>
+        <div>
+          <button class="btn btn-primary btn-sm" id="comp-save-btn" onclick="saveComplianceSettings()">Save Compliance &amp; Schedule</button>
+        </div>
       </div>
     </div>
   </div>

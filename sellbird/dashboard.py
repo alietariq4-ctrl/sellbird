@@ -887,6 +887,92 @@ async def dismiss_proposed_offer():
     return {"success": True}
 
 
+@app.post("/api/company/train")
+async def train_company_from_url(request: Request):
+    """Crawl a public website URL and train Sellbird's config + knowledge skills."""
+    require_self_hosted("local_ai_loop")
+    try:
+        body = await request.json()
+    except Exception:
+        body = None
+    if not isinstance(body, dict):
+        return JSONResponse({"success": False, "message": "Invalid JSON body."}, status_code=400)
+
+    raw_url = str(body.get("url") or "").strip()
+    if not raw_url:
+        return JSONResponse({"success": False, "message": "Website URL is required."}, status_code=400)
+
+    raw_max = body.get("max_pages", 25)
+    if isinstance(raw_max, bool):
+        return JSONResponse({"success": False, "message": "max_pages must be an integer."}, status_code=400)
+    try:
+        max_pages = max(1, min(50, int(raw_max)))
+    except (TypeError, ValueError):
+        return JSONResponse({"success": False, "message": "max_pages must be an integer."}, status_code=400)
+
+    from sellbird.brain import Brain
+    from sellbird.config import load_brain_config, load_config
+    from sellbird.integrations.stealth_fetch import validate_public_url
+    from sellbird.public_http import UnsafeURLError
+    from sellbird.trainer import Trainer, _normalize_start_url
+
+    norm_url = _normalize_start_url(raw_url)
+    parsed = urlparse(norm_url)
+    if parsed.scheme.lower() not in ("http", "https") or not parsed.netloc:
+        return JSONResponse({"success": False, "message": "Enter a valid http(s) website URL."}, status_code=400)
+
+    try:
+        await validate_public_url(norm_url)
+    except (UnsafeURLError, ValueError) as exc:
+        return JSONResponse({"success": False, "message": f"Invalid or unsafe URL: {exc}"}, status_code=400)
+
+    state = _state()
+    await state.init_db()
+    brain_cfg = load_brain_config()
+    trainer = Trainer(brain_config=brain_cfg)
+    trainer.state = state
+    await _close_brain(trainer.brain)
+    trainer.brain = Brain(state, brain_cfg)
+
+    try:
+        unavail = await trainer.brain.preflight()
+        if unavail:
+            return JSONResponse({"success": False, "message": unavail}, status_code=503)
+        try:
+            app_cfg = load_config(str(_active_config_path()))
+        except Exception:
+            app_cfg = None
+        if not await _brain_within_budget(trainer.brain, app_cfg):
+            return JSONResponse(
+                {"success": False, "message": "Daily AI budget reached. Raise usage.max_daily_usd or try tomorrow."},
+                status_code=429,
+            )
+        cfg = await trainer.train(norm_url, output_path=str(_offer_config_file()), max_pages=max_pages)
+        if cfg is None:
+            return JSONResponse(
+                {"success": False, "message": "Could not train from that website. Check the URL and try again."},
+                status_code=502,
+            )
+        pages_crawled = len(getattr(trainer, "scraped_pages", {}) or {})
+        await state.log_action(
+            "company_trained", "dashboard", {"url": norm_url, "pages_crawled": pages_crawled}
+        )
+        return {
+            "success": True,
+            "url": norm_url,
+            "pages_crawled": pages_crawled,
+            "company": ((cfg.get("persona") or {}).get("company", "") if isinstance(cfg, dict) else ""),
+            "product": ((cfg.get("product") or {}).get("name", "") if isinstance(cfg, dict) else ""),
+        }
+    except UnsafeURLError as exc:
+        return JSONResponse({"success": False, "message": f"Invalid or unsafe URL: {exc}"}, status_code=400)
+    except Exception as exc:
+        logger.warning("Company training failed: %s", exc)
+        return JSONResponse({"success": False, "message": f"Training failed: {exc}"}, status_code=502)
+    finally:
+        await _close_brain(trainer.brain)
+
+
 @app.post("/api/settings/test-instantly")
 async def test_instantly(request: Request):
     """Test an Instantly API key (falls back to the saved key when empty)."""
@@ -1500,11 +1586,79 @@ async def get_stats():
         spend_today = await _spend_today_usd()
         max_usd = _active_max_daily_usd()
 
+        # Conversion funnel across existing tables
+        company_count = await _scalar("SELECT COUNT(*) FROM companies")
+        researched_count = await _scalar(
+            "SELECT COUNT(*) FROM companies "
+            "WHERE profile_checked_at IS NOT NULL "
+            "OR id IN (SELECT DISTINCT company_id FROM observations WHERE company_id != '')"
+        )
+        drafted_pids = {
+            r["prospect_id"]
+            for r in await query_db(
+                "SELECT DISTINCT prospect_id FROM outbox WHERE kind = 'sequence' AND prospect_id != ''"
+            )
+            if r.get("prospect_id")
+        }
+        for crow in await query_db("SELECT prospect_ids_json FROM campaigns"):
+            try:
+                pids_list = json.loads(crow.get("prospect_ids_json") or "[]")
+            except (json.JSONDecodeError, TypeError):
+                continue
+            if isinstance(pids_list, list):
+                drafted_pids.update(str(pid) for pid in pids_list if pid)
+
+        sent_pids = {
+            r["prospect_id"]
+            for r in await query_db(
+                "SELECT DISTINCT prospect_id FROM outbox WHERE status = 'sent' AND prospect_id != ''"
+            )
+            if r.get("prospect_id")
+        } | {
+            r["id"]
+            for r in await query_db(
+                "SELECT id FROM prospects WHERE status IN ('contacted', 'replied', 'meeting', 'closed')"
+            )
+            if r.get("id")
+        }
+        replied_pids = {
+            r["prospect_id"]
+            for r in await query_db(
+                "SELECT DISTINCT prospect_id FROM conversations WHERE prospect_id != ''"
+            )
+            if r.get("prospect_id")
+        } | {
+            r["id"]
+            for r in await query_db("SELECT id FROM prospects WHERE status IN ('replied', 'meeting')")
+            if r.get("id")
+        }
+        booked_pids = {
+            r["id"]
+            for r in await query_db("SELECT id FROM prospects WHERE status = 'meeting'")
+            if r.get("id")
+        } | {
+            r["prospect_id"]
+            for r in await query_db(
+                "SELECT prospect_id FROM conversations WHERE status = 'meeting_booked' AND prospect_id != ''"
+            )
+            if r.get("prospect_id")
+        }
+        funnel = {
+            "companies": company_count,
+            "contacts": prospect_total,
+            "researched": researched_count,
+            "drafted": len(drafted_pids),
+            "sent": len(sent_pids),
+            "replied": len(replied_pids),
+            "booked": len(booked_pids),
+        }
+
         return {
             "prospects": {"total": prospect_total, "by_status": prospect_map},
             "campaigns": {"total": sum(campaign_map.values()), "by_status": campaign_map},
             "conversations": {"total": sum(convo_map.values()), "by_status": convo_map},
             "pipeline": pipeline,
+            "funnel": funnel,
             "actions_total": action_count,
             "claude_calls_today": usage_today,
             "codex_calls_today": codex_today,
@@ -2150,6 +2304,244 @@ async def set_sending_mode(request: Request):
     return out
 
 
+def _active_config_path() -> Path:
+    """Resolve the active config path without copying sellbird.yaml on read."""
+    resolved = _resolve_config_file()
+    local = resolved.with_name("sellbird.local.yaml")
+    if local.exists():
+        return local
+    return resolved
+
+
+def _load_active_sellbird_config():
+    """Load the active SellbirdConfig, honoring use_config() and _active_config_path()."""
+    from sellbird.config import current_config, load_config
+    cfg = current_config()
+    if cfg is not None:
+        return cfg
+    path = _active_config_path()
+    return load_config(str(path)) if path.exists() else load_config()
+
+
+def _compliance_settings_payload(config) -> dict:
+    """Serialize compliance, daily limits, send window, and quiet hours for Settings UI."""
+    comp = getattr(config, "compliance", None)
+    email = getattr(getattr(config, "channels", None), "email", None)
+    sw = getattr(email, "send_window", None)
+    qh = getattr(getattr(config, "usage", None), "quiet_hours", None)
+    qh_start = getattr(qh, "start", "22:00") if qh is not None else "22:00"
+    qh_end = getattr(qh, "end", "07:00") if qh is not None else "07:00"
+    qh_tz = getattr(qh, "timezone", "America/New_York") if qh is not None else "America/New_York"
+    sw_enabled = sw is not None
+    return {
+        "postal_address": getattr(comp, "postal_address", "") if comp is not None else "",
+        "opt_out_line": getattr(comp, "opt_out_line", "") if comp is not None else "",
+        "daily_limit": int(getattr(email, "max_daily_sends", 50)) if email is not None else 50,
+        "require_approval": bool(getattr(email, "require_approval", True)) if email is not None else True,
+        "send_window": {
+            "enabled": sw_enabled,
+            "start": getattr(sw, "start", "08:00") if sw is not None else "08:00",
+            "end": getattr(sw, "end", "17:00") if sw is not None else "17:00",
+            "days": ("mon-fri" if getattr(sw, "weekdays_only", True) else "mon-sun") if sw is not None else "mon-fri",
+            "timezone": qh_tz,
+        },
+        "quiet_hours": {
+            "enabled": bool(qh_start and qh_end and qh_start != qh_end),
+            "start": qh_start,
+            "end": qh_end,
+            "timezone": qh_tz,
+        },
+    }
+
+
+def _parse_send_window_days(raw_days) -> bool:
+    """Map UI days string/list to SendWindowConfig.weekdays_only, raising ValueError if invalid."""
+    if isinstance(raw_days, list):
+        tokens = [str(d).strip().lower() for d in raw_days if str(d).strip()]
+        if not tokens:
+            raise ValueError("send_window.days cannot be empty.")
+        valid = {"mon", "tue", "wed", "thu", "fri", "sat", "sun"}
+        if not all(t in valid for t in tokens):
+            raise ValueError("send_window.days contains an unknown day name.")
+        return not any(t in ("sat", "sun") for t in tokens)
+    if not isinstance(raw_days, str):
+        raise ValueError("send_window.days must be text (e.g. 'mon-fri' or 'mon-sun').")
+    norm = raw_days.strip().lower()
+    if norm in ("", "mon-fri", "weekdays", "weekday", "mon,tue,wed,thu,fri"):
+        return True
+    if norm in ("mon-sun", "all", "daily", "everyday", "mon,tue,wed,thu,fri,sat,sun"):
+        return False
+    parts = [p.strip() for p in norm.split(",") if p.strip()]
+    valid = {"mon", "tue", "wed", "thu", "fri", "sat", "sun"}
+    if parts and all(p in valid for p in parts):
+        return not any(p in ("sat", "sun") for p in parts)
+    raise ValueError("send_window.days must be 'mon-fri', 'mon-sun', or comma-separated days (mon..sun).")
+
+
+def _save_compliance_settings(body: dict) -> dict:
+    """Validate and persist compliance + schedule fields into _offer_config_file()."""
+    import pytz
+    from pydantic import ValidationError
+    from sellbird.config import QuietHoursConfig, SellbirdConfig, SendWindowConfig
+
+    target = _offer_config_file()
+    if not target.exists():
+        raise ValueError(f"Config file {target.name} does not exist yet.")
+    raw = read_user_text(target)
+    doc = yaml.safe_load(raw) or {}
+    if not isinstance(doc, dict):
+        raise ValueError(f"{target.name} must contain a YAML mapping.")
+
+    comp_sec = dict(doc.get("compliance") or {})
+    channels_sec = dict(doc.get("channels") or {})
+    email_sec = dict(channels_sec.get("email") or {})
+    usage_sec = dict(doc.get("usage") or {})
+    qh_sec = dict(usage_sec.get("quiet_hours") or {})
+
+    if "postal_address" in body and body["postal_address"] is not None:
+        postal = body["postal_address"]
+        if not isinstance(postal, str):
+            raise ValueError("postal_address must be text.")
+        if "\x00" in postal or len(postal) > 500:
+            raise ValueError("postal_address is invalid or too long (max 500 chars).")
+        comp_sec["postal_address"] = postal.replace("\r", " ").replace("\n", " ").strip()
+
+    if "opt_out_line" in body and body["opt_out_line"] is not None:
+        opt_out = body["opt_out_line"]
+        if not isinstance(opt_out, str):
+            raise ValueError("opt_out_line must be text.")
+        comp_sec["opt_out_line"] = opt_out.strip()
+
+    if "daily_limit" in body and body["daily_limit"] is not None:
+        raw_limit = body["daily_limit"]
+        if isinstance(raw_limit, bool):
+            raise ValueError("daily_limit must be an integer.")
+        try:
+            daily_limit = int(raw_limit)
+        except (TypeError, ValueError) as exc:
+            raise ValueError("daily_limit must be an integer.") from exc
+        if not 0 <= daily_limit <= 10000:
+            raise ValueError("daily_limit must be between 0 and 10000.")
+        email_sec["max_daily_sends"] = daily_limit
+
+    if "require_approval" in body and body["require_approval"] is not None:
+        if not isinstance(body["require_approval"], bool):
+            raise ValueError("require_approval must be a boolean.")
+        email_sec["require_approval"] = body["require_approval"]
+
+    sw_tz_override = ""
+    if "send_window" in body and body["send_window"] is not None:
+        sw_in = body["send_window"]
+        if not isinstance(sw_in, dict):
+            raise ValueError("send_window must be an object.")
+        sw_enabled = bool(sw_in.get("enabled"))
+        if sw_enabled:
+            prev_sw = email_sec.get("send_window") if isinstance(email_sec.get("send_window"), dict) else {}
+            sw_start = str(sw_in.get("start") if sw_in.get("start") is not None else prev_sw.get("start", "08:00")).strip()
+            sw_end = str(sw_in.get("end") if sw_in.get("end") is not None else prev_sw.get("end", "17:00")).strip()
+            if "days" in sw_in and sw_in["days"] is not None:
+                weekdays_only = _parse_send_window_days(sw_in["days"])
+            else:
+                weekdays_only = bool(prev_sw.get("weekdays_only", True))
+            sw_tz = str(sw_in.get("timezone") or "").strip()
+            if sw_tz:
+                if sw_tz not in pytz.all_timezones_set:
+                    raise ValueError(f"'{sw_tz}' is not a valid timezone. Use an IANA name like 'America/New_York'.")
+                sw_tz_override = sw_tz
+            sw_validated = SendWindowConfig(
+                start=sw_start,
+                end=sw_end,
+                weekdays_only=weekdays_only,
+                recipient_timezone=bool(prev_sw.get("recipient_timezone", True)),
+            )
+            email_sec["send_window"] = sw_validated.model_dump()
+        else:
+            email_sec["send_window"] = None
+
+    if "quiet_hours" in body and body["quiet_hours"] is not None:
+        qh_in = body["quiet_hours"]
+        if not isinstance(qh_in, dict):
+            raise ValueError("quiet_hours must be an object.")
+        qh_enabled = bool(qh_in.get("enabled", True))
+        qh_tz = str(qh_in.get("timezone") or qh_sec.get("timezone") or sw_tz_override or "America/New_York").strip()
+        if not qh_enabled:
+            qh_validated = QuietHoursConfig(start="00:00", end="00:00", timezone=qh_tz)
+        else:
+            qh_start = str(qh_in.get("start") if qh_in.get("start") is not None else qh_sec.get("start", "22:00")).strip()
+            qh_end = str(qh_in.get("end") if qh_in.get("end") is not None else qh_sec.get("end", "07:00")).strip()
+            if qh_start == qh_end:
+                raise ValueError("quiet_hours.start and quiet_hours.end cannot be the same when enabled.")
+            qh_validated = QuietHoursConfig(start=qh_start, end=qh_end, timezone=qh_tz)
+        qh_sec = qh_validated.model_dump()
+    elif sw_tz_override:
+        qh_validated = QuietHoursConfig(
+            start=str(qh_sec.get("start", "22:00")),
+            end=str(qh_sec.get("end", "07:00")),
+            timezone=sw_tz_override,
+        )
+        qh_sec = qh_validated.model_dump()
+
+    doc["compliance"] = comp_sec
+    channels_sec["email"] = email_sec
+    doc["channels"] = channels_sec
+    usage_sec["quiet_hours"] = qh_sec
+    doc["usage"] = usage_sec
+
+    try:
+        validated = SellbirdConfig.model_validate(doc)
+    except ValidationError as exc:
+        err = exc.errors()[0]
+        loc = ".".join(str(p) for p in err.get("loc", ()))
+        msg = err.get("msg", "Invalid configuration.")
+        raise ValueError(f"{loc}: {msg}" if loc else msg) from exc
+
+    target.with_name(target.name + ".bak").write_text(raw, encoding="utf-8")
+    _write_yaml_atomic(target, doc)
+    return _compliance_settings_payload(validated)
+
+
+@app.get("/api/settings/compliance")
+async def get_compliance_settings():
+    """Return compliance, daily send limit, approval flag, send window, and quiet hours."""
+    try:
+        cfg = _load_active_sellbird_config()
+        return _compliance_settings_payload(cfg)
+    except Exception as e:
+        return JSONResponse({"error": f"Couldn't read your config: {e}"}, status_code=500)
+
+
+@app.post("/api/settings/compliance")
+async def save_compliance_settings_route(request: Request):
+    """Validate and save compliance & sending schedule settings into active sellbird config."""
+    try:
+        body = await request.json()
+    except Exception:
+        body = None
+    if not isinstance(body, dict) or not body:
+        return JSONResponse({"success": False, "message": "Invalid JSON body."}, status_code=400)
+    try:
+        saved = _save_compliance_settings(body)
+    except ValueError as exc:
+        return JSONResponse({"success": False, "message": str(exc)}, status_code=400)
+    except Exception as exc:
+        logger.warning("Failed to save compliance settings: %s", exc)
+        return JSONResponse({"success": False, "message": f"Couldn't save: {exc}"}, status_code=500)
+
+    state = _state()
+    await state.init_db()
+    await state.log_action(
+        "compliance_settings_saved",
+        "dashboard",
+        {
+            "daily_limit": saved["daily_limit"],
+            "require_approval": saved["require_approval"],
+            "send_window_enabled": saved["send_window"]["enabled"],
+            "quiet_hours_enabled": saved["quiet_hours"]["enabled"],
+        },
+    )
+    return {"success": True, **saved}
+
+
 @app.post("/api/outbox/approve-all")
 async def outbox_approve_all():
     try:
@@ -2549,6 +2941,52 @@ async def get_frameworks():
     return {"configured": configured, "rows": rows}
 
 
+@app.post("/api/writer/run")
+async def trigger_writer_run():
+    """Run the Writer agent on-demand to draft sequences for new deliverable prospects."""
+    from sellbird.agents.writer import Writer
+    from sellbird.brain import Brain
+    from sellbird.config import ConfigError, load_env
+
+    state = _state()
+    await state.init_db()
+    try:
+        config = _load_active_sellbird_config()
+    except (ConfigError, Exception) as exc:
+        return JSONResponse({"success": False, "message": f"Couldn't load config: {exc}"}, status_code=400)
+
+    env = load_env()
+    brain = Brain(state, config.brain)
+    try:
+        unavail = await brain.preflight()
+        if unavail:
+            return JSONResponse({"success": False, "message": unavail}, status_code=503)
+        if not await _brain_within_budget(brain, config):
+            return JSONResponse(
+                {"success": False, "message": "Daily AI budget reached. Raise usage.max_daily_usd or try tomorrow."},
+                status_code=429,
+            )
+        writer = Writer(brain, state, config, env)
+        await writer.run()
+        campaigns_after = await _scalar("SELECT COUNT(*) FROM campaigns")
+        pending_outbox = await _scalar("SELECT COUNT(*) FROM outbox WHERE status = 'pending_review'")
+        await state.log_action(
+            "writer_run",
+            "dashboard",
+            {"campaigns_after": campaigns_after, "pending_outbox": pending_outbox},
+        )
+        return {
+            "success": True,
+            "campaigns_after": campaigns_after,
+            "pending_outbox": pending_outbox,
+        }
+    except Exception as exc:
+        logger.warning("On-demand Writer run failed: %s", exc)
+        return JSONResponse({"success": False, "message": f"Writer run failed: {exc}"}, status_code=500)
+    finally:
+        await _close_brain(brain)
+
+
 def _read_config_doc() -> dict:
     """The config file Sellbird reads, as a plain dict — without the full
     config model's required fields, so the dashboard works before training
@@ -2869,6 +3307,119 @@ async def set_conversation_status(convo_id: str, request: Request):
     await state.log_action("conversation_status", "dashboard",
                            {"conversation_id": convo_id, "from": rows[0]["status"], "to": status})
     return {"success": True, "status": status}
+
+
+def _calendar_client():
+    """Build CalendarClient with .env + os.environ merged cleanly."""
+    from types import SimpleNamespace
+    from sellbird.config import EnvConfig, load_env
+    from sellbird.integrations.calendar import CalendarClient
+
+    try:
+        cfg = _load_active_sellbird_config()
+    except Exception:
+        cfg = None
+    try:
+        env = load_env()
+    except Exception:
+        env = EnvConfig()
+
+    env_vars = _read_env_file()
+    hosted_custom = _in_custom_home() and current_home().hosted
+
+    def _pick(env_key: str, current: str = "") -> str:
+        val = (env_vars.get(env_key) or "").strip()
+        if not val and not hosted_custom:
+            val = (os.getenv(env_key) or "").strip()
+        return val or str(current or "").strip()
+
+    merged = env.model_dump()
+    merged["calcom_api_key"] = _pick("CALCOM_API_KEY", merged.get("calcom_api_key", ""))
+    merged["calcom_event_type_id"] = _pick("CALCOM_EVENT_TYPE_ID", merged.get("calcom_event_type_id", ""))
+    merged["provider"] = _pick("CALENDAR_PROVIDER")
+    merged["calcom_api_url"] = _pick("CALCOM_API_URL")
+    merged["google_calendar_access_token"] = _pick("GOOGLE_CALENDAR_ACCESS_TOKEN")
+    merged["google_calendar_id"] = _pick("GOOGLE_CALENDAR_ID")
+    merged["m365_calendar_access_token"] = _pick("M365_CALENDAR_ACCESS_TOKEN")
+    return CalendarClient(cfg, SimpleNamespace(**merged))
+
+
+@app.get("/api/calendar/slots")
+async def get_calendar_slots(days: int = 5):
+    """Fetch open booking slots for the next N days (clamped 1..14)."""
+    days = max(1, min(14, int(days)))
+    cal = _calendar_client()
+    if not cal.is_configured():
+        return {"configured": False, "provider": "", "slots": []}
+    slots = await cal.get_available_slots(f"next_{days}_days")
+    return {"configured": True, "provider": cal.backend, "slots": slots}
+
+
+@app.post("/api/calendar/book")
+async def book_calendar_slot(request: Request):
+    """Book a meeting slot for a prospect and update conversation/outbox state."""
+    try:
+        body = await request.json()
+    except Exception:
+        body = None
+    if not isinstance(body, dict):
+        return JSONResponse({"success": False, "message": "Invalid JSON body."}, status_code=400)
+
+    conversation_id = str(body.get("conversation_id") or "").strip()
+    prospect_id = str(body.get("prospect_id") or "").strip()
+    prospect_email = str(body.get("prospect_email") or "").strip()
+    prospect_name = str(body.get("prospect_name") or "").strip()
+    slot = body.get("slot")
+    notes = str(body.get("notes") or "").strip()
+
+    if not prospect_email or "@" not in prospect_email:
+        return JSONResponse({"success": False, "message": "Valid prospect_email is required."}, status_code=400)
+    if not isinstance(slot, dict) or not str(slot.get("start") or "").strip():
+        return JSONResponse({"success": False, "message": "slot with a valid start time is required."}, status_code=400)
+
+    cal = _calendar_client()
+    if not cal.is_configured():
+        return JSONResponse(
+            {"success": False, "message": "Calendar is not configured. Add Cal.com or Google Calendar credentials in Settings."},
+            status_code=400,
+        )
+
+    ok = await cal.book_meeting(
+        prospect_email, slot, prospect_name=prospect_name, notes=notes
+    )
+    if not ok:
+        return JSONResponse(
+            {"success": False, "message": "Calendar provider rejected the booking. Pick another slot."},
+            status_code=502,
+        )
+
+    state = _state()
+    await state.init_db()
+    cancelled = 0
+    if prospect_id:
+        await state.update_prospect_status(prospect_id, "meeting")
+        cancelled = await state.cancel_pending_outbox_for_prospect(
+            prospect_id, reason="meeting_booked"
+        )
+    if conversation_id and not conversation_id.startswith("awaiting-"):
+        convo_rows = await query_db("SELECT id FROM conversations WHERE id = ?", (conversation_id,))
+        if convo_rows:
+            await state.update_conversation(
+                conversation_id, status="meeting_booked", stage="closed_won"
+            )
+    await state.log_action(
+        action_type="meeting_booked",
+        agent="dashboard",
+        details={
+            "conversation_id": conversation_id,
+            "prospect_id": prospect_id,
+            "prospect_email": prospect_email,
+            "prospect_name": prospect_name,
+            "slot": slot,
+            "cancelled_emails": cancelled,
+        },
+    )
+    return {"success": True, "slot": slot, "cancelled_emails": cancelled}
 
 
 @app.get("/api/trend")

@@ -95,6 +95,7 @@ const STATUS = {
   accepted_offer: ['Said yes to your offer', 'good'],
   interested:     ['Interested', 'good'],
   meeting:        ['Meeting booked', 'note'],
+  meeting_booked: ['Meeting booked', 'good'],
   not_interested: ['Not interested', 'bad'],
   bounced:        ['Bounced', 'bad'],
   write_failed:   ["Couldn't write", 'bad'],
@@ -1407,6 +1408,76 @@ async function loadSettings() {
   tag('gemini-status', data.gemini_api_key_set, 'set');
   tag('xai-status', data.xai_api_key_set, 'set');
   tag('groq-status', data.groq_api_key_set, 'set');
+  await loadComplianceSettings();
+}
+
+async function loadComplianceSettings() {
+  if (!document.getElementById('compliance-card')) return;
+  const data = await api('/api/settings/compliance');
+  if (!data || data.error) return;
+  const setVal = (id, val) => { const el = document.getElementById(id); if (el) el.value = val == null ? '' : String(val); };
+  const setChk = (id, val) => { const el = document.getElementById(id); if (el) el.checked = !!val; };
+  setVal('comp-postal', data.postal_address || '');
+  setVal('comp-optout', data.opt_out_line || '');
+  setVal('comp-daily-limit', data.daily_limit ?? 50);
+  setChk('comp-require-approval', data.require_approval !== false);
+
+  const sw = data.send_window || {};
+  setChk('comp-sw-enabled', !!sw.enabled);
+  setVal('comp-sw-start', sw.start || '08:00');
+  setVal('comp-sw-end', sw.end || '17:00');
+  setVal('comp-sw-days', sw.days || 'mon-fri');
+  setVal('comp-sw-tz', sw.timezone || 'America/New_York');
+
+  const qh = data.quiet_hours || {};
+  setChk('comp-qh-enabled', qh.enabled !== false);
+  setVal('comp-qh-start', qh.start || '22:00');
+  setVal('comp-qh-end', qh.end || '07:00');
+  setVal('comp-qh-tz', qh.timezone || 'America/New_York');
+}
+
+async function saveComplianceSettings() {
+  const val = id => String((document.getElementById(id) || {}).value ?? '').trim();
+  const chk = id => !!(document.getElementById(id) || {}).checked;
+  const btn = document.getElementById('comp-save-btn');
+  const limitRaw = val('comp-daily-limit');
+  const dailyLimit = limitRaw === '' ? 50 : Number(limitRaw);
+  const payload = {
+    postal_address: val('comp-postal'),
+    opt_out_line: val('comp-optout'),
+    daily_limit: Number.isFinite(dailyLimit) ? Math.trunc(dailyLimit) : -1,
+    require_approval: chk('comp-require-approval'),
+    send_window: {
+      enabled: chk('comp-sw-enabled'),
+      start: val('comp-sw-start') || '08:00',
+      end: val('comp-sw-end') || '17:00',
+      days: val('comp-sw-days') || 'mon-fri',
+      timezone: val('comp-sw-tz') || 'America/New_York',
+    },
+    quiet_hours: {
+      enabled: chk('comp-qh-enabled'),
+      start: val('comp-qh-start') || '22:00',
+      end: val('comp-qh-end') || '07:00',
+      timezone: val('comp-qh-tz') || 'America/New_York',
+    },
+  };
+  if (btn) btn.disabled = true;
+  try {
+    const res = await api('/api/settings/compliance', {
+      method: 'POST',
+      headers: {'Content-Type': 'application/json'},
+      body: JSON.stringify(payload),
+    });
+    if (res && res.success) {
+      showToast('Compliance & schedule saved.', 'success');
+      await loadComplianceSettings();
+      loadSendingModeCard();
+    } else {
+      showToast(failMsg(res, 'Could not save compliance settings.'), 'error');
+    }
+  } finally {
+    if (btn) btn.disabled = false;
+  }
 }
 
 function saveUniversalBrain() {
@@ -3029,9 +3100,52 @@ async function saveCompetitorWatch() {
   await loadCompetitorWatch();
 }
 
+function renderCampaignsFunnel(stats) {
+  const el = document.getElementById('campaigns-funnel');
+  if (!el) return;
+  const f = (stats && stats.funnel) || null;
+  if (!f) { el.innerHTML = ''; return; }
+  const steps = [
+    ['Companies', f.companies || 0],
+    ['Contacts', f.contacts || 0],
+    ['Researched', f.researched || 0],
+    ['Drafted', f.drafted || 0],
+    ['Sent', f.sent || 0],
+    ['Replied', f.replied || 0],
+    ['Meetings', f.booked || 0],
+  ];
+  el.innerHTML = '<div class="card funnel-card" aria-label="Outreach conversion pipeline"><div class="pipeline-funnel-bar">' +
+    steps.map((s, idx) =>
+      (idx > 0 ? '<span class="funnel-arrow" aria-hidden="true">&rarr;</span>' : '') +
+      '<div class="funnel-step"><div class="funnel-val">' + escHtml(String(s[1])) + '</div>' +
+      '<div class="funnel-lbl">' + escHtml(s[0]) + '</div></div>'
+    ).join('') + '</div></div>';
+}
+
+async function triggerWriterRun(btn) {
+  const button = btn || document.getElementById('writer-run-btn');
+  const orig = button ? button.textContent : 'Write Emails Now';
+  if (button) { button.disabled = true; button.textContent = 'Writing…'; }
+  try {
+    const res = await api('/api/writer/run', { method: 'POST' });
+    if (res && res.success) {
+      showToast('Writer finished — ' + (res.pending_outbox ?? 0) + ' draft(s) in Outbox.', 'success');
+      await loadCampaigns();
+      loadToday();
+      if (typeof loadOutbox === 'function') loadOutbox();
+    } else {
+      showToast(failMsg(res, 'Writer run failed.'), 'error');
+    }
+  } finally {
+    if (button) { button.disabled = false; button.textContent = orig; }
+  }
+}
+
 async function loadCampaigns() {
   const el = document.getElementById('campaigns-list');
-  renderFrameworks(await api('/api/frameworks'));
+  const [fwData, statsData] = await Promise.all([api('/api/frameworks'), api('/api/stats')]);
+  renderCampaignsFunnel(statsData);
+  renderFrameworks(fwData);
   const data = await api('/api/campaigns');
   if (!data) { el.innerHTML = offlineState(); return; }
   _campaigns = data;
@@ -3185,9 +3299,19 @@ function convoCard(c) {
     draft + '</div>' + convoActions(c) + '</div>';
 }
 
+let _convoSlots = {};
+
 // Sellbird answers new replies only on open conversations: an escalated one
 // waits for you to reply yourself, then close it or hand it back.
 function convoActions(c) {
+  const canBook = (c.status === 'open' || c.status === 'awaiting_reply' || c.status === 'needs_human') &&
+    c.prospect_status !== 'opted_out';
+  const bookBtn = canBook
+    ? '<button class="btn btn-secondary btn-sm" onclick="toggleConvoBooking(' + jsq(c.id) + ')">Book Meeting</button>'
+    : '';
+  const bookPanel = canBook
+    ? '<div id="convo-book-' + escHtml(c.id) + '" class="convo-book-panel" style="display:none"></div>'
+    : '';
   if (c.status === 'needs_human' && c.prospect_status === 'opted_out') {
     // A complaint or legal threat from someone who opted out: handing it
     // back wouldn't help, Sellbird never answers them.
@@ -3200,12 +3324,17 @@ function convoActions(c) {
   if (c.status === 'needs_human') {
     return '<div class="convo-actions"><span class="muted">' + icon('alert') +
       'Sellbird handed this to you. Reply from your inbox, then:</span>' +
+      bookBtn +
       '<button class="btn btn-secondary btn-sm" onclick="setConvoStatus(' + jsq(c.id) + ',\'open\')">Hand back to Sellbird</button>' +
-      '<button class="btn btn-secondary btn-sm" onclick="setConvoStatus(' + jsq(c.id) + ',\'closed\')">Close</button></div>';
+      '<button class="btn btn-secondary btn-sm" onclick="setConvoStatus(' + jsq(c.id) + ',\'closed\')">Close</button></div>' +
+      bookPanel;
   }
   if (c.status === 'open') {
-    return '<div class="convo-actions"><button class="btn btn-ghost btn-sm" onclick="setConvoStatus(' +
-      jsq(c.id) + ',\'closed\')">Close conversation</button></div>';
+    return '<div class="convo-actions">' + bookBtn + '<button class="btn btn-ghost btn-sm" onclick="setConvoStatus(' +
+      jsq(c.id) + ',\'closed\')">Close conversation</button></div>' + bookPanel;
+  }
+  if (c.status === 'awaiting_reply' && canBook) {
+    return '<div class="convo-actions">' + bookBtn + '</div>' + bookPanel;
   }
   if (c.status === 'closed' && c.prospect_status === 'opted_out') {
     // Reopening wouldn't help: Sellbird never answers someone who opted out.
@@ -3218,6 +3347,72 @@ function convoActions(c) {
       jsq(c.id) + ',\'open\')">Reopen</button></div>';
   }
   return '';
+}
+
+async function toggleConvoBooking(convoId) {
+  const panel = document.getElementById('convo-book-' + convoId);
+  if (!panel) return;
+  if (panel.dataset.open === '1') {
+    panel.style.display = 'none';
+    panel.dataset.open = '0';
+    return;
+  }
+  panel.style.display = 'block';
+  panel.dataset.open = '1';
+  panel.innerHTML = '<div class="hint">Loading available calendar slots…</div>';
+  const data = await api('/api/calendar/slots?days=5');
+  if (!data) {
+    panel.innerHTML = '<div class="hint">Could not load calendar slots.</div>';
+    return;
+  }
+  if (!data.configured) {
+    panel.innerHTML = '<div class="hint">Calendar not configured. <a href="#" onclick="goTab(\'settings\');return false">Configure Cal.com or Google Calendar in Settings</a></div>';
+    return;
+  }
+  const slots = data.slots || [];
+  _convoSlots[convoId] = slots;
+  if (!slots.length) {
+    panel.innerHTML = '<div class="hint">No open slots found in the next 5 days.</div>';
+    return;
+  }
+  panel.innerHTML = '<div class="convo-book-head"><span>Select a slot (' + escHtml(data.provider || 'calendar') + '):</span></div>' +
+    '<div class="convo-slot-grid">' +
+    slots.slice(0, 12).map((s, idx) =>
+      '<button class="btn btn-secondary btn-sm convo-slot-btn" onclick="confirmBookSlot(' + jsq(convoId) + ',' + idx + ',this)">' +
+      '<span>' + formatDate(s.start) + '</span> <span class="mini t-good">Confirm Book</span></button>'
+    ).join('') + '</div>';
+}
+
+async function confirmBookSlot(convoId, idx, btn) {
+  const convo = _convos.find(x => x.id === convoId);
+  const slot = (_convoSlots[convoId] || [])[idx];
+  if (!convo || !slot) return;
+  if (btn) { btn.disabled = true; btn.textContent = 'Booking…'; }
+  try {
+    const res = await api('/api/calendar/book', {
+      method: 'POST',
+      headers: {'Content-Type': 'application/json'},
+      body: JSON.stringify({
+        conversation_id: convo.id,
+        prospect_id: convo.prospect_id || '',
+        prospect_email: convo.prospect_email || '',
+        prospect_name: [convo.first_name, convo.last_name].filter(Boolean).join(' '),
+        slot: slot,
+        notes: 'Booked from Sellbird dashboard',
+      }),
+    });
+    if (res && res.success) {
+      showToast('Meeting booked!', 'success');
+      loadConversations();
+      loadToday();
+    } else {
+      showToast(failMsg(res, 'Could not book meeting.'), 'error');
+      if (btn) { btn.disabled = false; btn.textContent = 'Confirm Book'; }
+    }
+  } catch (err) {
+    showToast('Could not book meeting.', 'error');
+    if (btn) { btn.disabled = false; btn.textContent = 'Confirm Book'; }
+  }
 }
 
 async function setConvoStatus(id, status) {
@@ -3730,6 +3925,18 @@ async function loadCompany() {
   const o = data.offer || {}, p = data.product || {}, icp = data.icp || {}, s = data.persona || {};
   const objections = Object.entries(p.objection_responses || {});
   body.innerHTML = `
+  <section class="card company-card" aria-labelledby="co-train-h">
+    <div class="company-card-head">
+      <h3 id="co-train-h">Train from Website</h3>
+      <span class="hint">Crawl your site and auto-populate product, ICP, and objections</span>
+    </div>
+    <div class="company-train-row">
+      <input type="url" class="form-input" id="co-train-url" placeholder="https://yourcompany.com" autocomplete="off">
+      <button class="btn btn-primary btn-sm" id="co-train-btn" onclick="trainCompanyFromUrl()">Train Sellbird</button>
+    </div>
+    <div id="co-train-status" class="hint" aria-live="polite" style="margin-top:8px"></div>
+  </section>
+
   <section class="card company-card" aria-labelledby="co-offer-h">
     <div class="company-card-head">
       <h3 id="co-offer-h">Your offer</h3>
@@ -3821,6 +4028,41 @@ async function loadCompany() {
   _offerIdeas = (o.entry_ideas || []).map(x => ({offer: x}));
   renderOfferIdeas();
   navCount('nav-company', o.proposed ? 1 : 0);
+}
+
+async function trainCompanyFromUrl() {
+  const input = document.getElementById('co-train-url');
+  const btn = document.getElementById('co-train-btn');
+  const status = document.getElementById('co-train-status');
+  const url = ((input && input.value) || '').trim();
+  if (!url) {
+    showToast('Enter your website URL first.', 'error');
+    if (input && input.focus) input.focus();
+    return;
+  }
+  const origText = btn ? btn.textContent : 'Train Sellbird';
+  if (btn) { btn.disabled = true; btn.textContent = 'Training…'; }
+  if (status) status.textContent = 'Crawling website and learning about your product…';
+  try {
+    const res = await api('/api/company/train', {
+      method: 'POST',
+      headers: {'Content-Type': 'application/json'},
+      body: JSON.stringify({url}),
+    });
+    if (res && res.success) {
+      const msg = 'Trained from ' + (res.pages_crawled || 0) + ' page(s)' + (res.product ? ' — ' + res.product : '') + '.';
+      if (status) status.textContent = msg;
+      showToast(msg, 'success');
+      await loadCompany();
+      loadToday();
+    } else {
+      const err = failMsg(res, 'Could not train from that website.');
+      if (status) status.textContent = err;
+      showToast(err, 'error');
+    }
+  } finally {
+    if (btn) { btn.disabled = false; btn.textContent = origText; }
+  }
 }
 
 function objectionRow(k, v, i) {

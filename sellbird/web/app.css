@@ -1425,3 +1425,39 @@ dialog.modal.modal-wide { width: min(680px, calc(100vw - 32px)); }
 .cw-change b { font-size: var(--fs-ui); font-weight: 600; }
 .cw-change .muted { font-size: var(--fs-caption); margin-top: 2px; overflow-wrap: anywhere; }
 .cw-change a { color: var(--accent); }
+
+/* ── Company website trainer, booking panel, compliance & funnel ── */
+.company-train-row {
+  display: flex; align-items: center; gap: var(--sp-2); flex-wrap: wrap;
+}
+.company-train-row .form-input { flex: 1; min-width: 220px; }
+
+.convo-book-panel {
+  margin-top: var(--sp-3); padding: var(--sp-3);
+  border-radius: var(--r-md); background: var(--surface-2); border: 1px solid var(--line);
+}
+.convo-book-head { font-size: var(--fs-caption); font-weight: 600; color: var(--text-2); margin-bottom: var(--sp-2); }
+.convo-slot-grid { display: flex; flex-wrap: wrap; gap: 8px; }
+.convo-slot-btn { display: inline-flex; align-items: center; gap: 6px; }
+
+.schedule-group {
+  margin-top: var(--sp-3); padding: var(--sp-3);
+  border-radius: var(--r-md); background: var(--surface-2); border: 1px solid var(--line);
+}
+.compliance-grid {
+  display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 10px 14px;
+}
+@media (max-width: 680px) { .compliance-grid { grid-template-columns: minmax(0, 1fr); } }
+
+.funnel-card { margin-bottom: var(--sp-4); padding: var(--sp-3) var(--sp-4); }
+.pipeline-funnel-bar {
+  display: flex; align-items: center; justify-content: space-between; gap: 8px;
+  overflow-x: auto; padding: 2px 0;
+}
+.funnel-step {
+  flex: 1; min-width: 78px; text-align: center; padding: 8px 6px;
+  border-radius: var(--r-md); background: var(--surface-2); border: 1px solid var(--line);
+}
+.funnel-val { font-size: var(--fs-h3); font-weight: 600; font-variant-numeric: tabular-nums; color: var(--text); }
+.funnel-lbl { font-size: var(--fs-caption); color: var(--text-2); margin-top: 2px; }
+.funnel-arrow { color: var(--text-3); font-size: 14px; flex-shrink: 0; }
