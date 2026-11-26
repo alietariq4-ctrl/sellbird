@@ -60,6 +60,9 @@ def offer_view(config) -> dict:
     return {
         "entry": offer.entry or "",
         "entry_ideas": list(getattr(offer, "entry_ideas", []) or []),
+        "booking_url": getattr(offer, "booking_url", "") or "",
+        "booking_method": getattr(offer, "booking_method", "calendar_link") or "calendar_link",
+        "meeting_duration": getattr(offer, "meeting_duration", "15 minutes") or "15 minutes",
         "product": {"name": config.product.name, "description": config.product.description},
     }
 
@@ -169,9 +172,9 @@ PROPOSED_KEY = "offer_proposed"
 EDITABLE = {
     "product": {"name": str, "description": str, "pricing": str, "key_benefits": list,
                 "objection_responses": dict},
-    "persona": {"name": str, "role": str, "tone": str},
+    "persona": {"name": str, "role": str, "company": str, "email": str, "linkedin": str, "tone": str},
     "icp": {"industries": list, "titles": list, "company_size": str, "geography": list},
-    "offer": {"entry": str},
+    "offer": {"entry": str, "booking_url": str, "booking_method": str, "meeting_duration": str},
 }
 MAX_TEXT = 2000
 MAX_ITEMS = 30
@@ -194,7 +197,7 @@ def company_view(config, root: Path, proposed: dict | None = None) -> dict:
                     "key_benefits": list(p.key_benefits or []),
                     "objection_responses": dict(p.objection_responses or {})},
         "persona": {"name": s.name, "role": s.role, "company": s.company, "tone": s.tone,
-                    "email": getattr(s, "email", "")},
+                    "email": getattr(s, "email", ""), "linkedin": getattr(s, "linkedin", "")},
         "icp": {"industries": list(icp.industries or []), "titles": list(icp.titles or []),
                 "company_size": icp.company_size, "geography": list(icp.geography or [])},
         "offer": {**offer_view(config), "proposed": proposed or None},

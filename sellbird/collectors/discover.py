@@ -1096,10 +1096,33 @@ class OpenStreetMap(DiscoveryProvider):
         "hvac": ['craft=hvac'],
         "electric": ['craft=electrician'],
         "dentist": ['amenity=dentist'],
+        "dental": ['amenity=dentist'],
+        "doctor": ['amenity=doctors', 'amenity=clinic'],
+        "medical": ['amenity=clinic', 'amenity=doctors'],
+        "chiro": ['healthcare=chiropractor', 'amenity=doctors'],
+        "vet": ['amenity=veterinary'],
         "lawyer": ['office=lawyer'],
         "attorney": ['office=lawyer'],
         "contractor": ['craft=builder', 'office=construction_company'],
         "landscap": ['craft=gardener', 'shop=garden_centre'],
+        "auto repair": ['shop=car_repair'],
+        "mechanic": ['shop=car_repair'],
+        "salon": ['shop=hairdresser', 'shop=beauty'],
+        "barber": ['shop=hairdresser'],
+        "spa": ['shop=beauty', 'leisure=spa'],
+        "gym": ['leisure=fitness_centre'],
+        "fitness": ['leisure=fitness_centre'],
+        "real estate": ['office=estate_agent'],
+        "realtor": ['office=estate_agent'],
+        "insurance": ['office=insurance'],
+        "accountant": ['office=accountant'],
+        "cpa": ['office=accountant'],
+        "restaurant": ['amenity=restaurant'],
+        "cafe": ['amenity=cafe'],
+        "cleaning": ['shop=dry_cleaning', 'craft=cleaning'],
+        "solar": ['craft=photovoltaic'],
+        "locksmith": ['craft=locksmith'],
+        "pest": ['craft=pest_control'],
         # Spanish terms
         "ferreter": ['shop=hardware', 'shop=doityourself'],
         "supermercado": ['shop=supermarket'],
@@ -1131,7 +1154,8 @@ class OpenStreetMap(DiscoveryProvider):
         """
         low = term.lower()
         for needle, tags in self.TAG_MAP.items():
-            if needle in low:
+            # Word-start boundary prevents short stems like "spa" matching inside "despacho"
+            if re.search(rf"\b{re.escape(needle)}", low):
                 return tags
         return []
 

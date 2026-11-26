@@ -285,8 +285,9 @@ nav button.active .icon { color: var(--accent); }
 main.content { min-width: 0; padding: var(--sp-6) var(--sp-6) 96px; }
 .content-inner { max-width: var(--content-w); margin: 0 auto; }
 
-.section { display: none; }
+.section { display: none; scroll-margin-top: 120px; }
 .section.active { display: block; }
+.card, .subhead { scroll-margin-top: 120px; }
 
 /* ── Page heads, section heads ───────────────────────────────── */
 
@@ -541,6 +542,10 @@ tr:focus-within .row-action { opacity: 1; }
 .segmented {
   display: inline-flex; padding: 2px; gap: 2px; border-radius: 8px; background: var(--surface-3);
   max-width: 100%; overflow-x: auto; scrollbar-width: none;
+}
+@media (max-width: 640px) {
+  .search { max-width: none; flex: 1 1 100%; }
+  .segmented { flex-wrap: wrap; overflow-x: visible; }
 }
 .segmented button { flex: none; }
 .segmented button {
@@ -1028,6 +1033,8 @@ textarea.form-input { height: auto; padding: 8px 12px; }
     align-items: center; gap: var(--sp-2) var(--sp-3); padding: var(--sp-2) var(--sp-4);
     border-right: none; border-bottom: 1px solid var(--line); overflow: visible;
     max-width: 100%; min-width: 0;
+    background: color-mix(in srgb, var(--bg) 92%, transparent);
+    backdrop-filter: blur(12px);
   }
   .brand .tagline { display: none; }
   nav {
@@ -1111,7 +1118,24 @@ a.btn, a.btn:hover { text-decoration: none; }
 /* Your company */
 /* Cards in this column are groups (gap inside one: 12px), so the column's
    gap is twice that. */
-.company-body { display: flex; flex-direction: column; gap: var(--sp-5); max-width: 880px; }
+.company-body { display: flex; flex-direction: column; gap: var(--sp-5); max-width: 920px; }
+.playbook-steps { display: grid; grid-template-columns: repeat(auto-fit, minmax(185px, 1fr)); gap: 10px; }
+.pb-step { display: flex; align-items: flex-start; gap: 10px; padding: 10px 12px; border-radius: var(--r-md);
+  background: var(--surface-2); border: 1px solid var(--line); font-size: var(--fs-ui); }
+.pb-num { width: 22px; height: 22px; border-radius: 99px; flex: none; display: inline-flex; align-items: center; justify-content: center;
+  font-size: 11px; font-weight: 700; background: var(--accent-soft); color: var(--accent); border: 1px solid var(--accent-line); }
+.preset-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(210px, 1fr)); gap: 10px; }
+.preset-card { display: flex; flex-direction: column; gap: 4px; text-align: left; padding: 11px 13px; border-radius: var(--r-md);
+  border: 1px solid var(--line); background: var(--surface-2); color: var(--text); cursor: pointer; font: inherit;
+  transition: border-color 140ms ease, background-color 140ms ease, transform 140ms ease; }
+.preset-card:hover { border-color: var(--accent); background: var(--accent-soft); }
+.preset-title { font-size: var(--fs-ui); font-weight: 600; color: var(--text); }
+.preset-desc { font-size: 12px; line-height: 1.45; color: var(--text-2); }
+.chip-row { display: flex; flex-wrap: wrap; gap: 6px; }
+.chip { height: 26px; padding: 0 10px; border-radius: 99px; border: 1px solid var(--line-strong); background: var(--surface-2);
+  color: var(--text-2); font: 500 12px/1 var(--sans); cursor: pointer; transition: all 120ms ease; }
+.chip:hover { border-color: var(--accent); color: var(--text); }
+.chip.on { background: var(--accent-soft); color: var(--accent); border-color: var(--accent-line); font-weight: 600; }
 .company-card { display: flex; flex-direction: column; gap: 12px; }
 .company-card-head { display: flex; align-items: baseline; justify-content: space-between; gap: 12px; flex-wrap: wrap; }
 .company-card-head h3 { margin: 0; }

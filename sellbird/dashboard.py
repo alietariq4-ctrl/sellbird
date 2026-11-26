@@ -718,8 +718,7 @@ def _offer_config_file() -> Path:
 
 async def _offer_brain():
     from sellbird.brain import Brain
-    from sellbird.config import load_config
-    config = load_config()
+    config = _load_active_sellbird_config()
     state = _state()
     await state.init_db()
     return Brain(state, config.brain), state, config
@@ -747,10 +746,9 @@ async def _brain_within_budget(brain, config) -> bool:
 
 @app.get("/api/offer")
 async def get_offer():
-    from sellbird.config import load_config
     from sellbird.offer import offer_view
     try:
-        return offer_view(load_config())
+        return offer_view(_load_active_sellbird_config())
     except Exception as e:
         return JSONResponse({"error": f"Couldn't read your config: {e}"}, status_code=500)
 
@@ -806,15 +804,18 @@ async def preview_offer(request: Request):
 
 @app.post("/api/offer")
 async def save_offer_route(request: Request):
-    """Save the offer to product.offer.entry. The Writer reads it on its next run."""
-    from sellbird.offer import MAX_OFFER_CHARS, save_offer
+    """Save the offer to product.offer (entry + optional booking_url). The Writer reads it on its next run."""
+    from sellbird.offer import MAX_OFFER_CHARS, save_company, save_offer
     body = await request.json() if request.headers.get("content-type", "").startswith("application/json") else {}
-    entry = " ".join(str((body or {}).get("entry") or "").split())[:MAX_OFFER_CHARS]
-    ideas = (body or {}).get("ideas")
+    body = body if isinstance(body, dict) else {}
+    entry = " ".join(str(body.get("entry") or "").split())[:MAX_OFFER_CHARS]
+    ideas = body.get("ideas")
     ideas = [str(i) for i in ideas] if isinstance(ideas, list) else None
     target = _offer_config_file()
     try:
         save_offer(target, entry, ideas)
+        if "booking_url" in body:
+            save_company(target, "offer", {"booking_url": str(body.get("booking_url") or "").strip()})
         from sellbird.offer import PROPOSED_KEY
         state = _state()
         await state.init_db()
@@ -823,6 +824,7 @@ async def save_offer_route(request: Request):
         return JSONResponse({"success": False, "message": f"Couldn't save to {target.name}: {e}"},
                             status_code=500)
     return {"success": True, "entry": entry,
+            "booking_url": str(body.get("booking_url") or "").strip() if "booking_url" in body else None,
             "message": "Saved. Every new first email ends with this offer." if entry
                        else "Saved. With no offer, first emails end with a question."}
 
@@ -830,14 +832,13 @@ async def save_offer_route(request: Request):
 @app.get("/api/company")
 async def get_company():
     """Your company: everything Sellbird writes from, and any offer your agent proposed."""
-    from sellbird.config import load_config
     from sellbird.offer import PROPOSED_KEY, company_view
     try:
         state = _state()
         await state.init_db()
         raw = await state.get_setting(PROPOSED_KEY)
         proposed = json.loads(raw) if raw else None
-        return company_view(load_config(), _home_root(), proposed)
+        return company_view(_load_active_sellbird_config(), _home_root(), proposed)
     except Exception as e:
         return JSONResponse({"error": f"Couldn't read your config: {e}"}, status_code=500)
 
@@ -4166,7 +4167,6 @@ async def estimate_discovery(request: Request):
     """Projected spend and the exact query list, before anything is called."""
     try:
         from sellbird.collectors.discover import PROVIDERS, estimate_cost
-        from sellbird.config import load_config
 
         body = await request.json()
         provider = body.get("provider") or ""
@@ -4175,7 +4175,7 @@ async def estimate_discovery(request: Request):
                                 status_code=400)
 
         try:
-            queries = _discovery_queries(body, load_config())
+            queries = _discovery_queries(body, _load_active_sellbird_config())
         except ValueError as e:
             return JSONResponse({"error": str(e)}, status_code=400)
         return {
@@ -4204,7 +4204,6 @@ async def start_discovery(request: Request):
                             status_code=409)
     try:
         from sellbird.collectors.discover import PROVIDERS
-        from sellbird.config import load_config
         from sellbird.pipeline import run_prospecting
 
         body = await request.json()
@@ -4214,7 +4213,7 @@ async def start_discovery(request: Request):
                                  "message": f"unknown provider {provider!r}"},
                                 status_code=400)
 
-        config = load_config()
+        config = _load_active_sellbird_config()
         try:
             queries = _discovery_queries(body, config)
         except ValueError as e:

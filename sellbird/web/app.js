@@ -423,10 +423,16 @@ function showTab(id, btn, skipLoad) {
   if (id === 'companies') companyDrill = false;
   document.querySelectorAll('.section').forEach(s => s.classList.remove('active'));
   document.querySelectorAll('nav button').forEach(b => b.classList.remove('active'));
-  document.getElementById(id).classList.add('active');
-  if (btn) btn.classList.add('active');
+  const sec = document.getElementById(id);
+  if (sec) sec.classList.add('active');
+  const activeBtn = btn || Array.from(document.querySelectorAll('nav button'))
+    .find(b => (b.getAttribute('onclick') || '').includes("'" + id + "'"));
+  if (activeBtn) activeBtn.classList.add('active');
+  if (!skipLoad && typeof window.scrollTo === 'function') window.scrollTo(0, 0);
   if (!skipLoad) loadCurrentTab();
 }
+
+function goToTab(id) { showTab(id, null); }
 
 // The container each tab refills, painted with loadingState() while its
 // fetch is in flight. Controls and Help are static; Today's smaller cards
@@ -2221,7 +2227,7 @@ async function loadOutbox() {
     ? '<div class="banner">' + icon('mail') + '<div><b>Mailbox not connected yet</b>' +
         '<p>You can draft, rewrite, and approve emails now — approved drafts stay safely queued' +
         ((data.approved || []).length ? ' (' + (data.approved || []).length + ' approved waiting)' : '') +
-        ' until you connect Gmail, Microsoft 365, or SMTP in <a href="#settings" onclick="showSection(\'settings\')">Settings</a>.</p></div></div>'
+        ' until you connect Gmail, Microsoft 365, or SMTP in <a href="#settings" onclick="goToTab(\'settings\');return false">Settings</a>.</p></div></div>'
     : '';
   banner.innerHTML = sendingModeBanner(_sendingMode) + mailboxNote + (data.paused
     ? '<div class="banner bad">' + icon('alert') + '<div><b>Sending is paused</b>' +
@@ -4375,6 +4381,176 @@ function ce(t) {
 function lines(list) { return (list || []).join('\n'); }
 function splitLines(text) { return String(text || '').split('\n').map(x => x.trim()).filter(Boolean); }
 
+const COMPANY_PRESETS = {
+  saas_b2b: {
+    label: 'Custom B2B SaaS',
+    desc: 'Promote your own SaaS product to startups, agencies, and software teams via personalized research & sequences.',
+    product: {
+      name: 'Your SaaS Name',
+      pricing: 'Starting at $99/mo (14-day free trial)',
+      description: 'B2B SaaS platform that eliminates manual workflow bottlenecks and saves teams 10+ hours a week.',
+      key_benefits: [
+        'Deploys in under 15 minutes with zero engineering lift',
+        'Cuts manual ops work and speeds up revenue response time',
+        'Predictable monthly pricing with clear ROI inside 30 days',
+      ],
+    },
+    offer: 'a 2-minute custom teardown video showing where your current workflow leaks leads',
+    icp: {
+      industries: ['SaaS', 'Software', 'Digital Agency', 'E-commerce'],
+      titles: ['Founder', 'CEO', 'Head of Growth', 'VP Operations'],
+      company_size: '10-200 employees',
+      geography: ['Austin, TX', 'San Francisco, CA', 'New York, NY'],
+    },
+  },
+  saas_local: {
+    label: 'SaaS -> Local Businesses',
+    desc: 'Sell SaaS (booking, AI receptionist, SEO, CRM, billing, reviews) to dentists, HVAC, clinics, plumbers, and shops.',
+    product: {
+      name: 'LocalFlow SaaS',
+      pricing: 'Starting at $149/mo per location',
+      description: 'All-in-one automation & booking SaaS built specifically for local service businesses to capture missed calls and fill their calendar.',
+      key_benefits: [
+        'Replies to missed calls and web leads within 60 seconds',
+        'Turns Google Maps traffic into confirmed appointments automatically',
+        'Zero complex setup — works alongside existing phone & booking tools',
+      ],
+    },
+    offer: 'a 1-page breakdown of local leads slipping past your website & Google listing this week',
+    icp: {
+      industries: ['dentist', 'hvac', 'plumber', 'roofer', 'clinic', 'auto repair'],
+      titles: ['Owner', 'Practice Owner', 'Managing Partner', 'Office Manager'],
+      company_size: '1-50 employees',
+      geography: ['Denver, CO', 'Austin, TX'],
+    },
+  },
+  agency: {
+    label: 'B2B Service / Agency',
+    desc: 'Outreach for dev shops, marketing agencies, or consultancies targeting local SMBs or growing SaaS companies.',
+    product: {
+      name: 'Growth Partner Studio',
+      pricing: 'Retainer or performance-based',
+      description: 'Done-for-you web conversion, paid acquisition, and CRM automation partner for service businesses.',
+      key_benefits: [
+        'Rebuilds slow landing pages into high-converting booking funnels',
+        'Transparent weekly pipeline reporting tied directly to booked calls',
+        'Launch first campaign inside 7 days',
+      ],
+    },
+    offer: 'a custom 3-point conversion mockup for your homepage before any commitment',
+    icp: {
+      industries: ['dentist', 'real estate', 'lawyer', 'salon', 'gym'],
+      titles: ['Owner', 'Founder', 'Managing Director'],
+      company_size: '2-50 employees',
+      geography: ['Chicago, IL', 'Miami, FL'],
+    },
+  },
+};
+
+const LOCAL_TRADE_CHIPS = [
+  'dentist', 'hvac', 'plumber', 'roofer', 'lawyer', 'contractor',
+  'clinic', 'chiro', 'vet', 'auto repair', 'salon', 'gym',
+  'real estate', 'accountant', 'restaurant', 'SaaS',
+];
+
+function applyCompanyPreset(key) {
+  const preset = COMPANY_PRESETS[key];
+  if (!preset) return;
+  const setV = (id, val) => { const el = document.getElementById(id); if (el) el.value = val; };
+  setV('co-p-name', preset.product.name);
+  setV('co-p-pricing', preset.product.pricing);
+  setV('co-p-desc', preset.product.description);
+  setV('co-p-benefits', lines(preset.product.key_benefits));
+  setV('offer-entry', preset.offer);
+  setV('co-i-industries', lines(preset.icp.industries));
+  setV('co-i-titles', lines(preset.icp.titles));
+  setV('co-i-size', preset.icp.company_size);
+  setV('co-i-geo', lines(preset.icp.geography));
+  renderIndustryChipStates();
+  showToast('Applied "' + preset.label + '" template — customize fields below and click Save on each card (or Save All Blueprint).', 'info');
+}
+
+async function saveCompanyBlueprintAll(btn) {
+  const v = id => (document.getElementById(id)?.value || '');
+  const orig = btn ? btn.textContent : '';
+  if (btn) { btn.disabled = true; btn.textContent = 'Saving...'; }
+  try {
+    const calls = [
+      api('/api/company', {
+        method: 'POST', headers: {'Content-Type': 'application/json'},
+        body: JSON.stringify({
+          section: 'product',
+          fields: {
+            name: v('co-p-name'), pricing: v('co-p-pricing'),
+            description: v('co-p-desc'), key_benefits: splitLines(v('co-p-benefits')),
+          },
+        }),
+      }),
+      api('/api/company', {
+        method: 'POST', headers: {'Content-Type': 'application/json'},
+        body: JSON.stringify({
+          section: 'icp',
+          fields: {
+            industries: splitLines(v('co-i-industries')), titles: splitLines(v('co-i-titles')),
+            company_size: v('co-i-size'), geography: splitLines(v('co-i-geo')),
+          },
+        }),
+      }),
+      api('/api/company', {
+        method: 'POST', headers: {'Content-Type': 'application/json'},
+        body: JSON.stringify({
+          section: 'persona',
+          fields: {
+            name: v('co-s-name'), role: v('co-s-role'), company: v('co-s-company'),
+            email: v('co-s-email'), linkedin: v('co-s-linkedin'), tone: v('co-s-tone'),
+          },
+        }),
+      }),
+      api('/api/offer', {
+        method: 'POST', headers: {'Content-Type': 'application/json'},
+        body: JSON.stringify({
+          entry: v('offer-entry').trim(),
+          booking_url: v('offer-booking-url').trim(),
+        }),
+      }),
+    ];
+    const results = await Promise.all(calls);
+    const failed = results.find(r => !r || !r.success);
+    if (failed) {
+      showToast(failMsg(failed, 'Some sections could not be saved — check product name/description.'), 'error');
+    } else {
+      showToast('All SaaS, Offer, ICP, and Sender settings saved!', 'success');
+      await loadCompany();
+      loadToday();
+    }
+  } finally {
+    if (btn) { btn.disabled = false; btn.textContent = orig || 'Save All Sections'; }
+  }
+}
+
+function toggleIndustryChip(term) {
+  const el = document.getElementById('co-i-industries');
+  if (!el) return;
+  const current = splitLines(el.value);
+  const idx = current.findIndex(x => x.toLowerCase() === term.toLowerCase());
+  if (idx >= 0) current.splice(idx, 1);
+  else current.push(term);
+  el.value = lines(current);
+  renderIndustryChipStates();
+}
+
+function renderIndustryChipStates() {
+  const el = document.getElementById('co-i-industries');
+  const box = document.getElementById('co-industry-chips');
+  if (!el || !box) return;
+  const active = new Set(splitLines(el.value).map(x => x.toLowerCase()));
+  box.querySelectorAll('[data-trade]').forEach(btn => {
+    const on = active.has(String(btn.dataset.trade || '').toLowerCase());
+    btn.classList.toggle('on', on);
+    btn.setAttribute('aria-pressed', String(on));
+  });
+}
+
 async function loadCompany() {
   const body = document.getElementById('company-body');
   const data = await api('/api/company');
@@ -4384,14 +4560,39 @@ async function loadCompany() {
   _company = data;
   const o = data.offer || {}, p = data.product || {}, icp = data.icp || {}, s = data.persona || {};
   const objections = Object.entries(p.objection_responses || {});
+  const isPlaceholder = /smoke test|placeholder|yourcompany/i.test((p.name || '') + ' ' + (s.company || ''));
   body.innerHTML = `
+  <section class="card company-card playbook-card" aria-labelledby="co-playbook-h">
+    <div class="company-card-head">
+      <h3 id="co-playbook-h">Launch Your SaaS or Local Outreach</h3>
+      <button class="btn btn-primary btn-sm" onclick="saveCompanyBlueprintAll(this)">Save All Sections</button>
+    </div>
+    ${isPlaceholder ? '<div class="banner" style="margin-bottom:4px">' + icon('alert') + '<div><b>Currently using Smoke Test placeholder details</b><p>Pick a starter blueprint below or enter your real SaaS website under <b>Train from Website</b> before sending real campaigns.</p></div></div>' : ''}
+    <div class="playbook-steps">
+      <div class="pb-step"><span class="pb-num">1</span><div><b>Define Offer &amp; SaaS</b><div class="hint">Train from URL or fill product, pricing &amp; CTA below</div></div></div>
+      <div class="pb-step"><span class="pb-num">2</span><div><b>Set Target &amp; Cities</b><div class="hint">Pick local niches (dentist, hvac) or SaaS + cities</div></div></div>
+      <div class="pb-step"><span class="pb-num">3</span><div><b><a href="#discover" onclick="goToTab('discover');return false">Discover</a> &amp; <a href="#today" onclick="goToTab('today');return false">Agentic Cycle</a></b><div class="hint">Find businesses, scrape websites &amp; verify decision-makers</div></div></div>
+      <div class="pb-step"><span class="pb-num">4</span><div><b><a href="#outbox" onclick="goToTab('outbox');return false">Outbox</a> &amp; <a href="#settings" onclick="goToTab('settings');return false">Mailbox</a></b><div class="hint">Review/Rewrite AI drafts, then connect Gmail/SMTP</div></div></div>
+    </div>
+    <div>
+      <div class="form-label" style="margin-bottom:6px">1-Click Starter Blueprints <span class="hint">(fills the form below without saving until you click Save)</span></div>
+      <div class="preset-grid">
+        ${Object.entries(COMPANY_PRESETS).map(([k, pr]) => `
+          <button type="button" class="preset-card" onclick="applyCompanyPreset('${k}')">
+            <span class="preset-title">${ce(pr.label)}</span>
+            <span class="preset-desc">${ce(pr.desc)}</span>
+          </button>`).join('')}
+      </div>
+    </div>
+  </section>
+
   <section class="card company-card" aria-labelledby="co-train-h">
     <div class="company-card-head">
       <h3 id="co-train-h">Train from Website</h3>
-      <span class="hint">Crawl your site and auto-populate product, ICP, and objections</span>
+      <span class="hint">Crawl your SaaS or agency URL and auto-populate product, ICP, and objections</span>
     </div>
     <div class="company-train-row">
-      <input type="url" class="form-input" id="co-train-url" placeholder="https://yourcompany.com" autocomplete="off">
+      <input type="url" class="form-input" id="co-train-url" placeholder="https://your-saas.com" autocomplete="off">
       <button class="btn btn-primary btn-sm" id="co-train-btn" onclick="trainCompanyFromUrl()">Train Sellbird</button>
     </div>
     <div id="co-train-status" class="hint" aria-live="polite" style="margin-top:8px"></div>
@@ -4411,9 +4612,11 @@ async function loadCompany() {
         <button class="btn btn-secondary btn-sm" onclick="dismissProposedOffer()">Dismiss</button>
       </div>
     </div>` : ''}
-    <p class="desc">Each first email names something Sellbird found about the prospect, says what it costs them, and offers this as the fix. Make it free, specific, and something you can deliver this week. ${o.entry ? '' : '<b>No offer yet</b>, so first emails end with a question instead. '}The easiest way to work it out is to ask your coding agent: <i>"Help me work out my Sellbird offer."</i></p>
-    <div class="form-group"><label class="form-label" for="offer-entry">Offer</label>
-      <textarea class="form-input" id="offer-entry" rows="2" maxlength="300" placeholder="e.g. a written plan for getting you onto page one of Google">${ce(o.entry || '')}</textarea></div>
+    <p class="desc">Each first email names something Sellbird found about the prospect, says what it costs them, and offers this as the fix. Make it free, specific, and deliverable this week. ${o.entry ? '' : '<b>No offer yet</b>, so first emails end with a question instead.'}</p>
+    <div class="form-group"><label class="form-label" for="offer-entry">Offer CTA</label>
+      <textarea class="form-input" id="offer-entry" rows="2" maxlength="300" placeholder="e.g. a 2-minute breakdown of leads slipping past your homepage &amp; Google listing">${ce(o.entry || '')}</textarea></div>
+    <div class="form-group"><label class="form-label" for="offer-booking-url">Calendar / Booking Link <span class="hint">(optional Cal.com or Calendly URL shared when prospects ask to book)</span></label>
+      <input type="url" class="form-input" id="offer-booking-url" placeholder="https://cal.com/you/15min" value="${ce(o.booking_url || '')}" autocomplete="off"></div>
     <div class="offer-actions">
       <button class="btn btn-primary btn-sm" onclick="saveOffer()">Save offer</button>
       <button class="btn btn-secondary btn-sm" id="offer-preview-btn" onclick="previewOffer()">Preview an email</button>
@@ -4426,7 +4629,7 @@ async function loadCompany() {
   <section class="card company-card" aria-labelledby="co-product-h">
     <div class="company-card-head"><h3 id="co-product-h">What you sell</h3></div>
     <div class="company-grid">
-      <div class="form-group"><label class="form-label" for="co-p-name">Product or service</label>
+      <div class="form-group"><label class="form-label" for="co-p-name">Product or SaaS name</label>
         <input class="form-input" id="co-p-name" value="${ce(p.name)}"></div>
       <div class="form-group"><label class="form-label" for="co-p-pricing">Pricing</label>
         <input class="form-input" id="co-p-pricing" value="${ce(p.pricing)}"></div>
@@ -4439,31 +4642,45 @@ async function loadCompany() {
   </section>
 
   <section class="card company-card" aria-labelledby="co-icp-h">
-    <div class="company-card-head"><h3 id="co-icp-h">Who you sell to</h3></div>
+    <div class="company-card-head"><h3 id="co-icp-h">Who you sell to (ICP &amp; Local Markets)</h3></div>
+    <div>
+      <div class="form-label" style="margin-bottom:6px">Quick-toggle OpenStreetMap Local Trades &amp; B2B Niches</div>
+      <div class="chip-row" id="co-industry-chips">
+        ${LOCAL_TRADE_CHIPS.map(t => `<button type="button" class="chip" data-trade="${ce(t)}" aria-pressed="false" onclick="toggleIndustryChip(${jsq(t)})">${ce(t)}</button>`).join('')}
+      </div>
+    </div>
     <div class="company-grid">
       <div class="form-group"><label class="form-label" for="co-i-industries">Industries <span class="hint">one per line</span></label>
-        <textarea class="form-input" id="co-i-industries" rows="4">${ce(lines(icp.industries))}</textarea></div>
+        <textarea class="form-input" id="co-i-industries" rows="4" oninput="renderIndustryChipStates()">${ce(lines(icp.industries))}</textarea></div>
       <div class="form-group"><label class="form-label" for="co-i-titles">Job titles <span class="hint">one per line</span></label>
         <textarea class="form-input" id="co-i-titles" rows="4">${ce(lines(icp.titles))}</textarea></div>
       <div class="form-group"><label class="form-label" for="co-i-size">Company size</label>
         <input class="form-input" id="co-i-size" value="${ce(icp.company_size)}"></div>
-      <div class="form-group"><label class="form-label" for="co-i-geo">Where <span class="hint">one per line</span></label>
-        <textarea class="form-input" id="co-i-geo" rows="2">${ce(lines(icp.geography))}</textarea></div>
+      <div class="form-group"><label class="form-label" for="co-i-geo">Where <span class="hint">one city per line (auto-geocoded on Discover)</span></label>
+        <textarea class="form-input" id="co-i-geo" rows="2" placeholder="Denver, CO&#10;Austin, TX">${ce(lines(icp.geography))}</textarea></div>
     </div>
     <div class="offer-actions"><button class="btn btn-primary btn-sm" onclick="saveCompanySection('icp')">Save</button></div>
   </section>
 
   <section class="card company-card" aria-labelledby="co-sender-h">
     <div class="company-card-head"><h3 id="co-sender-h">Who it's from</h3>
-      <span class="hint">${ce(s.company)}${s.email ? ' · ' + ce(s.email) : ''}</span></div>
+      <span class="hint">Appears in email headers &amp; sign-offs</span></div>
     <div class="company-grid">
       <div class="form-group"><label class="form-label" for="co-s-name">Sender name <span class="hint">signed under every email</span></label>
         <input class="form-input" id="co-s-name" value="${ce(s.name)}"></div>
-      <div class="form-group"><label class="form-label" for="co-s-role">Role</label>
+      <div class="form-group"><label class="form-label" for="co-s-role">Role / Title</label>
         <input class="form-input" id="co-s-role" value="${ce(s.role)}"></div>
+      <div class="form-group"><label class="form-label" for="co-s-company">Company name</label>
+        <input class="form-input" id="co-s-company" value="${ce(s.company)}"></div>
+      <div class="form-group"><label class="form-label" for="co-s-email">Sender email</label>
+        <input type="email" class="form-input" id="co-s-email" placeholder="founder@your-saas.com" value="${ce(s.email || '')}"></div>
     </div>
-    <div class="form-group"><label class="form-label" for="co-s-tone">Tone</label>
-      <input class="form-input" id="co-s-tone" value="${ce(s.tone)}"></div>
+    <div class="company-grid">
+      <div class="form-group"><label class="form-label" for="co-s-tone">Tone</label>
+        <input class="form-input" id="co-s-tone" value="${ce(s.tone)}"></div>
+      <div class="form-group"><label class="form-label" for="co-s-linkedin">LinkedIn URL <span class="hint">(optional)</span></label>
+        <input class="form-input" id="co-s-linkedin" placeholder="linkedin.com/in/your-name" value="${ce(s.linkedin || '')}"></div>
+    </div>
     <div class="offer-actions"><button class="btn btn-primary btn-sm" onclick="saveCompanySection('persona')">Save</button></div>
   </section>
 
@@ -4481,10 +4698,11 @@ async function loadCompany() {
 
   ${data.knowledge || data.competitors ? `<section class="card company-card" aria-labelledby="co-learned-h">
     <div class="company-card-head"><h3 id="co-learned-h">What Sellbird learned from your site</h3>
-      <span class="hint">From training. Retrain with <code>sellbird train &lt;url&gt;</code></span></div>
+      <span class="hint">From training. Retrain with <b>Train from Website</b> above or <code>sellbird train &lt;url&gt;</code></span></div>
     ${data.knowledge ? `<details class="company-learned"><summary>Product knowledge</summary><pre>${ce(data.knowledge)}</pre></details>` : ''}
     ${data.competitors ? `<details class="company-learned"><summary>Competitors</summary><pre>${ce(data.competitors)}</pre></details>` : ''}
   </section>` : ''}`;
+  renderIndustryChipStates();
   _offerIdeas = (o.entry_ideas || []).map(x => ({offer: x}));
   renderOfferIdeas();
   navCount('nav-company', o.proposed ? 1 : 0);
@@ -4556,7 +4774,11 @@ async function saveCompanySection(section, objectionsOnly) {
     fields = {industries: splitLines(v('co-i-industries')), titles: splitLines(v('co-i-titles')),
               company_size: v('co-i-size'), geography: splitLines(v('co-i-geo'))};
   } else if (section === 'persona') {
-    fields = {name: v('co-s-name'), role: v('co-s-role'), tone: v('co-s-tone')};
+    fields = {
+      name: v('co-s-name'), role: v('co-s-role'),
+      company: v('co-s-company'), email: v('co-s-email'),
+      linkedin: v('co-s-linkedin'), tone: v('co-s-tone'),
+    };
   }
   const r = await api('/api/company', {method: 'POST', headers: {'Content-Type': 'application/json'},
                                        body: JSON.stringify({section, fields})});
@@ -4614,8 +4836,11 @@ async function previewOffer() {
 
 async function saveOffer(entryOverride) {
   const entry = entryOverride != null ? entryOverride : document.getElementById('offer-entry').value.trim();
+  const bookingEl = document.getElementById('offer-booking-url');
+  const payload = {entry};
+  if (bookingEl && entryOverride == null) payload.booking_url = bookingEl.value.trim();
   const r = await api('/api/offer', {method: 'POST', headers: {'Content-Type': 'application/json'},
-                                     body: JSON.stringify({entry})});
+                                     body: JSON.stringify(payload)});
   if (r && r.success) { showToast(r.message, 'success'); loadCompany(); }
   else showToast((r && r.message) || 'Couldn\'t save the offer.', 'error');
 }
