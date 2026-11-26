@@ -2960,6 +2960,7 @@ async def outbox_regenerate(item_id: str, request: Request):
     brain, _, config, _env = runtime
     try:
         from sellbird.agents.critic import CopyCritic, _unwrap_email_dict
+        from sellbird.agents.writer import _fill_personal_merge_leaks
         from sellbird.email_style import tidy
         from sellbird.gate import MAX_SUBJECT_LEN
         from sellbird.untrusted import UNTRUSTED_RULE, fence
@@ -2991,19 +2992,26 @@ async def outbox_regenerate(item_id: str, request: Request):
             f"{UNTRUSTED_RULE}\n"
             "Rules:\n"
             "- Keep all factual claims grounded in the original draft and prospect record; never invent details.\n"
+            "- Write the actual text directly; replace any {{company}} / {{first_name}} placeholders using the Prospect details and never output {{...}} tags.\n"
             "- Do NOT include a sign-off name or opt-out/postal footer; Sellbird appends those when sending.\n"
             "- Avoid banned AI cliches (delve, streamline, game-changer, synergy, reach out, quick question) and avoid em-dashes.\n"
             + ("- Preserve the thread subject verbatim.\n" if is_reply else f"- Keep subject lowercase, 2-6 words, max {MAX_SUBJECT_LEN} chars, no 'Re:' or 'Fwd:'.\n")
             + (f"\nProduct & email context:\n{skills[:2500]}" if skills else "")
         )
-        prompt = (
+        full_prompt = (
+            f"{system}\n\n"
             f"Rewrite instruction: {direction}\n\n"
             f"Prospect:\n{fence(prospect_ctx, 'prospect')}\n\n"
             f"Current Subject:\n{fence(str(item.get('subject') or ''), 'subject')}\n\n"
             f"Current Body:\n{fence(str(item.get('body') or ''), 'body')}\n\n"
             'Return strictly JSON: {"subject": "...", "body": "..."}'
         )
-        raw = await brain.think_json(prompt, system=system)
+        raw = await brain.think_json(
+            full_prompt,
+            session_id=f"outbox-rewrite-{item_id}",
+            agent="writer",
+            task="rewrite_outbox_draft",
+        )
         unwrapped = _unwrap_email_dict(raw)
         if not unwrapped:
             return JSONResponse(
@@ -3017,6 +3025,10 @@ async def outbox_regenerate(item_id: str, request: Request):
             else str(unwrapped.get("subject") or item.get("subject") or "").strip()[:MAX_SUBJECT_LEN]
         )
         new_body = tidy(str(unwrapped.get("body") or "").strip())
+        if prospect is not None:
+            new_body = tidy(_fill_personal_merge_leaks(new_body, prospect))
+            if not is_reply:
+                new_subject = _fill_personal_merge_leaks(new_subject, prospect).strip()[:MAX_SUBJECT_LEN]
 
         err_msg = await _validate_outbox_draft(state, item, new_subject, new_body)
         if err_msg:

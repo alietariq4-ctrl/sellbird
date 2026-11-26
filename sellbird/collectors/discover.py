@@ -1087,7 +1087,7 @@ class OpenStreetMap(DiscoveryProvider):
     # throttling, a gateway that lost its backend, an overloaded instance, a
     # timed-out one. Every one of them is another mirror's problem to solve, so
     # walk on. A 400 (bad query) or 404 is ours and fails here and now.
-    RETRY_STATUSES = frozenset({429, 500, 502, 503, 504})
+    RETRY_STATUSES = frozenset({406, 429, 500, 502, 503, 504})
 
     # A friendly term maps to the OSM tags that actually carry those businesses.
     TAG_MAP = {

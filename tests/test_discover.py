@@ -951,7 +951,7 @@ async def test_overpass_falls_over_to_the_next_mirror(monkeypatch):
 
 
 @pytest.mark.asyncio
-@pytest.mark.parametrize("status", [429, 500, 502, 503, 504])
+@pytest.mark.parametrize("status", [406, 429, 500, 502, 503, 504])
 async def test_a_mirror_failing_transiently_hands_over_to_the_next(status, monkeypatch):
     """502 is the one that bit us: only 429 and 504 used to count as "try the
     next one", so a bad gateway on the first mirror sank a search the second

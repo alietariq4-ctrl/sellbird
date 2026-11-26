@@ -288,7 +288,7 @@ def test_outbox_mailbox_ready_and_ai_regenerate(env, monkeypatch):
         async def preflight(self):
             return ""
 
-        async def think_json(self, prompt, system=""):
+        async def think_json(self, prompt, session_id=None, agent="", task=""):
             if "Re: freight handoff" in prompt:
                 return {
                     "subject": "SHOULD NOT OVERWRITE REPLY SUBJECT",
