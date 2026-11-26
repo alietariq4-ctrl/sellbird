@@ -138,12 +138,21 @@
   <div class="section-head">
     <div>
       <h2>Today</h2>
-      <p>What's waiting on you, live AI readiness, and one-click agentic runs.</p>
+      <p>Command center: run your AI pipeline, monitor lead readiness, and jump straight into outreach.</p>
     </div>
     <div class="page-actions">
       <button class="btn btn-primary btn-sm" id="today-cycle-btn" onclick="runAgenticCycleToday(this)">Run Agentic Cycle</button>
       <button class="btn btn-secondary btn-sm" id="today-loop-btn" onclick="toggleAgentLoopFromToday(this)">Start Loop</button>
     </div>
+  </div>
+
+  <div class="feature-guide" id="today-workflow-guide" aria-label="Outreach workflow quick-start">
+    <span><b>Outreach Workflow:</b></span>
+    <button type="button" class="fg-pill" onclick="goTab('company')"><span class="step-n">1</span>Define Offer &amp; ICP</button>
+    <button type="button" class="fg-pill" onclick="goTab('discover')"><span class="step-n">2</span>Discover Leads</button>
+    <button type="button" class="fg-pill" onclick="goTab('prospects')"><span class="step-n">3</span>Tag &amp; Edit Contacts</button>
+    <button type="button" class="fg-pill" onclick="goTab('campaigns')"><span class="step-n">4</span>Build A/B Campaign</button>
+    <button type="button" class="fg-pill" onclick="goTab('outbox')"><span class="step-n">5</span>Preview &amp; Approve Outbox</button>
   </div>
 
   <div id="today-renamed"></div>
@@ -279,7 +288,7 @@
 <!-- Contacts -->
 <div id="prospects" class="section">
   <div class="section-head">
-    <div><h2>Contacts</h2><p>People Sellbird has found, how sure it is of their address, and where each one stands.</p></div>
+    <div><h2>Contacts</h2><p>Manage leads, edit profiles &amp; email history, segment with tags, or run bulk actions.</p></div>
     <div class="page-actions">
       <button class="btn btn-primary btn-sm" onclick="openAddContactModal()">+ Add Contact</button>
       <button class="btn btn-secondary btn-sm" onclick="openImportCsvModal()">+ Import CSV</button>
@@ -288,6 +297,12 @@
       <button class="btn btn-ghost btn-sm" onclick="downloadCsv('/api/export/prospects.csv?all=true', 'prospects-all.csv', this)">Export all</button>
     </div>
   </div>
+  <div class="feature-guide">
+    <span><b>What you can do here:</b></span>
+    <span>Click any <b>name or Edit</b> to update fields &amp; view email history</span>
+    <span>&middot; Use <b>Checkboxes</b> for bulk Tag / Suppress / Delete</span>
+    <span>&middot; Filter by <b>Tags</b> to match Campaign targets</span>
+  </div>
   <div id="suppressions-panel" style="display:none;margin-bottom:14px"></div>
   <div id="prospects-table"></div>
 </div>
@@ -295,12 +310,18 @@
 <!-- Campaigns -->
 <div id="campaigns" class="section">
   <div class="section-head">
-    <div><h2>Campaigns</h2><p>Email sequences Sellbird has written, and how far each one has got.</p></div>
+    <div><h2>Campaigns</h2><p>Create multi-step A/B email sequences, save templates, launch to Outbox, and track step &amp; reply analytics.</p></div>
     <div class="page-actions">
-      <button class="btn btn-ghost btn-sm" id="templates-btn" onclick="openTemplatesModal()">Templates</button>
+      <button class="btn btn-secondary btn-sm" id="templates-btn" onclick="openTemplatesModal()">Templates Library</button>
       <button class="btn btn-secondary btn-sm" id="new-campaign-btn" onclick="openCampaignBuilderModal()">+ New Campaign</button>
       <button class="btn btn-primary btn-sm" id="writer-run-btn" onclick="triggerWriterRun(this)">Write Emails Now</button>
     </div>
+  </div>
+  <div class="feature-guide">
+    <span><b>Campaign tools:</b></span>
+    <span><b>+ New Campaign</b> supports <b>AI 3-step drafts</b> &amp; <b>50/50 A/B Subject tests</b></span>
+    <span>&middot; <b>Launch to Outbox</b> stages personalized emails safely</span>
+    <span>&middot; <b>Analytics</b> compares Variant A vs B win rates</span>
   </div>
   <div id="campaigns-funnel"></div>
   <div id="frameworks-card"></div>
@@ -312,10 +333,16 @@
   <div class="section-head">
     <div>
       <h2>Outbox</h2>
-      <p>Emails waiting for you. Read one, decide, move on &mdash;
-         <kbd>A</kbd> approve, <kbd>R</kbd> reject, <kbd>E</kbd> edit, <kbd>J</kbd>/<kbd>K</kbd> to move.</p>
+      <p>Review personalized drafts, catch missing merge tags, preview rendered HTML, and approve or bulk-queue sends &mdash;
+         <kbd>A</kbd> approve, <kbd>R</kbd> reject, <kbd>E</kbd> edit, <kbd>J</kbd>/<kbd>K</kbd> move.</p>
     </div>
     <div class="page-actions" id="outbox-actions"></div>
+  </div>
+  <div class="feature-guide">
+    <span><b>Safety &amp; Bulk Review:</b></span>
+    <span><b>Test Preview</b> shows exact HTML, sign-off &amp; footer</span>
+    <span>&middot; Auto-blocks unrendered <code>{{tag}}</code> leaks</span>
+    <span>&middot; Check multiple rows or click <b>Select all</b> for bulk Approve / Reject</span>
   </div>
   <div id="outbox-banner"></div>
   <div id="outbox-desk"></div>
@@ -324,7 +351,12 @@
 
 <!-- Conversations -->
 <div id="conversations" class="section">
-  <div class="section-head"><div><h2>Conversations</h2><p>Every reply, and how Sellbird handled it.</p></div></div>
+  <div class="section-head"><div><h2>Conversations</h2><p>Track prospect replies, draft AI/manual responses directly to Outbox, and book meetings.</p></div></div>
+  <div class="feature-guide">
+    <span><b>Reply Handling:</b></span>
+    <span>Click <b>Reply</b> on any thread to write manually, generate an <b>AI Draft Reply</b>, or insert a saved Template</span>
+    <span>&middot; Click <b>Book Meeting</b> to pick live calendar slots</span>
+  </div>
   <div id="conversations-list"></div>
 </div>
 
