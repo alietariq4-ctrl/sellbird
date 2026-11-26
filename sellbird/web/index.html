@@ -134,7 +134,11 @@
   <div class="section-head">
     <div>
       <h2>Today</h2>
-      <p>What's waiting on you, and how the pipeline is moving.</p>
+      <p>What's waiting on you, live AI readiness, and one-click agentic runs.</p>
+    </div>
+    <div class="page-actions">
+      <button class="btn btn-primary btn-sm" id="today-cycle-btn" onclick="runAgenticCycleToday(this)">Run Agentic Cycle</button>
+      <button class="btn btn-secondary btn-sm" id="today-loop-btn" onclick="toggleAgentLoopFromToday(this)">Start Loop</button>
     </div>
   </div>
 
@@ -142,6 +146,7 @@
   <div id="today-setup"></div>
 
   <div id="today-kpis"></div>
+  <div id="today-agentic"></div>
 
   <div class="grid-main">
     <div>

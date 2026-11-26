@@ -2941,31 +2941,48 @@ async def get_frameworks():
     return {"configured": configured, "rows": rows}
 
 
+_agent_cycle_lock = asyncio.Lock()
+
+
+async def _prepare_agentic_runtime():
+    """Initialize DB, signal catalog, config, env, and checked Brain for an on-demand run."""
+    from sellbird.brain import Brain
+    from sellbird.config import ConfigError, load_env
+    from sellbird.signals import seed_signal_catalog
+
+    state = _state()
+    await state.init_db()
+    await seed_signal_catalog(state)
+    try:
+        config = _load_active_sellbird_config()
+    except (ConfigError, Exception) as exc:
+        return None, JSONResponse({"success": False, "message": f"Couldn't load config: {exc}"}, status_code=400)
+
+    env = load_env()
+    brain = Brain(state, config.brain)
+    unavail = await brain.preflight()
+    if unavail:
+        await _close_brain(brain)
+        return None, JSONResponse({"success": False, "message": unavail}, status_code=503)
+    if not await _brain_within_budget(brain, config):
+        await _close_brain(brain)
+        return None, JSONResponse(
+            {"success": False, "message": "Daily AI budget reached. Raise usage.max_daily_usd or try tomorrow."},
+            status_code=429,
+        )
+    return (brain, state, config, env), None
+
+
 @app.post("/api/writer/run")
 async def trigger_writer_run():
     """Run the Writer agent on-demand to draft sequences for new deliverable prospects."""
     from sellbird.agents.writer import Writer
-    from sellbird.brain import Brain
-    from sellbird.config import ConfigError, load_env
 
-    state = _state()
-    await state.init_db()
+    runtime, err = await _prepare_agentic_runtime()
+    if err is not None:
+        return err
+    brain, state, config, env = runtime
     try:
-        config = _load_active_sellbird_config()
-    except (ConfigError, Exception) as exc:
-        return JSONResponse({"success": False, "message": f"Couldn't load config: {exc}"}, status_code=400)
-
-    env = load_env()
-    brain = Brain(state, config.brain)
-    try:
-        unavail = await brain.preflight()
-        if unavail:
-            return JSONResponse({"success": False, "message": unavail}, status_code=503)
-        if not await _brain_within_budget(brain, config):
-            return JSONResponse(
-                {"success": False, "message": "Daily AI budget reached. Raise usage.max_daily_usd or try tomorrow."},
-                status_code=429,
-            )
         writer = Writer(brain, state, config, env)
         await writer.run()
         campaigns_after = await _scalar("SELECT COUNT(*) FROM campaigns")
@@ -2985,6 +3002,200 @@ async def trigger_writer_run():
         return JSONResponse({"success": False, "message": f"Writer run failed: {exc}"}, status_code=500)
     finally:
         await _close_brain(brain)
+
+
+@app.post("/api/scout/run")
+async def trigger_scout_run():
+    """Run Scout on-demand to backfill contacts and qualify leads."""
+    from sellbird.agents.scout import Scout
+
+    runtime, err = await _prepare_agentic_runtime()
+    if err is not None:
+        return err
+    brain, state, config, env = runtime
+    try:
+        before = await _scalar("SELECT COUNT(*) FROM prospects")
+        scout = Scout(brain, state, config, env)
+        await scout.run()
+        after = await _scalar("SELECT COUNT(*) FROM prospects")
+        added = max(0, int(after) - int(before))
+        await state.log_action("scout_run", "dashboard", {"added": added, "prospects_after": after})
+        return {"success": True, "added": added, "prospects_after": after}
+    except Exception as exc:
+        logger.warning("On-demand Scout run failed: %s", exc)
+        return JSONResponse({"success": False, "message": f"Scout run failed: {exc}"}, status_code=500)
+    finally:
+        await _close_brain(brain)
+
+
+_agent_cycle_status: dict = {
+    "running": False,
+    "current_step": "",
+    "steps_done": [],
+    "started_at": "",
+    "finished_at": "",
+    "result": None,
+    "error": "",
+}
+_agent_cycle_task: asyncio.Task | None = None
+
+
+@app.get("/api/agent/cycle/status")
+async def get_agent_cycle_status():
+    """Return live progress for the on-demand non-sending agentic cycle."""
+    return {
+        **_agent_cycle_status,
+        "steps_done": list(_agent_cycle_status.get("steps_done") or []),
+    }
+
+
+@app.post("/api/agent/cycle")
+async def trigger_agent_cycle(request: Request):
+    """Run one complete non-sending agentic cycle on demand (even during quiet hours or without a mailbox).
+
+    Runs: Scout -> DeepResearcher -> ClayEnricher (if columns exist) -> Writer (+ CopyCritic) -> Analyst.
+    Pass ``{"background": true}`` to start asynchronously and poll ``/api/agent/cycle/status``.
+    Drafts stage safely into Outbox and never send emails.
+    """
+    global _agent_cycle_task
+
+    if _agent_cycle_lock.locked() or _agent_cycle_status.get("running"):
+        return JSONResponse(
+            {"success": False, "message": "An agentic cycle is already running."},
+            status_code=409,
+        )
+
+    try:
+        body = await request.json() if request.headers.get("content-type", "").startswith("application/json") else {}
+    except Exception:
+        body = {}
+    if not isinstance(body, dict):
+        body = {}
+
+    try:
+        research_limit = max(1, min(20, int(body.get("research_limit") or 3)))
+        enrich_limit = max(1, min(30, int(body.get("enrich_limit") or 5)))
+    except (TypeError, ValueError):
+        return JSONResponse({"success": False, "message": "Invalid limit parameter."}, status_code=400)
+    include_writer = bool(body.get("include_writer", True))
+    background = bool(body.get("background", False))
+
+    runtime, err = await _prepare_agentic_runtime()
+    if err is not None:
+        return err
+
+    _agent_cycle_status.update({
+        "running": True,
+        "current_step": "initializing",
+        "steps_done": [],
+        "started_at": datetime.now(timezone.utc).isoformat(),
+        "finished_at": "",
+        "result": None,
+        "error": "",
+    })
+
+    async def _execute_cycle():
+        brain, state, config, env = runtime
+        steps_run: list[str] = []
+        steps_failed: dict[str, str] = {}
+        async with _agent_cycle_lock:
+            try:
+                prospects_before = await _scalar("SELECT COUNT(*) FROM prospects")
+
+                _agent_cycle_status["current_step"] = "scout"
+                from sellbird.agents.scout import Scout
+                try:
+                    await asyncio.wait_for(Scout(brain, state, config, env).run(), timeout=300.0)
+                    steps_run.append("scout")
+                    _agent_cycle_status["steps_done"] = list(steps_run)
+                except Exception as exc:
+                    steps_failed["scout"] = str(exc)[:180]
+
+                _agent_cycle_status["current_step"] = "researcher"
+                try:
+                    from sellbird.agents.researcher import DeepResearcher
+                    researcher = DeepResearcher(brain, state, config, env)
+                    if not hasattr(researcher, "is_configured") or researcher.is_configured():
+                        await asyncio.wait_for(researcher.run(limit=research_limit), timeout=180.0)
+                        steps_run.append("researcher")
+                        _agent_cycle_status["steps_done"] = list(steps_run)
+                except Exception as exc:
+                    steps_failed["researcher"] = str(exc)[:180]
+
+                _agent_cycle_status["current_step"] = "enricher"
+                try:
+                    from sellbird.agents.enricher import ClayEnricher
+                    cols = await state.get_enrichment_columns()
+                    if cols:
+                        await asyncio.wait_for(ClayEnricher(brain, state, config, env).run(limit=enrich_limit), timeout=180.0)
+                        steps_run.append("enricher")
+                        _agent_cycle_status["steps_done"] = list(steps_run)
+                except Exception as exc:
+                    steps_failed["enricher"] = str(exc)[:180]
+
+                if include_writer:
+                    _agent_cycle_status["current_step"] = "writer"
+                    try:
+                        from sellbird.agents.writer import Writer
+                        await asyncio.wait_for(Writer(brain, state, config, env).run(), timeout=180.0)
+                        steps_run.append("writer")
+                        _agent_cycle_status["steps_done"] = list(steps_run)
+                    except Exception as exc:
+                        steps_failed["writer"] = str(exc)[:180]
+
+                _agent_cycle_status["current_step"] = "analyst"
+                try:
+                    from sellbird.agents.analyst import Analyst
+                    await asyncio.wait_for(Analyst(state, brain=brain, config=config).run(), timeout=60.0)
+                    steps_run.append("analyst")
+                    _agent_cycle_status["steps_done"] = list(steps_run)
+                except Exception as exc:
+                    steps_failed["analyst"] = str(exc)[:180]
+
+                prospects_after = await _scalar("SELECT COUNT(*) FROM prospects")
+                companies_total = await _scalar("SELECT COUNT(*) FROM companies")
+                outbox_pending = await _scalar("SELECT COUNT(*) FROM outbox WHERE status = 'pending_review'")
+                outbox_approved = await _scalar("SELECT COUNT(*) FROM outbox WHERE status = 'approved'")
+                mailbox_ready = _sellbird_can_send()
+
+                summary_payload = {
+                    "steps_run": steps_run,
+                    "steps_failed": steps_failed,
+                    "prospects_before": prospects_before,
+                    "prospects_after": prospects_after,
+                    "prospects_added": max(0, int(prospects_after) - int(prospects_before)),
+                    "companies_total": companies_total,
+                    "outbox_pending": outbox_pending,
+                    "outbox_approved": outbox_approved,
+                    "mailbox_ready": mailbox_ready,
+                }
+                await state.log_action("agent_cycle", "dashboard", summary_payload)
+                note = (
+                    "Drafts staged in Outbox cleanly (connect a mailbox in Settings when ready to send)."
+                    if not mailbox_ready
+                    else "Agentic cycle complete."
+                )
+                result = {"success": True, **summary_payload, "note": note}
+                _agent_cycle_status["result"] = result
+                return result
+            except Exception as exc:
+                _agent_cycle_status["error"] = str(exc)[:240]
+                return JSONResponse({"success": False, "message": str(exc)}, status_code=500)
+            finally:
+                _agent_cycle_status["running"] = False
+                _agent_cycle_status["current_step"] = ""
+                _agent_cycle_status["finished_at"] = datetime.now(timezone.utc).isoformat()
+                await _close_brain(brain)
+
+    if background:
+        _agent_cycle_task = asyncio.create_task(_execute_cycle())
+        return {
+            "success": True,
+            "started": True,
+            "status": {**_agent_cycle_status, "steps_done": []},
+        }
+
+    return await _execute_cycle()
 
 
 def _read_config_doc() -> dict:
@@ -4059,7 +4270,56 @@ async def get_today():
                 "action": "Read conversations", "tab": "conversations",
             })
 
-        return {"items": items, "stats": stats}
+        # Live agentic runtime readiness for the Today Agentic Workbench
+        brain_ready = False
+        brain_provider = ""
+        brain_model = ""
+        try:
+            doc_cfg = await _fallback_brain_doctor(False)
+            ready_row = next(
+                (p for p in (doc_cfg.get("providers") or []) if isinstance(p, dict) and p.get("ok")),
+                None,
+            )
+            if ready_row:
+                brain_ready = True
+                brain_provider = str(ready_row.get("provider") or ready_row.get("name") or "")
+                brain_model = str(ready_row.get("model") or "")
+        except Exception:
+            pass
+        if not brain_ready:
+            active_b = _active_brain()
+            prov = (getattr(active_b, "provider", "") or "").strip().lower() if active_b else ""
+            if prov in ("claude", "codex") and not brain.get("status") == "paused":
+                brain_ready = True
+                brain_provider = prov
+                brain_model = str(getattr(active_b, "model", "") or "")
+
+        qh_active = False
+        qh_label = ""
+        if loaded is not None:
+            try:
+                from sellbird.main import in_quiet_hours
+                qh_active = bool(in_quiet_hours(loaded))
+                qh = getattr(getattr(loaded, "usage", None), "quiet_hours", None)
+                if qh is not None:
+                    qh_label = f"{qh.start}-{qh.end} {qh.timezone}".strip()
+            except Exception:
+                pass
+
+        agentic_info = {
+            "running": _check_sellbird_pid() is not None,
+            "brain_ready": brain_ready and brain.get("status") != "paused",
+            "brain_provider": brain_provider,
+            "brain_model": brain_model,
+            "brain_paused": brain.get("status") == "paused",
+            "spend_today_usd": await _spend_today_usd(),
+            "max_daily_usd": _active_max_daily_usd(),
+            "mailbox_ready": _sellbird_can_send(),
+            "quiet_hours_active": qh_active,
+            "quiet_hours_label": qh_label,
+        }
+
+        return {"items": items, "stats": stats, "agentic": agentic_info}
     except Exception as e:
         logger.exception("today load failed")
         return {"items": [], "stats": stats, "error": str(e)}

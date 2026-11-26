@@ -1461,3 +1461,36 @@ dialog.modal.modal-wide { width: min(680px, calc(100vw - 32px)); }
 .funnel-val { font-size: var(--fs-h3); font-weight: 600; font-variant-numeric: tabular-nums; color: var(--text); }
 .funnel-lbl { font-size: var(--fs-caption); color: var(--text-2); margin-top: 2px; }
 .funnel-arrow { color: var(--text-3); font-size: 14px; flex-shrink: 0; }
+
+/* ── Today Agentic Workbench ── */
+.agentic-card { margin: var(--sp-3) 0 var(--sp-4); padding: var(--sp-4); }
+.agentic-head {
+  display: flex; align-items: flex-start; justify-content: space-between;
+  gap: var(--sp-3); flex-wrap: wrap; margin-bottom: var(--sp-3);
+}
+.agentic-head h3 { margin: 0; font-size: var(--fs-h3); }
+.agentic-chips { display: flex; flex-wrap: wrap; gap: 8px; }
+.agentic-chip {
+  display: inline-flex; align-items: center; gap: 6px; padding: 4px 10px;
+  border-radius: 99px; font-size: var(--fs-caption); font-weight: 500;
+  border: 1px solid var(--line); background: var(--surface-2); color: var(--text-2);
+  cursor: pointer; transition: border-color .15s, background .15s;
+}
+.agentic-chip:hover { border-color: var(--line-strong); color: var(--text); }
+.agentic-chip .dot { width: 7px; height: 7px; border-radius: 50%; background: var(--text-3); }
+.agentic-chip.good { border-color: rgba(16, 185, 129, .35); color: var(--good); }
+.agentic-chip.good .dot { background: var(--good); }
+.agentic-chip.warn { border-color: rgba(245, 158, 11, .35); color: var(--warn); }
+.agentic-chip.bad { border-color: rgba(239, 68, 68, .35); color: var(--bad); }
+.agentic-chip.bad .dot { background: var(--bad); }
+.agentic-note {
+  margin-bottom: var(--sp-3); padding: 8px 12px; border-radius: var(--r-md);
+  background: var(--surface-2); border: 1px solid var(--line);
+  font-size: var(--fs-caption); color: var(--text-2);
+}
+.agentic-actions { display: flex; flex-wrap: wrap; gap: 8px; }
+.agentic-result {
+  margin-top: var(--sp-3); padding: 10px 12px; border-radius: var(--r-md);
+  background: var(--surface-2); border: 1px solid var(--line);
+  font-size: var(--fs-caption); color: var(--text);
+}

@@ -499,6 +499,7 @@ async function loadToday() {
   navCount('nav-conversations', (data.stats || {}).needs_human || 0);
   _todayStats = data.stats || {};
   renderFigures(_todayStats);
+  renderTodayAgentic(data.agentic || null);
 
   const items = data.items || [];
   if (!items.length) {
@@ -1712,6 +1713,206 @@ async function loadSellbirdStatus() {
 
   document.getElementById('btn-start').style.display = running ? 'none' : '';
   document.getElementById('btn-stop').style.display = running ? '' : 'none';
+  syncTodayLoopBtn(running);
+}
+
+let _todayLoopRunning = false;
+let _todayCycleBusy = false;
+let _todayAgenticStatusHtml = '';
+
+function syncTodayLoopBtn(running) {
+  _todayLoopRunning = !!running;
+  const btn = document.getElementById('today-loop-btn');
+  if (!btn) return;
+  btn.textContent = _todayLoopRunning ? 'Stop Loop' : 'Start Loop';
+  btn.className = 'btn btn-sm ' + (_todayLoopRunning ? 'btn-danger' : 'btn-secondary');
+}
+
+function setTodayAgenticResult(html) {
+  _todayAgenticStatusHtml = html || '';
+  const resEl = document.getElementById('today-agentic-result');
+  if (!resEl) return;
+  if (_todayAgenticStatusHtml) {
+    resEl.style.display = 'block';
+    resEl.innerHTML = _todayAgenticStatusHtml;
+  } else {
+    resEl.style.display = 'none';
+    resEl.innerHTML = '';
+  }
+}
+
+function renderTodayAgentic(ag) {
+  const el = document.getElementById('today-agentic');
+  if (!el) return;
+  if (!ag) { el.innerHTML = ''; return; }
+  syncTodayLoopBtn(ag.running);
+
+  const brainTxt = ag.brain_ready
+    ? 'AI Brain: ' + escHtml(ag.brain_provider || 'ready') + (ag.brain_model ? ' (' + escHtml(ag.brain_model) + ')' : '')
+    : (ag.brain_paused ? 'AI Brain paused' : 'AI Brain not ready');
+  const brainTag = '<button type="button" class="agentic-chip ' + (ag.brain_ready ? 'good' : 'bad') +
+    '" onclick="goTab(\'brain\')"><span class="dot"></span>' + brainTxt + '</button>';
+
+  const spend = Number(ag.spend_today_usd || 0).toFixed(4);
+  const maxUsd = Number(ag.max_daily_usd || 5).toFixed(2);
+  const spendTag = '<button type="button" class="agentic-chip" onclick="goTab(\'usage\')">Budget: $' +
+    spend + ' / $' + maxUsd + '</button>';
+
+  const mailTxt = ag.mailbox_ready
+    ? 'Mailbox connected'
+    : 'Mailbox deferred (drafts queue safely in Outbox)';
+  const mailTag = '<button type="button" class="agentic-chip ' + (ag.mailbox_ready ? 'good' : 'warn') +
+    '" onclick="goTab(' + jsq(ag.mailbox_ready ? 'inboxes' : 'settings') + ')">' + escHtml(mailTxt) + '</button>';
+
+  const qhNote = ag.quiet_hours_active
+    ? '<div class="agentic-note">Quiet hours active (' + escHtml(ag.quiet_hours_label || 'configured') +
+      ') — background loop sleeps until the window opens. Quick actions below run immediately, or adjust in ' +
+      '<a href="#" onclick="goTab(\'settings\');return false">Settings</a>.</div>'
+    : '';
+
+  el.innerHTML = '<div class="card agentic-card" aria-label="Agentic Workbench">' +
+    '<div class="agentic-head">' +
+      '<div><h3>Agentic Workbench</h3><p class="desc" style="margin:2px 0 0">Run prospecting, OSINT research, Clay AI, and draft writing anytime — even before connecting a mailbox.</p></div>' +
+      '<div class="agentic-chips">' + brainTag + spendTag + mailTag + '</div>' +
+    '</div>' +
+    qhNote +
+    '<div class="agentic-actions">' +
+      '<button class="btn btn-secondary btn-sm" id="today-scout-btn" onclick="runTodayStage(\'/api/scout/run\', \'Scout Contacts\', this)">Scout Contacts</button>' +
+      '<button class="btn btn-secondary btn-sm" id="today-research-btn" onclick="runTodayStage(\'/api/research/run\', \'Deep Research\', this, {limit: 5})">Deep Research (5)</button>' +
+      '<button class="btn btn-secondary btn-sm" id="today-enrich-btn" onclick="runTodayStage(\'/api/enrichment/run\', \'Clay AI\', this, {limit: 10})">Enrich AI Columns</button>' +
+      '<button class="btn btn-secondary btn-sm" id="today-writer-btn" onclick="runTodayStage(\'/api/writer/run\', \'Writer + Critic\', this)">Write Drafts</button>' +
+    '</div>' +
+    '<div id="today-agentic-result" class="agentic-result" style="display:' +
+      (_todayAgenticStatusHtml ? 'block' : 'none') + '">' + _todayAgenticStatusHtml + '</div>' +
+  '</div>';
+}
+
+async function toggleAgentLoopFromToday(btn) {
+  const button = btn || document.getElementById('today-loop-btn');
+  if (button) button.disabled = true;
+  try {
+    if (_todayLoopRunning) {
+      await stopSellbird();
+    } else {
+      await startSellbird();
+    }
+    await loadToday();
+  } finally {
+    if (button) button.disabled = false;
+  }
+}
+
+async function runAgenticCycleToday(btn) {
+  if (_todayCycleBusy) return;
+  _todayCycleBusy = true;
+  const button = btn || document.getElementById('today-cycle-btn');
+  const orig = 'Run Agentic Cycle';
+  if (button) { button.disabled = true; button.textContent = 'Running cycle…'; }
+  setTodayAgenticResult('Starting Scout &rarr; Deep Research &rarr; Clay Enrich &rarr; Writer + Critic&hellip;');
+  let keepPolling = false;
+  try {
+    const res = await api('/api/agent/cycle', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ background: true, research_limit: 3, enrich_limit: 5, include_writer: true }),
+    });
+    if (res && res.started) {
+      keepPolling = true;
+      await _pollAgenticCycle(button, orig);
+      return;
+    }
+    if (res && res.success) {
+      _showCycleComplete(res);
+      await Promise.all([loadToday(), loadLiveStatus(), loadFunnel(), loadTodayActivity()]);
+    } else {
+      const err = (res && res.message) || 'Agentic cycle failed.';
+      showToast(err, 'error');
+      setTodayAgenticResult('Error: ' + escHtml(err));
+    }
+  } finally {
+    if (!keepPolling) {
+      _todayCycleBusy = false;
+      if (button) { button.disabled = false; button.textContent = orig; }
+    }
+  }
+}
+
+function _showCycleComplete(res) {
+  const steps = (res.steps_run || []).join(', ') || 'none';
+  const summary = 'Cycle complete (' + steps + ') · +' + (res.prospects_added || 0) +
+    ' new contact(s) · ' + (res.outbox_pending || 0) + ' draft(s) waiting in Outbox. ' +
+    (res.note || '');
+  showToast('Agentic cycle finished.', 'success');
+  setTodayAgenticResult('<span>' + escHtml(summary) + '</span> ' +
+    '<button class="btn btn-ghost btn-sm" onclick="goTab(\'outbox\')">Open Outbox &rarr;</button>');
+}
+
+async function _pollAgenticCycle(button, origLabel) {
+  const poll = async () => {
+    try {
+      const st = await api('/api/agent/cycle/status');
+      if (!st) {
+        _todayCycleBusy = false;
+        if (button) { button.disabled = false; button.textContent = origLabel; }
+        return;
+      }
+      if (st.running) {
+        const done = (st.steps_done || []).join(', ');
+        const cur = st.current_step ? 'Active: ' + escHtml(st.current_step) : 'Running…';
+        setTodayAgenticResult(cur + (done ? ' · Done: ' + escHtml(done) : ''));
+        setTimeout(poll, 2000);
+        return;
+      }
+      _todayCycleBusy = false;
+      if (button) { button.disabled = false; button.textContent = origLabel; }
+      if (st.result && st.result.success) {
+        _showCycleComplete(st.result);
+        await Promise.all([loadToday(), loadLiveStatus(), loadFunnel(), loadTodayActivity()]);
+      } else if (st.error) {
+        showToast(st.error, 'error');
+        setTodayAgenticResult('Error: ' + escHtml(st.error));
+      }
+    } catch (e) {
+      _todayCycleBusy = false;
+      if (button) { button.disabled = false; button.textContent = origLabel; }
+    }
+  };
+  setTimeout(poll, 1000);
+}
+
+async function runTodayStage(endpoint, label, btn, payload) {
+  const orig = btn ? btn.textContent : label;
+  if (btn) { btn.disabled = true; btn.textContent = label + '…'; }
+  setTodayAgenticResult('Running ' + escHtml(label) + '&hellip;');
+  try {
+    const res = await api(endpoint, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(payload || {}),
+    });
+    if (res && res.success) {
+      let detail = label + ' finished.';
+      if (endpoint === '/api/scout/run') {
+        detail = 'Scout finished · +' + (res.added || 0) + ' contact(s) (' + (res.prospects_after || 0) + ' total).';
+      } else if (endpoint === '/api/writer/run') {
+        detail = 'Writer finished · ' + (res.pending_outbox || 0) + ' draft(s) waiting in Outbox.';
+      } else if (endpoint === '/api/enrichment/run') {
+        detail = 'Clay AI finished · ' + (res.enriched_cells ?? res.result ?? 0) + ' cell(s) processed.';
+      } else if (endpoint === '/api/research/run') {
+        const count = Array.isArray(res.result) ? res.result.length : 1;
+        detail = 'Deep Research finished · ' + count + ' company dossier(s) updated.';
+      }
+      showToast(label + ' complete.', 'success');
+      setTodayAgenticResult(escHtml(detail));
+      await Promise.all([loadToday(), loadLiveStatus(), loadFunnel(), loadTodayActivity()]);
+    } else {
+      const err = (res && res.message) || (label + ' failed.');
+      showToast(err, 'error');
+      setTodayAgenticResult('Error: ' + escHtml(err));
+    }
+  } finally {
+    if (btn) { btn.disabled = false; btn.textContent = orig; }
+  }
 }
 
 async function startSellbird() {
