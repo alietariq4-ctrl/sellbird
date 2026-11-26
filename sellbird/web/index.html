@@ -297,6 +297,7 @@
   <div class="section-head">
     <div><h2>Campaigns</h2><p>Email sequences Sellbird has written, and how far each one has got.</p></div>
     <div class="page-actions">
+      <button class="btn btn-ghost btn-sm" id="templates-btn" onclick="openTemplatesModal()">Templates</button>
       <button class="btn btn-secondary btn-sm" id="new-campaign-btn" onclick="openCampaignBuilderModal()">+ New Campaign</button>
       <button class="btn btn-primary btn-sm" id="writer-run-btn" onclick="triggerWriterRun(this)">Write Emails Now</button>
     </div>
@@ -502,6 +503,124 @@
   </div>
 </dialog>
 
+<dialog id="contact-detail-dialog" class="modal modal-wide" aria-labelledby="contact-detail-title">
+  <div class="modal-head">
+    <h3 id="contact-detail-title">Contact Profile &amp; Activity</h3>
+    <button class="btn btn-ghost" onclick="closeContactDetailModal()"><svg class="icon"><use href="#i-close"/></svg></button>
+  </div>
+  <div class="modal-body">
+    <div class="form-row">
+      <div class="form-group"><label class="form-label" for="cd-first">First name</label>
+        <input type="text" class="form-input" id="cd-first" autocomplete="off"></div>
+      <div class="form-group"><label class="form-label" for="cd-last">Last name</label>
+        <input type="text" class="form-input" id="cd-last" autocomplete="off"></div>
+    </div>
+    <div class="form-row">
+      <div class="form-group"><label class="form-label" for="cd-email">Work email *</label>
+        <input type="email" class="form-input" id="cd-email" autocomplete="off"></div>
+      <div class="form-group"><label class="form-label" for="cd-phone">Phone</label>
+        <input type="text" class="form-input" id="cd-phone" autocomplete="off"></div>
+    </div>
+    <div class="form-row">
+      <div class="form-group"><label class="form-label" for="cd-title">Role / Title</label>
+        <input type="text" class="form-input" id="cd-title" autocomplete="off"></div>
+      <div class="form-group"><label class="form-label" for="cd-company">Company</label>
+        <input type="text" class="form-input" id="cd-company" autocomplete="off"></div>
+    </div>
+    <div class="form-row">
+      <div class="form-group"><label class="form-label" for="cd-email-status">Deliverability</label>
+        <select class="form-input" id="cd-email-status">
+          <option value="verified">Verified</option>
+          <option value="risky">Risky</option>
+          <option value="guess">Guess</option>
+          <option value="invalid">Invalid</option>
+        </select></div>
+      <div class="form-group"><label class="form-label" for="cd-status">Pipeline status</label>
+        <select class="form-input" id="cd-status">
+          <option value="new">New</option>
+          <option value="queued">Queued</option>
+          <option value="contacted">Contacted</option>
+          <option value="replied">Replied</option>
+          <option value="interested">Interested</option>
+          <option value="meeting">Meeting booked</option>
+          <option value="lost">Lost</option>
+          <option value="opted_out">Opted out</option>
+        </select></div>
+    </div>
+    <div class="form-group"><label class="form-label" for="cd-tags">Audience tags (comma-separated)</label>
+      <input type="text" class="form-input" id="cd-tags" placeholder="saas, founder, vip" autocomplete="off"></div>
+    <div class="subhead" style="margin-top:16px">Email &amp; Reply History</div>
+    <div id="cd-history" class="cd-history-box"></div>
+  </div>
+  <div class="modal-foot">
+    <button class="btn btn-secondary" onclick="closeContactDetailModal()">Close</button>
+    <button class="btn btn-primary" id="cd-save-btn" onclick="saveContactDetail(this)">Save Changes</button>
+  </div>
+</dialog>
+
+<dialog id="templates-dialog" class="modal modal-wide" aria-labelledby="templates-dialog-title">
+  <div class="modal-head">
+    <h3 id="templates-dialog-title">Email Templates Library</h3>
+    <div class="inline-action-row">
+      <button type="button" class="btn btn-secondary btn-sm" id="tpl-seed-btn" onclick="seedStarterTemplates(this)">Load Starter Pack</button>
+      <button class="btn btn-ghost" onclick="closeTemplatesModal()"><svg class="icon"><use href="#i-close"/></svg></button>
+    </div>
+  </div>
+  <div class="modal-body">
+    <div class="cb-step-card">
+      <div class="cb-step-bar">
+        <span class="cb-step-label" id="tpl-form-title">Save New Template</span>
+        <button type="button" class="btn btn-ghost btn-sm" id="tpl-cancel-edit-btn" style="display:none" onclick="resetTemplateForm()">Cancel Edit</button>
+      </div>
+      <div class="form-row">
+        <div class="form-group"><label class="form-label" for="tpl-name">Template name *</label>
+          <input type="text" class="form-input" id="tpl-name" placeholder="e.g. SaaS Cold Intro" autocomplete="off"></div>
+        <div class="form-group"><label class="form-label" for="tpl-category">Category</label>
+          <select class="form-input" id="tpl-category">
+            <option value="cold">Cold Outreach</option>
+            <option value="followup">Follow-Up</option>
+            <option value="local">Local Business</option>
+            <option value="reply">Reply / Booking</option>
+            <option value="general">General</option>
+          </select></div>
+      </div>
+      <div class="form-row">
+        <div class="form-group"><label class="form-label" for="tpl-subject">Subject line *</label>
+          <input type="text" class="form-input" id="tpl-subject" placeholder="Quick idea for {{company}}" autocomplete="off"></div>
+        <div class="form-group"><label class="form-label" for="tpl-tags">Tags (optional)</label>
+          <input type="text" class="form-input" id="tpl-tags" placeholder="saas, founder" autocomplete="off"></div>
+      </div>
+      <div class="form-group"><label class="form-label" for="tpl-body">Body *</label>
+        <textarea class="form-input" id="tpl-body" rows="4" placeholder="Hi {{first_name}}, ..."></textarea></div>
+      <button type="button" class="btn btn-primary btn-sm" id="tpl-save-btn" onclick="saveTemplateForm(this)">Save Template</button>
+    </div>
+    <div id="templates-list"></div>
+  </div>
+  <div class="modal-foot">
+    <button class="btn btn-secondary" onclick="closeTemplatesModal()">Done</button>
+  </div>
+</dialog>
+
+<dialog id="test-send-dialog" class="modal modal-wide" aria-labelledby="test-send-title">
+  <div class="modal-head">
+    <h3 id="test-send-title">Test Send &amp; Rendered Inbox Preview</h3>
+    <button class="btn btn-ghost" onclick="closeTestSendModal()"><svg class="icon"><use href="#i-close"/></svg></button>
+  </div>
+  <div class="modal-body">
+    <div class="form-row">
+      <div class="form-group"><label class="form-label" for="ts-email">Test recipient email (blank = persona email)</label>
+        <input type="email" class="form-input" id="ts-email" placeholder="you@yourdomain.com" autocomplete="off"></div>
+      <div class="form-group" style="display:flex;align-items:flex-end">
+        <button type="button" class="btn btn-primary btn-sm" id="ts-run-btn" onclick="runTestSendPreview(this)">Send Test / Render Preview</button>
+      </div>
+    </div>
+    <div id="ts-preview"></div>
+  </div>
+  <div class="modal-foot">
+    <button class="btn btn-secondary" onclick="closeTestSendModal()">Close</button>
+  </div>
+</dialog>
+
 <!-- Brain Studio -->
 <div id="brain" class="section">
   <div class="section-head">
@@ -692,8 +811,34 @@
             <label class="form-label" for="comp-daily-limit">Daily email limit</label>
             <input type="number" min="0" max="10000" class="form-input" id="comp-daily-limit" placeholder="50">
           </div>
-          <div class="form-group" style="display:flex;align-items:flex-end;padding-bottom:6px">
+          <div class="form-group" style="max-width:180px">
+            <label class="form-label" for="comp-inbox-cap">Per-inbox daily cap</label>
+            <input type="number" min="1" max="1000" class="form-input" id="comp-inbox-cap" placeholder="30">
+          </div>
+          <div class="form-group">
+            <label class="form-label" for="comp-from-name">Sender display name</label>
+            <input type="text" class="form-input" id="comp-from-name" placeholder="Ali Tariq" autocomplete="off">
+          </div>
+        </div>
+        <div class="form-row" style="margin-bottom:8px">
+          <div class="form-group" style="display:flex;align-items:center;margin-bottom:0">
             <label class="check-line"><input type="checkbox" id="comp-require-approval"> Require manual approval</label>
+          </div>
+          <div class="form-group" style="display:flex;align-items:center;margin-bottom:0">
+            <label class="check-line"><input type="checkbox" id="comp-send-risky"> Send to catch-all (risky) addresses</label>
+          </div>
+        </div>
+        <div class="schedule-group">
+          <div class="form-label" style="margin-bottom:8px;font-weight:600">Warmup Ramp Guard (optional)</div>
+          <div class="compliance-grid">
+            <div class="form-group"><label class="form-label" for="comp-wu-start">Start date (YYYY-MM-DD)</label>
+              <input type="text" class="form-input" id="comp-wu-start" placeholder="Blank = off" autocomplete="off"></div>
+            <div class="form-group"><label class="form-label" for="comp-wu-min">Warmup-only days</label>
+              <input type="number" min="0" max="90" class="form-input" id="comp-wu-min" placeholder="14"></div>
+            <div class="form-group"><label class="form-label" for="comp-wu-initial">Day-1 cold cap</label>
+              <input type="number" min="1" max="100" class="form-input" id="comp-wu-initial" placeholder="5"></div>
+            <div class="form-group"><label class="form-label" for="comp-wu-inc">Daily increase</label>
+              <input type="number" min="1" max="50" class="form-input" id="comp-wu-inc" placeholder="3"></div>
           </div>
         </div>
         <div class="schedule-group">

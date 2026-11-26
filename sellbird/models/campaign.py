@@ -16,6 +16,8 @@ class EmailStep(BaseModel):
     subject: str
     body: str
     delay_days: int = 0  # days after previous step
+    subject_b: str = ""  # optional A/B variant B subject
+    body_b: str = ""     # optional A/B variant B body
 
 
 class Campaign(BaseModel):

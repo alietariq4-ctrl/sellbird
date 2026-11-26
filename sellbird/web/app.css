@@ -1680,3 +1680,47 @@ dialog.modal.modal-wide { width: min(680px, calc(100vw - 32px)); }
 .convo-reply-actions {
   display: flex; align-items: center; gap: 8px; flex-wrap: wrap; margin-top: var(--sp-2);
 }
+
+/* ── Batch 2: Contact Drawer, Templates, A/B Analytics & Test Preview ── */
+.cd-history-box {
+  max-height: 220px; overflow-y: auto; display: flex; flex-direction: column; gap: 8px;
+}
+.cd-hist-item {
+  padding: 8px 10px; border-radius: var(--r-md);
+  background: var(--surface-2); border: 1px solid var(--line); font-size: var(--fs-caption);
+}
+.cd-hist-head { display: flex; align-items: center; justify-content: space-between; gap: 8px; margin-bottom: 4px; }
+.tpl-card {
+  margin-top: var(--sp-2); padding: var(--sp-3);
+  border-radius: var(--r-md); background: var(--surface-2); border: 1px solid var(--line);
+}
+.tpl-card-head {
+  display: flex; align-items: center; justify-content: space-between; gap: 8px; flex-wrap: wrap;
+}
+.tpl-picker { width: auto; max-width: 210px; height: 28px; font-size: 12px; padding: 2px 8px; }
+.cb-ab-box {
+  margin-top: 8px; padding-top: 8px; border-top: 1px dashed var(--line);
+}
+.campaign-analytics-grid {
+  display: grid; grid-template-columns: repeat(auto-fit, minmax(120px, 1fr));
+  gap: 8px; margin-top: var(--sp-3);
+}
+.ca-stat {
+  padding: 8px 10px; border-radius: var(--r-md);
+  background: var(--surface-2); border: 1px solid var(--line);
+}
+.ca-stat .v { font-size: var(--fs-h3); font-weight: 600; color: var(--text); }
+.ca-stat .k { font-size: 11px; color: var(--text-2); }
+.ca-panel {
+  margin-top: var(--sp-2); padding: var(--sp-3);
+  border-radius: var(--r-md); background: var(--surface-2); border: 1px solid var(--line);
+  font-size: var(--fs-caption);
+}
+.ts-frame {
+  border-radius: var(--r-md); border: 1px solid var(--line); overflow: hidden; margin-top: 10px;
+}
+.ts-frame-bar {
+  padding: 8px 12px; background: var(--surface-2); border-bottom: 1px solid var(--line);
+  font-size: var(--fs-caption); color: var(--text-2);
+}
+.ts-frame-body { background: #ffffff; color: #111827; padding: 14px; }

@@ -652,6 +652,23 @@ MIGRATIONS: list[str] = [
     ALTER TABLE prospects ADD COLUMN tags TEXT DEFAULT '';
     ALTER TABLE campaigns ADD COLUMN target_tags TEXT DEFAULT '';
     """,
+    # ── v23: A/B outbox variant tracking & reusable email templates ──
+    """
+    ALTER TABLE outbox ADD COLUMN variant TEXT DEFAULT 'A';
+    CREATE TABLE IF NOT EXISTS email_templates (
+        id TEXT PRIMARY KEY,
+        name TEXT NOT NULL,
+        category TEXT DEFAULT 'general',
+        subject TEXT NOT NULL DEFAULT '',
+        body TEXT NOT NULL DEFAULT '',
+        tags TEXT DEFAULT '',
+        usage_count INTEGER DEFAULT 0,
+        created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+        updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+    );
+    CREATE INDEX IF NOT EXISTS idx_outbox_campaign_step
+        ON outbox(campaign_id, step, variant, status);
+    """,
 ]
 
 BRAIN_PROVIDERS = ("claude", "codex", "openrouter")
@@ -1346,23 +1363,26 @@ class StateManager:
         in_reply_to: str = "",
         approved_by: str = "",
         mailbox_id: str = "",
+        variant: str = "A",
     ) -> str | None:
         """Queue one outgoing email. Returns its id, or None when the
         (campaign, prospect, step) slot already exists — the double-send guard.
         ``approved_by="autopilot"`` when it's queued approved on autopilot.
         ``mailbox_id`` is the inbox it leaves from ('' = the main mailbox)."""
         item_id = _new_id()
+        clean_variant = "B" if str(variant or "A").strip().upper() == "B" else "A"
         async with self._connect() as db:
             cursor = await db.execute(
                 """INSERT OR IGNORE INTO outbox
                    (id, campaign_id, prospect_id, conversation_id, step, kind,
                     to_email, subject, body, status, send_at, provider,
-                    thread_ref, in_reply_to, mailbox_id)
-                   VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+                    thread_ref, in_reply_to, mailbox_id, variant)
+                   VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
                 (
                     item_id, campaign_id, prospect_id, conversation_id,
                     int(step), kind, _norm(to_email), subject, body,
-                    status, send_at, provider, thread_ref, in_reply_to, mailbox_id or "",
+                    status, send_at, provider, thread_ref, in_reply_to,
+                    mailbox_id or "", clean_variant,
                 ),
             )
             if cursor.rowcount > 0 and approved_by:
@@ -1515,7 +1535,7 @@ class StateManager:
 
     _OUTBOX_COLUMNS = frozenset({
         "status", "error", "message_id", "thread_ref", "sent_at",
-        "subject", "body", "send_at", "provider", "mailbox_id",
+        "subject", "body", "send_at", "provider", "mailbox_id", "variant",
     })
 
     async def update_outbox_item(self, item_id: str, **kwargs):
@@ -3621,4 +3641,156 @@ class StateManager:
         # A framework with no finished prospect yet is left out, so the
         # sampler treats it as untried (uniform prior) rather than 0/0.
         return {fw: (v[0], v[1]) for fw, v in stats.items() if v[1] > 0}
+
+    # ── Contact editing & Email Templates (v23) ──
+
+    async def update_prospect(self, prospect_id: str, **kwargs) -> bool:
+        """Update editable contact fields cleanly; preserves opted_out protection on status."""
+        allowed = {
+            "first_name", "last_name", "email", "title", "company",
+            "phone", "email_status", "status", "tags", "linkedin_url",
+        }
+        fields: dict[str, object] = {}
+        for k, v in kwargs.items():
+            if k not in allowed or v is None:
+                continue
+            if k == "email":
+                fields[k] = _norm(str(v))
+            elif k == "tags":
+                norm_tags = ", ".join(sorted({t.strip().lower() for t in str(v).split(",") if t.strip()}))
+                fields[k] = norm_tags
+            else:
+                fields[k] = str(v).strip()
+        if not fields:
+            return False
+        if "email_status" in fields:
+            fields["email_verified"] = 1 if fields["email_status"] == "verified" else 0
+        fields["updated_at"] = _utcnow().isoformat()
+        new_status = fields.pop("status", None)
+
+        async with self._connect() as db:
+            sets = ", ".join(f"{k} = ?" for k in fields)
+            cursor = await db.execute(
+                f"UPDATE prospects SET {sets} WHERE id = ?",
+                (*fields.values(), prospect_id),
+            )
+            if new_status is not None:
+                await db.execute(
+                    "UPDATE prospects SET status = ?, updated_at = ? "
+                    "WHERE id = ? AND status IS NOT 'opted_out'",
+                    (new_status, fields["updated_at"], prospect_id),
+                )
+            await db.commit()
+            return cursor.rowcount > 0
+
+    async def list_email_templates(self) -> list[dict]:
+        """Return reusable email templates newest/most-used first."""
+        async with self._connect() as db:
+            db.row_factory = aiosqlite.Row
+            async with db.execute(
+                "SELECT * FROM email_templates ORDER BY usage_count DESC, updated_at DESC, created_at DESC"
+            ) as cursor:
+                return [dict(r) for r in await cursor.fetchall()]
+
+    async def get_email_template(self, template_id: str) -> dict | None:
+        async with self._connect() as db:
+            db.row_factory = aiosqlite.Row
+            async with db.execute(
+                "SELECT * FROM email_templates WHERE id = ?",
+                (template_id,),
+            ) as cursor:
+                row = await cursor.fetchone()
+                return dict(row) if row else None
+
+    async def add_email_template(
+        self,
+        *,
+        name: str,
+        category: str = "general",
+        subject: str = "",
+        body: str = "",
+        tags: str = "",
+    ) -> str:
+        tid = _new_id()
+        now = _utcnow().isoformat()
+        norm_tags = ", ".join(sorted({t.strip().lower() for t in (tags or "").split(",") if t.strip()}))
+        async with self._connect() as db:
+            await db.execute(
+                """INSERT INTO email_templates (id, name, category, subject, body, tags, created_at, updated_at)
+                   VALUES (?, ?, ?, ?, ?, ?, ?, ?)""",
+                (tid, name.strip(), (category or "general").strip().lower(), subject.strip(), body.strip(), norm_tags, now, now),
+            )
+            await db.commit()
+        return tid
+
+    async def update_email_template(self, template_id: str, **kwargs) -> bool:
+        allowed = {"name", "category", "subject", "body", "tags"}
+        fields = {}
+        for k, v in kwargs.items():
+            if k not in allowed or v is None:
+                continue
+            if k == "tags":
+                fields[k] = ", ".join(sorted({t.strip().lower() for t in str(v).split(",") if t.strip()}))
+            elif k == "category":
+                fields[k] = str(v).strip().lower() or "general"
+            else:
+                fields[k] = str(v).strip()
+        if not fields:
+            return False
+        fields["updated_at"] = _utcnow().isoformat()
+        sets = ", ".join(f"{k} = ?" for k in fields)
+        async with self._connect() as db:
+            cursor = await db.execute(
+                f"UPDATE email_templates SET {sets} WHERE id = ?",
+                (*fields.values(), template_id),
+            )
+            await db.commit()
+            return cursor.rowcount > 0
+
+    async def delete_email_template(self, template_id: str) -> bool:
+        async with self._connect() as db:
+            cursor = await db.execute("DELETE FROM email_templates WHERE id = ?", (template_id,))
+            await db.commit()
+            return cursor.rowcount > 0
+
+    async def seed_starter_templates(self) -> int:
+        """Insert default high-converting cold & follow-up templates when absent by name."""
+        starters = [
+            {
+                "name": "SaaS Product Launch Intro",
+                "category": "cold",
+                "tags": "saas, founder",
+                "subject": "Quick idea for {{company}}",
+                "body": "Hi {{first_name}},\n\nNoticed {{company}} scaling outbound right now. Most lean teams lose warm leads between initial cold touch and reply follow-up.\n\nWe help teams automate verified prospecting and personalized follow-ups in one place. Worth a quick look?",
+            },
+            {
+                "name": "Local Business Free Audit",
+                "category": "local",
+                "tags": "local, service",
+                "subject": "Quick question about {{company}}",
+                "body": "Hi {{first_name}},\n\nI was looking up local businesses around your area and saw {{company}} has strong customer feedback.\n\nPut together a quick 2-minute breakdown on how similar local shops turn missed website visitors into booked appointments. Mind if I send it over?",
+            },
+            {
+                "name": "Polite Value Bump (Follow-Up)",
+                "category": "followup",
+                "tags": "followup",
+                "subject": "Re: Quick idea for {{company}}",
+                "body": "Hi {{first_name}},\n\nFloating this back to the top in case this week got busy.\n\nHappy to share a 3-bullet walkthrough tailored to {{company}} if helpful, or let me know if this isn't a priority right now.",
+            },
+            {
+                "name": "Positive Reply -> Booking Link",
+                "category": "reply",
+                "tags": "reply, booking",
+                "subject": "Re: Quick chat",
+                "body": "Sounds good {{first_name}}.\n\nDoes a quick 15-minute call later this week work to walk through how it fits {{company}}? Feel free to pick a time on my calendar or send two slots that work for you.",
+            },
+        ]
+        existing = {t["name"].lower() for t in await self.list_email_templates()}
+        added = 0
+        for item in starters:
+            if item["name"].lower() not in existing:
+                await self.add_email_template(**item)
+                added += 1
+        return added
+
 

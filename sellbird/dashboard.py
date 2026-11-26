@@ -2181,6 +2181,95 @@ async def bulk_prospects_action(request: Request):
     return {"success": True, "action": action, "count": count}
 
 
+@app.get("/api/prospects/{prospect_id}")
+async def get_prospect_detail_api(prospect_id: str):
+    """Return full editable contact profile, linked company, outbox emails, and conversation threads."""
+    state = _state()
+    await state.init_db()
+    prospect = await state.get_prospect(prospect_id)
+    if not prospect:
+        return JSONResponse({"success": False, "message": "Contact not found."}, status_code=404)
+    company_rows = (
+        await query_db("SELECT * FROM companies WHERE id = ? LIMIT 1", (prospect.company_id,))
+        if prospect.company_id else []
+    )
+    outbox_rows = await query_db(
+        "SELECT id, campaign_id, step, kind, variant, subject, body, status, error, send_at, sent_at, created_at "
+        "FROM outbox WHERE prospect_id = ? ORDER BY created_at DESC LIMIT 40",
+        (prospect_id,),
+    )
+    convo_rows = await query_db(
+        "SELECT id, status, stage, intent, thread_json, created_at, updated_at "
+        "FROM conversations WHERE prospect_id = ? ORDER BY updated_at DESC LIMIT 20",
+        (prospect_id,),
+    )
+    for cv in convo_rows:
+        try:
+            cv["messages"] = json.loads(cv.get("thread_json") or "[]")
+        except Exception:
+            cv["messages"] = []
+    return {
+        "success": True,
+        "prospect": prospect.model_dump(mode="json"),
+        "company": company_rows[0] if company_rows else None,
+        "outbox": outbox_rows,
+        "conversations": convo_rows,
+    }
+
+
+@app.patch("/api/prospects/{prospect_id}")
+async def update_prospect_api(prospect_id: str, request: Request):
+    """Update editable contact fields cleanly."""
+    try:
+        body = await request.json()
+    except Exception:
+        return JSONResponse({"success": False, "message": "Invalid JSON body."}, status_code=400)
+    if not isinstance(body, dict):
+        return JSONResponse({"success": False, "message": "Request body must be an object."}, status_code=400)
+
+    state = _state()
+    await state.init_db()
+    existing = await state.get_prospect(prospect_id)
+    if not existing:
+        return JSONResponse({"success": False, "message": "Contact not found."}, status_code=404)
+
+    new_email = str(body.get("email") or existing.email or "").strip().lower()
+    if not new_email or "@" not in new_email or "." not in new_email.split("@")[-1]:
+        return JSONResponse({"success": False, "message": "Please enter a valid work email address."}, status_code=400)
+    if new_email != (existing.email or "").strip().lower():
+        dup = await query_db(
+            "SELECT id FROM prospects WHERE LOWER(email) = ? AND id != ? LIMIT 1",
+            (new_email, prospect_id),
+        )
+        if dup:
+            return JSONResponse({"success": False, "message": f"Another contact already uses {new_email}."}, status_code=409)
+
+    email_status = str(body.get("email_status") or existing.email_status or "verified").strip().lower()
+    if email_status not in ("verified", "risky", "guess", "invalid"):
+        email_status = existing.email_status or "verified"
+
+    status = str(body.get("status") or existing.status or "new").strip().lower()
+    if status not in ("new", "queued", "contacted", "replied", "interested", "meeting", "lost", "opted_out"):
+        status = existing.status or "new"
+
+    await state.update_prospect(
+        prospect_id,
+        first_name=body.get("first_name") if "first_name" in body else existing.first_name,
+        last_name=body.get("last_name") if "last_name" in body else existing.last_name,
+        email=new_email,
+        title=body.get("title") if "title" in body else existing.title,
+        company=body.get("company") if "company" in body else existing.company,
+        phone=body.get("phone") if "phone" in body else existing.phone,
+        linkedin_url=body.get("linkedin_url") if "linkedin_url" in body else existing.linkedin_url,
+        tags=body.get("tags") if "tags" in body else existing.tags,
+        email_status=email_status,
+        status=status,
+    )
+    await state.log_action("prospect_updated", "dashboard", {"prospect_id": prospect_id, "email": new_email})
+    updated = await state.get_prospect(prospect_id)
+    return {"success": True, "prospect": updated.model_dump(mode="json") if updated else None}
+
+
 @app.delete("/api/prospects/{prospect_id}")
 async def delete_prospect_api(prospect_id: str):
     """Delete a contact and cancel any queued outbox emails for them."""
@@ -2689,9 +2778,11 @@ def _load_active_sellbird_config():
 
 
 def _compliance_settings_payload(config) -> dict:
-    """Serialize compliance, daily limits, send window, and quiet hours for Settings UI."""
+    """Serialize compliance, daily limits, warmup, send window, and quiet hours for Settings UI."""
     comp = getattr(config, "compliance", None)
+    persona = getattr(config, "persona", None)
     email = getattr(getattr(config, "channels", None), "email", None)
+    warmup = getattr(email, "warmup", None) if email is not None else None
     sw = getattr(email, "send_window", None)
     qh = getattr(getattr(config, "usage", None), "quiet_hours", None)
     qh_start = getattr(qh, "start", "22:00") if qh is not None else "22:00"
@@ -2701,8 +2792,18 @@ def _compliance_settings_payload(config) -> dict:
     return {
         "postal_address": getattr(comp, "postal_address", "") if comp is not None else "",
         "opt_out_line": getattr(comp, "opt_out_line", "") if comp is not None else "",
+        "from_name": getattr(persona, "name", "") if persona is not None else "",
         "daily_limit": int(getattr(email, "max_daily_sends", 50)) if email is not None else 50,
+        "per_inbox_daily_cap": int(getattr(email, "per_inbox_daily_cap", 30)) if email is not None else 30,
+        "send_to_risky": bool(getattr(email, "send_to_risky", False)) if email is not None else False,
         "require_approval": bool(getattr(email, "require_approval", True)) if email is not None else True,
+        "warmup": {
+            "start_date": getattr(warmup, "start_date", "") if warmup is not None else "",
+            "min_days": int(getattr(warmup, "min_days", 14)) if warmup is not None else 14,
+            "start_sends": int(getattr(warmup, "start_sends", 5)) if warmup is not None else 5,
+            "daily_increase": int(getattr(warmup, "daily_increase", 3)) if warmup is not None else 3,
+            "dkim_selector": getattr(warmup, "dkim_selector", "") if warmup is not None else "",
+        },
         "send_window": {
             "enabled": sw_enabled,
             "start": getattr(sw, "start", "08:00") if sw is not None else "08:00",
@@ -2793,6 +2894,42 @@ def _save_compliance_settings(body: dict) -> dict:
         if not isinstance(body["require_approval"], bool):
             raise ValueError("require_approval must be a boolean.")
         email_sec["require_approval"] = body["require_approval"]
+
+    if "per_inbox_daily_cap" in body and body["per_inbox_daily_cap"] is not None:
+        try:
+            cap_val = int(body["per_inbox_daily_cap"])
+        except (TypeError, ValueError) as exc:
+            raise ValueError("per_inbox_daily_cap must be an integer.") from exc
+        if not 1 <= cap_val <= 1000:
+            raise ValueError("per_inbox_daily_cap must be between 1 and 1000.")
+        email_sec["per_inbox_daily_cap"] = cap_val
+
+    if "send_to_risky" in body and body["send_to_risky"] is not None:
+        if not isinstance(body["send_to_risky"], bool):
+            raise ValueError("send_to_risky must be a boolean.")
+        email_sec["send_to_risky"] = body["send_to_risky"]
+
+    if "from_name" in body and body["from_name"] is not None:
+        fn = str(body["from_name"]).strip()[:120]
+        if fn:
+            persona_sec = dict(doc.get("persona") or {})
+            persona_sec["name"] = fn
+            doc["persona"] = persona_sec
+
+    if "warmup" in body and isinstance(body["warmup"], dict):
+        wu_in = body["warmup"]
+        wu_sec = dict(email_sec.get("warmup") or {})
+        if "start_date" in wu_in and wu_in["start_date"] is not None:
+            wu_sec["start_date"] = str(wu_in["start_date"]).strip()[:20]
+        if "min_days" in wu_in and wu_in["min_days"] is not None:
+            wu_sec["min_days"] = max(0, min(90, int(wu_in["min_days"])))
+        if "start_sends" in wu_in and wu_in["start_sends"] is not None:
+            wu_sec["start_sends"] = max(1, min(100, int(wu_in["start_sends"])))
+        if "daily_increase" in wu_in and wu_in["daily_increase"] is not None:
+            wu_sec["daily_increase"] = max(1, min(50, int(wu_in["daily_increase"])))
+        if "dkim_selector" in wu_in and wu_in["dkim_selector"] is not None:
+            wu_sec["dkim_selector"] = str(wu_in["dkim_selector"]).strip()[:60]
+        email_sec["warmup"] = wu_sec
 
     sw_tz_override = ""
     if "send_window" in body and body["send_window"] is not None:
@@ -2946,6 +3083,112 @@ async def outbox_bulk_action(request: Request):
                 count += 1
     await state.log_action("outbox_bulk", "dashboard", {"action": action, "count": count})
     return {"success": True, "action": action, "count": count}
+
+
+@app.post("/api/outbox/test-send")
+async def outbox_test_send(request: Request):
+    """Render and optionally dispatch a test email for preview or live verification."""
+    import html as _html
+    from sellbird.config import load_env
+    from sellbird.integrations.mail_provider import get_mail_provider
+
+    try:
+        body = await request.json()
+    except Exception:
+        body = {}
+    body = body if isinstance(body, dict) else {}
+
+    state = _state()
+    await state.init_db()
+    cfg = _load_active_sellbird_config()
+    env = load_env()
+
+    subject = str(body.get("subject") or "").strip()
+    msg_body = str(body.get("body") or "").strip()
+    item_id = str(body.get("item_id") or "").strip()
+    kind = "sequence"
+    if item_id:
+        item = await state.get_outbox_item(item_id)
+        if not item:
+            return JSONResponse({"success": False, "message": "Outbox item not found."}, status_code=404)
+        subject = subject or str(item.get("subject") or "")
+        msg_body = msg_body or str(item.get("body") or "")
+        kind = str(item.get("kind") or "sequence")
+
+    if not subject or not msg_body:
+        return JSONResponse({"success": False, "message": "Subject and body are required for test preview."}, status_code=400)
+
+    to_email = str(body.get("to_email") or getattr(getattr(cfg, "persona", None), "email", "") or "").strip()
+    sender_name = str(getattr(getattr(cfg, "persona", None), "name", "") or "").strip() or _send_as() or "Your Name"
+    comp = getattr(cfg, "compliance", None)
+    comp_parts = [
+        str(getattr(comp, "opt_out_line", "") or "").strip(),
+        str(getattr(comp, "postal_address", "") or "").strip(),
+    ]
+    footer = "\n".join(p for p in comp_parts if p) or (_compliance_view().get("footer") or "")
+
+    rendered_lines = [msg_body]
+    if kind == "sequence" and sender_name and sender_name.lower() not in msg_body.lower():
+        rendered_lines.append(f"\nBest regards,\n{sender_name}")
+    if kind == "sequence" and footer and not msg_body.rstrip().endswith(footer):
+        rendered_lines.append(f"\n---\n{footer}")
+    full_text = "\n".join(rendered_lines)
+    html_paragraphs = "".join(
+        f"<p style='margin:0 0 12px 0;line-height:1.55'>{_html.escape(p).replace(chr(10), '<br>')}</p>"
+        for p in full_text.split("\n\n") if p.strip()
+    )
+    html_preview = (
+        "<div style='font-family:Inter,Arial,sans-serif;font-size:14px;color:#111827;"
+        "background:#ffffff;padding:20px;border-radius:8px;max-width:600px'>"
+        + html_paragraphs
+        + "</div>"
+    )
+
+    provider = get_mail_provider(cfg, env)
+    can_dispatch = bool(to_email and "@" in to_email and provider and provider.is_configured())
+    if can_dispatch:
+        try:
+            res = await provider.send_email(to_email, f"[Test] {subject}", full_text)
+            if res.ok:
+                await state.log_action("outbox_test_sent", "dashboard", {"to_email": to_email, "provider": provider.name})
+                return {
+                    "success": True,
+                    "sent": True,
+                    "dry_run": False,
+                    "to_email": to_email,
+                    "subject": f"[Test] {subject}",
+                    "message": f"Test email sent to {to_email} via {provider.name}.",
+                    "preview": {"to": to_email, "subject": f"[Test] {subject}", "text": full_text, "html": html_preview},
+                }
+            return {
+                "success": True,
+                "sent": False,
+                "dry_run": True,
+                "to_email": to_email,
+                "subject": subject,
+                "message": f"Live send returned '{res.error}' — rendered preview ready below.",
+                "preview": {"to": to_email, "subject": subject, "text": full_text, "html": html_preview},
+            }
+        except Exception as exc:
+            return {
+                "success": True,
+                "sent": False,
+                "dry_run": True,
+                "to_email": to_email,
+                "subject": subject,
+                "message": f"Live send failed ({exc}) — rendered preview ready below.",
+                "preview": {"to": to_email, "subject": subject, "text": full_text, "html": html_preview},
+            }
+
+    return {
+        "success": True,
+        "sent": False,
+        "dry_run": True,
+        "to_email": to_email or "(set persona.email in Your company)",
+        "subject": subject,
+        "message": "No live mailbox connected yet — rendered preview ready below.",
+        "preview": {"to": to_email or "(preview)", "subject": subject, "text": full_text, "html": html_preview},
+    }
 
 
 @app.post("/api/outbox/{item_id}/approve")
@@ -3466,7 +3709,117 @@ async def get_campaigns():
             (row["id"],),
         )
         row["outbox_counts"] = {r["status"]: int(r["n"] or 0) for r in ob_rows}
+        row["analytics"] = await _compute_campaign_analytics(row["id"], row)
     return rows
+
+
+async def _compute_campaign_analytics(campaign_id: str, camp_row: dict | None = None) -> dict:
+    """Aggregate sent/pending/failed, per-step funnel, and A/B variant outcomes for one campaign."""
+    ob_rows = await query_db(
+        "SELECT step, COALESCE(variant, 'A') AS variant, status, prospect_id FROM outbox "
+        "WHERE campaign_id = ? AND kind = 'sequence'",
+        (campaign_id,),
+    )
+    pids = []
+    if camp_row and isinstance(camp_row.get("prospect_ids"), list):
+        pids = list(camp_row["prospect_ids"])
+    elif camp_row and camp_row.get("prospect_ids_json"):
+        try:
+            pids = json.loads(camp_row["prospect_ids_json"] or "[]")
+        except Exception:
+            pids = []
+    else:
+        pids = sorted({r["prospect_id"] for r in ob_rows if r.get("prospect_id")})
+
+    prospect_statuses: dict[str, str] = {}
+    if pids:
+        ph = ",".join("?" * len(pids))
+        prows = await query_db(f"SELECT id, status FROM prospects WHERE id IN ({ph})", tuple(pids))
+        prospect_statuses = {r["id"]: (r.get("status") or "") for r in prows}
+
+    totals = {"total": len(ob_rows), "pending_review": 0, "approved": 0, "sent": 0, "failed": 0}
+    steps_map: dict[int, dict] = {}
+    variants_map: dict[str, dict] = {
+        "A": {"sent": 0, "pending": 0, "failed": 0, "replied_prospects": set()},
+        "B": {"sent": 0, "pending": 0, "failed": 0, "replied_prospects": set()},
+    }
+    sent_prospects: set[str] = set()
+    reply_states = {"replied", "interested", "meeting"}
+
+    for r in ob_rows:
+        st = r.get("status") or ""
+        step_n = int(r.get("step") or 1)
+        var = "B" if str(r.get("variant") or "A").upper() == "B" else "A"
+        pid = r.get("prospect_id") or ""
+        s_bucket = steps_map.setdefault(step_n, {"step": step_n, "sent": 0, "pending": 0, "scheduled": 0, "failed": 0})
+        v_bucket = variants_map[var]
+
+        if st == "sent":
+            totals["sent"] += 1
+            s_bucket["sent"] += 1
+            v_bucket["sent"] += 1
+            if pid:
+                sent_prospects.add(pid)
+                if prospect_statuses.get(pid) in reply_states:
+                    v_bucket["replied_prospects"].add(pid)
+        elif st == "pending_review":
+            totals["pending_review"] += 1
+            s_bucket["pending"] += 1
+            v_bucket["pending"] += 1
+        elif st in ("approved", "sending"):
+            totals["approved"] += 1
+            s_bucket["scheduled"] += 1
+        elif st in ("failed", "cancelled", "rejected"):
+            totals["failed"] += 1
+            s_bucket["failed"] += 1
+            v_bucket["failed"] += 1
+
+    replied = sum(1 for st in prospect_statuses.values() if st in reply_states)
+    interested = sum(1 for st in prospect_statuses.values() if st in ("interested", "meeting"))
+    meetings = sum(1 for st in prospect_statuses.values() if st == "meeting")
+    denom = max(len(sent_prospects), totals["sent"] > 0 and 1 or 0)
+    reply_rate_pct = round((replied / denom) * 100, 1) if denom else 0.0
+
+    variants_out = {}
+    for k, vb in variants_map.items():
+        v_rep = len(vb["replied_prospects"])
+        variants_out[k] = {
+            "sent": vb["sent"],
+            "pending": vb["pending"],
+            "failed": vb["failed"],
+            "replies": v_rep,
+            "reply_rate_pct": round((v_rep / vb["sent"]) * 100, 1) if vb["sent"] else 0.0,
+        }
+    winner = ""
+    if variants_out["A"]["sent"] and variants_out["B"]["sent"]:
+        if variants_out["A"]["reply_rate_pct"] > variants_out["B"]["reply_rate_pct"]:
+            winner = "A"
+        elif variants_out["B"]["reply_rate_pct"] > variants_out["A"]["reply_rate_pct"]:
+            winner = "B"
+
+    return {
+        **totals,
+        "prospects": len(pids),
+        "replied": replied,
+        "interested": interested,
+        "meetings": meetings,
+        "reply_rate_pct": reply_rate_pct,
+        "steps": [steps_map[k] for k in sorted(steps_map)],
+        "variants": variants_out,
+        "winning_variant": winner,
+    }
+
+
+@app.get("/api/campaigns/{campaign_id}/analytics")
+async def get_campaign_analytics_api(campaign_id: str):
+    """Return step-level funnel and A/B variant analytics for one campaign."""
+    state = _state()
+    await state.init_db()
+    camp = await state.get_campaign(campaign_id)
+    if not camp:
+        return JSONResponse({"success": False, "message": "Campaign not found."}, status_code=404)
+    analytics = await _compute_campaign_analytics(campaign_id, camp)
+    return {"success": True, "id": campaign_id, "name": camp.get("name") or "", "analytics": analytics}
 
 
 def _normalize_sequence_steps(raw_steps) -> list:
@@ -3479,13 +3832,22 @@ def _normalize_sequence_steps(raw_steps) -> list:
             continue
         subj = str(s.get("subject") or "").strip()
         body = str(s.get("body") or "").strip()
+        subj_b = str(s.get("subject_b") or "").strip()
+        body_b = str(s.get("body_b") or "").strip()
         if not subj or not body:
             raise ValueError(f"Step {idx} requires both a subject and body.")
         try:
             delay = max(0, min(60, int(s.get("delay_days") or (0 if idx == 1 else 3))))
         except (TypeError, ValueError):
             delay = 0 if idx == 1 else 3
-        out.append(EmailStep(step=idx, subject=subj, body=body, delay_days=0 if idx == 1 else delay))
+        out.append(EmailStep(
+            step=idx,
+            subject=subj,
+            body=body,
+            delay_days=0 if idx == 1 else delay,
+            subject_b=subj_b,
+            body_b=body_b,
+        ))
     if not out:
         raise ValueError("At least one valid email step is required.")
     return out
@@ -3736,9 +4098,10 @@ async def launch_campaign_api(campaign_id: str, request: Request):
     queued_prospects = 0
     queued_emails = 0
     skipped = 0
+    variant_counts = {"A": 0, "B": 0}
     now = datetime.now(timezone.utc).replace(tzinfo=None)
 
-    for prospect in candidates:
+    for idx, prospect in enumerate(candidates):
         email = (prospect.email or "").strip().lower()
         if not email or prospect.status not in ("new", "queued") or email in suppressed or do_not_contact_match(email, dnc):
             skipped += 1
@@ -3749,10 +4112,15 @@ async def launch_campaign_api(campaign_id: str, request: Request):
 
         cum_days = 0
         staged_for_person = 0
+        person_variant = "B" if (idx % 2 == 1) else "A"
         for step_obj in sequence:
             cum_days += max(0, int(step_obj.delay_days or 0))
-            subj = _fill_personal_merge_leaks(step_obj.subject, prospect).strip()
-            msg_body = tidy(_fill_personal_merge_leaks(step_obj.body, prospect))
+            has_b = bool((getattr(step_obj, "subject_b", "") or "").strip() or (getattr(step_obj, "body_b", "") or "").strip())
+            chosen_var = person_variant if has_b else "A"
+            raw_subj = (getattr(step_obj, "subject_b", "") or step_obj.subject) if chosen_var == "B" else step_obj.subject
+            raw_body = (getattr(step_obj, "body_b", "") or step_obj.body) if chosen_var == "B" else step_obj.body
+            subj = _fill_personal_merge_leaks(raw_subj, prospect).strip()
+            msg_body = tidy(_fill_personal_merge_leaks(raw_body, prospect))
             if MERGE_TAG_RE.search(f"{subj}\n{msg_body}"):
                 continue
             oid = await state.add_outbox_item(
@@ -3765,10 +4133,12 @@ async def launch_campaign_api(campaign_id: str, request: Request):
                 status="pending_review",
                 step=int(step_obj.step),
                 kind="sequence",
+                variant=chosen_var,
             )
             if oid:
                 staged_for_person += 1
                 queued_emails += 1
+                variant_counts[chosen_var] += 1
 
         if staged_for_person:
             queued_prospects += 1
@@ -3786,7 +4156,13 @@ async def launch_campaign_api(campaign_id: str, request: Request):
     await state.log_action(
         "campaign_launched",
         "dashboard",
-        {"campaign_id": campaign_id, "queued_prospects": queued_prospects, "queued_emails": queued_emails, "skipped": skipped},
+        {
+            "campaign_id": campaign_id,
+            "queued_prospects": queued_prospects,
+            "queued_emails": queued_emails,
+            "skipped": skipped,
+            "ab_split": variant_counts,
+        },
     )
     return {
         "success": True,
@@ -3794,7 +4170,86 @@ async def launch_campaign_api(campaign_id: str, request: Request):
         "queued_prospects": queued_prospects,
         "queued_emails": queued_emails,
         "skipped": skipped,
+        "ab_split": variant_counts,
     }
+
+
+# ── Email Templates Library ──
+
+@app.get("/api/templates")
+async def list_templates_api():
+    state = _state()
+    await state.init_db()
+    items = await state.list_email_templates()
+    return {"items": items, "total": len(items)}
+
+
+@app.post("/api/templates/seed")
+async def seed_templates_api():
+    state = _state()
+    await state.init_db()
+    added = await state.seed_starter_templates()
+    items = await state.list_email_templates()
+    return {"success": True, "added": added, "items": items}
+
+
+@app.post("/api/templates")
+async def create_template_api(request: Request):
+    try:
+        body = await request.json()
+    except Exception:
+        return JSONResponse({"success": False, "message": "Invalid JSON body."}, status_code=400)
+    if not isinstance(body, dict):
+        return JSONResponse({"success": False, "message": "Request body must be an object."}, status_code=400)
+    name = str(body.get("name") or "").strip()[:120]
+    subject = str(body.get("subject") or "").strip()[:240]
+    tpl_body = str(body.get("body") or "").strip()[:8000]
+    if not name or not subject or not tpl_body:
+        return JSONResponse({"success": False, "message": "Template name, subject, and body are required."}, status_code=400)
+    state = _state()
+    await state.init_db()
+    tid = await state.add_email_template(
+        name=name,
+        category=str(body.get("category") or "general"),
+        subject=subject,
+        body=tpl_body,
+        tags=str(body.get("tags") or ""),
+    )
+    tpl = await state.get_email_template(tid)
+    return {"success": True, "id": tid, "template": tpl}
+
+
+@app.patch("/api/templates/{template_id}")
+async def update_template_api(template_id: str, request: Request):
+    try:
+        body = await request.json()
+    except Exception:
+        return JSONResponse({"success": False, "message": "Invalid JSON body."}, status_code=400)
+    if not isinstance(body, dict):
+        return JSONResponse({"success": False, "message": "Request body must be an object."}, status_code=400)
+    state = _state()
+    await state.init_db()
+    ok = await state.update_email_template(
+        template_id,
+        name=body.get("name"),
+        category=body.get("category"),
+        subject=body.get("subject"),
+        body=body.get("body"),
+        tags=body.get("tags"),
+    )
+    if not ok:
+        return JSONResponse({"success": False, "message": "Template not found."}, status_code=404)
+    return {"success": True, "id": template_id, "template": await state.get_email_template(template_id)}
+
+
+@app.delete("/api/templates/{template_id}")
+async def delete_template_api(template_id: str):
+    state = _state()
+    await state.init_db()
+    ok = await state.delete_email_template(template_id)
+    if not ok:
+        return JSONResponse({"success": False, "message": "Template not found."}, status_code=404)
+    return {"success": True, "id": template_id}
 
 
 @app.get("/api/frameworks")
