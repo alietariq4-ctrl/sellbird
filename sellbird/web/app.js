@@ -1610,6 +1610,42 @@ function saveSmtp() {
   saveEnv(payload, 'SMTP settings saved.').then(loadSettings);
 }
 
+async function testSmtpConnection(btn) {
+  const statusEl = document.getElementById('smtp-test-result');
+  const payload = {
+    smtp_host: (document.getElementById('smtp-host')?.value || '').trim(),
+    smtp_port: (document.getElementById('smtp-port')?.value || '').trim(),
+    smtp_username: (document.getElementById('smtp-user')?.value || '').trim(),
+    smtp_password: document.getElementById('smtp-pass')?.value || '',
+    imap_host: (document.getElementById('imap-host')?.value || '').trim(),
+    imap_port: (document.getElementById('imap-port')?.value || '').trim(),
+    imap_username: (document.getElementById('imap-user')?.value || '').trim(),
+    imap_password: document.getElementById('imap-pass')?.value || '',
+    imap_same_pass: !!document.getElementById('imap-same-pass')?.checked,
+  };
+  if (btn) btn.disabled = true;
+  if (statusEl) {
+    statusEl.className = 'muted';
+    statusEl.textContent = 'Testing SMTP + IMAP...';
+  }
+  try {
+    const res = await api('/api/settings/test-smtp', {
+      method: 'POST',
+      headers: {'Content-Type': 'application/json'},
+      body: JSON.stringify(payload),
+    });
+    const ok = !!(res && res.success);
+    const msg = (res && res.message) || 'Could not reach SMTP test endpoint.';
+    if (statusEl) {
+      statusEl.className = ok ? 'email-tag verified' : 'email-tag invalid';
+      statusEl.textContent = msg;
+    }
+    showToast(msg, ok ? 'success' : 'error');
+  } finally {
+    if (btn) btn.disabled = false;
+  }
+}
+
 function saveMicrosoft() {
   const client = document.getElementById('m365-client').value.trim();
   if (!client) { showToast('Paste the Application (client) ID first.', 'error'); return; }
@@ -2181,7 +2217,13 @@ async function loadOutbox() {
 
   // The kill switch gets a banner only when it's actually on — a permanent
   // bar for a thing that isn't happening is just noise.
-  banner.innerHTML = sendingModeBanner(_sendingMode) + (data.paused
+  const mailboxNote = (!data.mailbox_ready && !data.paused)
+    ? '<div class="banner">' + icon('mail') + '<div><b>Mailbox not connected yet</b>' +
+        '<p>You can draft, rewrite, and approve emails now — approved drafts stay safely queued' +
+        ((data.approved || []).length ? ' (' + (data.approved || []).length + ' approved waiting)' : '') +
+        ' until you connect Gmail, Microsoft 365, or SMTP in <a href="#settings" onclick="showSection(\'settings\')">Settings</a>.</p></div></div>'
+    : '';
+  banner.innerHTML = sendingModeBanner(_sendingMode) + mailboxNote + (data.paused
     ? '<div class="banner bad">' + icon('alert') + '<div><b>Sending is paused</b>' +
         '<p>' + escHtml(data.paused) + '. Approved mail stays queued until you resume.</p></div></div>'
     : '');
@@ -2418,6 +2460,8 @@ function renderDesk(items, i) {
         'Approve <kbd>A</kbd></button>' +
       '<button class="btn btn-secondary" onclick="deskEdit(' + jsq(cur.id) + ')">' +
         'Edit <kbd>E</kbd></button>' +
+      '<button class="btn btn-secondary" id="desk-rewrite-btn" onclick="deskRegenerate(' + jsq(cur.id) + ', this)">' +
+        'Rewrite with AI</button>' +
       '<button class="btn btn-secondary" onclick="outboxAct(' + jsq(cur.id) + ',\'reject\')">' +
         'Reject <kbd>R</kbd></button>';
 
@@ -2522,6 +2566,29 @@ document.addEventListener('keydown', e => {
   else if (k === 'r' && cur) { e.preventDefault(); outboxAct(cur.id, 'reject'); }
   else if (k === 'e' && cur) { e.preventDefault(); deskEdit(cur.id); }
 });
+
+async function deskRegenerate(id, btn) {
+  if (deskBusy() || _outboxBusy) return;
+  _outboxBusy = true;
+  const orig = btn ? btn.textContent : '';
+  if (btn) { btn.disabled = true; btn.textContent = 'Rewriting...'; }
+  try {
+    const data = await api('/api/outbox/' + encodeURIComponent(id) + '/regenerate', {
+      method: 'POST',
+      headers: {'Content-Type': 'application/json'},
+      body: JSON.stringify({}),
+    });
+    if (data && data.success) {
+      showToast('Draft rewritten with AI.', 'success');
+      await loadOutbox();
+    } else {
+      showToast(failMsg(data, 'Could not rewrite draft.'), 'error');
+    }
+  } finally {
+    if (btn) { btn.disabled = false; btn.textContent = orig || 'Rewrite with AI'; }
+    _outboxBusy = false;
+  }
+}
 
 async function outboxAct(id, action) {
   if (deskBusy() || _outboxBusy) return;
@@ -2827,15 +2894,23 @@ const CONTACT_FILTERS = [
   ['closed', 'Closed out', null],
 ];
 
+let _suppressions = [];
+let _suppressionsOpen = false;
+let _armedDeleteContactId = null;
+
 async function loadProspects(ensureId) {
+  _armedDeleteContactId = null;
   const el = document.getElementById('prospects-table');
   const qs = ensureId ? '?prospect_id=' + encodeURIComponent(ensureId) : '';
-  const data = await api('/api/prospects' + qs);
+  const [data] = await Promise.all([
+    api('/api/prospects' + qs),
+    loadSuppressions(_suppressionsOpen),
+  ]);
   if (!data) { el.innerHTML = offlineState(); return; }
   _prospects = data;
   if (!data.length) {
     el.innerHTML = emptyState(icon('contacts'), 'No contacts yet',
-      'Sellbird hasn\'t found any prospects. Once it\'s running, the Scout agent searches the web for people matching your ideal customer profile in <b>sellbird.yaml</b>.');
+      'Add a contact manually with <b>+ Add Contact</b>, upload a list with <b>+ Import CSV</b>, or run <b>Scout</b> from Today.');
     return;
   }
   if (!document.getElementById('contact-rows')) {
@@ -2849,6 +2924,186 @@ async function loadProspects(ensureId) {
     document.getElementById('contact-search').value = _contactQuery;
   }
   renderContacts();
+}
+
+function openAddContactModal() {
+  ['ac-first', 'ac-last', 'ac-email', 'ac-title', 'ac-company', 'ac-domain', 'ac-phone'].forEach(id => {
+    const el = document.getElementById(id);
+    if (el) el.value = '';
+  });
+  const st = document.getElementById('ac-status');
+  if (st) st.value = 'verified';
+  const d = document.getElementById('add-contact-dialog');
+  if (d && d.showModal) d.showModal();
+}
+
+function closeAddContactModal() {
+  const d = document.getElementById('add-contact-dialog');
+  if (d && d.close) d.close();
+}
+
+(function wireAddContactDialog() {
+  const d = document.getElementById('add-contact-dialog');
+  if (!d) return;
+  d.addEventListener('click', e => { if (e.target === d) closeAddContactModal(); });
+})();
+
+async function submitAddContact(btn) {
+  const email = (document.getElementById('ac-email')?.value || '').trim();
+  if (!email) { showToast('Work email is required.', 'error'); return; }
+  const payload = {
+    first_name: (document.getElementById('ac-first')?.value || '').trim(),
+    last_name: (document.getElementById('ac-last')?.value || '').trim(),
+    email,
+    title: (document.getElementById('ac-title')?.value || '').trim(),
+    company: (document.getElementById('ac-company')?.value || '').trim(),
+    domain: (document.getElementById('ac-domain')?.value || '').trim(),
+    email_status: (document.getElementById('ac-status')?.value || 'verified').trim(),
+    phone: (document.getElementById('ac-phone')?.value || '').trim(),
+  };
+  if (btn) btn.disabled = true;
+  try {
+    const res = await api('/api/prospects', {
+      method: 'POST',
+      headers: {'Content-Type': 'application/json'},
+      body: JSON.stringify(payload),
+    });
+    if (res && res.success) {
+      showToast('Contact saved.', 'success');
+      closeAddContactModal();
+      await loadProspects(res.id);
+    } else {
+      showToast(failMsg(res, 'Could not save contact.'), 'error');
+    }
+  } finally {
+    if (btn) btn.disabled = false;
+  }
+}
+
+function toggleSuppressionsPanel() {
+  _suppressionsOpen = !_suppressionsOpen;
+  const panel = document.getElementById('suppressions-panel');
+  if (!panel) return;
+  panel.style.display = _suppressionsOpen ? 'block' : 'none';
+  if (_suppressionsOpen) loadSuppressions(true);
+}
+
+async function loadSuppressions(renderPanel) {
+  const data = await api('/api/suppressions');
+  if (!data || !Array.isArray(data.items)) return;
+  _suppressions = data.items;
+  const btn = document.getElementById('suppressions-toggle-btn');
+  if (btn) btn.textContent = 'Suppressions (' + _suppressions.length + ')';
+  if (renderPanel) renderSuppressionsPanel();
+}
+
+function renderSuppressionsPanel() {
+  const panel = document.getElementById('suppressions-panel');
+  if (!panel) return;
+  const rowsHtml = _suppressions.length
+    ? '<div class="table-card" style="margin-top:10px;"><table class="nowrap"><thead><tr>' +
+      '<th>Type</th><th>Address or Domain</th><th>Reason</th><th>Source</th><th>Added</th><th></th>' +
+      '</tr></thead><tbody>' +
+      _suppressions.map(s =>
+        '<tr><td><span class="tag">' + escHtml(s.kind) + '</span></td>' +
+        '<td><code>' + escHtml(s.value) + '</code></td>' +
+        '<td>' + escHtml(s.reason || 'manual') + '</td>' +
+        '<td class="muted">' + escHtml(s.source || '—') + '</td>' +
+        '<td class="muted">' + relTime(s.created_at) + '</td>' +
+        '<td><button class="btn btn-ghost btn-sm" onclick="removeSuppressionEntry(' + jsq(s.id) + ', this)">Remove</button></td></tr>'
+      ).join('') + '</tbody></table></div>'
+    : '<p class="muted" style="margin-top:8px;">No suppressed addresses or domains yet.</p>';
+
+  panel.innerHTML = '<div class="card">' +
+    '<div style="display:flex;justify-content:space-between;align-items:center;gap:12px;flex-wrap:wrap;">' +
+      '<div><h3 style="margin:0;">Do-Not-Contact &amp; Suppression List</h3>' +
+      '<p class="muted" style="margin:4px 0 0;font-size:12px;">Emails and domains here are skipped by Scout and blocked at the send gate.</p></div>' +
+      '<button class="btn btn-ghost btn-sm" onclick="toggleSuppressionsPanel()">Hide</button>' +
+    '</div>' +
+    '<div style="display:flex;gap:8px;flex-wrap:wrap;margin-top:12px;align-items:center;">' +
+      '<input type="text" class="form-input" id="sup-value" placeholder="user@company.com or competitor.com" style="flex:1;min-width:220px;">' +
+      '<select class="form-input" id="sup-reason" style="width:auto;">' +
+        '<option value="manual">Manual DNC</option>' +
+        '<option value="opted_out">Opted out</option>' +
+        '<option value="bounced">Bounced</option>' +
+        '<option value="complaint">Complaint</option>' +
+      '</select>' +
+      '<button class="btn btn-primary btn-sm" onclick="addSuppressionEntry(this)">Block</button>' +
+    '</div>' +
+    rowsHtml + '</div>';
+}
+
+async function addSuppressionEntry(btn) {
+  const valEl = document.getElementById('sup-value');
+  const reasonEl = document.getElementById('sup-reason');
+  const value = (valEl?.value || '').trim();
+  if (!value) { showToast('Enter an email address or domain first.', 'error'); return; }
+  if (btn) btn.disabled = true;
+  try {
+    const res = await api('/api/suppressions', {
+      method: 'POST',
+      headers: {'Content-Type': 'application/json'},
+      body: JSON.stringify({value, reason: reasonEl?.value || 'manual'}),
+    });
+    if (res && res.success) {
+      if (valEl) valEl.value = '';
+      showToast('Blocked ' + res.value + (res.matched_prospects ? ' (' + res.matched_prospects + ' contact updated)' : '') + '.', 'success');
+      await Promise.all([loadSuppressions(true), loadProspects()]);
+    } else {
+      showToast(failMsg(res, 'Could not add suppression.'), 'error');
+    }
+  } finally {
+    if (btn) btn.disabled = false;
+  }
+}
+
+async function removeSuppressionEntry(id, btn) {
+  if (btn) btn.disabled = true;
+  try {
+    const res = await api('/api/suppressions/' + encodeURIComponent(id), {method: 'DELETE'});
+    if (res && res.success) {
+      showToast('Removed from suppression list.', 'success');
+      await loadSuppressions(true);
+    } else {
+      showToast(failMsg(res, 'Could not remove suppression.'), 'error');
+    }
+  } finally {
+    if (btn) btn.disabled = false;
+  }
+}
+
+async function suppressContact(i) {
+  const p = _prospects[i];
+  if (!p || !p.email) { showToast('Contact has no email to suppress.', 'error'); return; }
+  const res = await api('/api/suppressions', {
+    method: 'POST',
+    headers: {'Content-Type': 'application/json'},
+    body: JSON.stringify({kind: 'address', value: p.email, reason: 'manual'}),
+  });
+  if (res && res.success) {
+    showToast('Added ' + p.email + ' to suppression list.', 'success');
+    await Promise.all([loadSuppressions(_suppressionsOpen), loadProspects()]);
+  } else {
+    showToast(failMsg(res, 'Could not suppress contact.'), 'error');
+  }
+}
+
+async function deleteContact(i) {
+  const p = _prospects[i];
+  if (!p) return;
+  if (_armedDeleteContactId !== p.id) {
+    _armedDeleteContactId = p.id;
+    renderContacts();
+    return;
+  }
+  _armedDeleteContactId = null;
+  const res = await api('/api/prospects/' + encodeURIComponent(p.id), {method: 'DELETE'});
+  if (res && res.success) {
+    showToast('Deleted contact.', 'success');
+    await loadProspects();
+  } else {
+    showToast(failMsg(res, 'Could not delete contact.'), 'error');
+  }
 }
 
 function openImportCsvModal() {
@@ -2961,6 +3216,10 @@ function renderContacts() {
         ? '<button class="btn btn-ghost btn-sm" onclick="toggleOptOut(' + i + ')" ' +
           'aria-expanded="' + (_optOut.id === p.id) + '" title="What made Sellbird stop emailing them">' +
           (p.status === 'opted_out' ? 'Why?' : 'Opt-out history') + '</button>' : '') +
+        (p.email && p.status !== 'opted_out'
+          ? '<button class="btn btn-ghost btn-sm row-action" onclick="suppressContact(' + i + ')" title="Add to Do-Not-Contact suppression list">Suppress</button>' : '') +
+        '<button class="btn btn-ghost btn-sm row-action" onclick="deleteContact(' + i + ')" title="Remove contact and cancel queued drafts">' +
+          (_armedDeleteContactId === p.id ? 'Confirm delete?' : 'Delete') + '</button>' +
         '<button class="btn btn-ghost btn-sm row-action" onclick="fbProspect(' + i + ')" ' +
         'title="Leave feedback on this contact">Feedback</button></div></td></tr>';
     if (_optOut.id === p.id) html += '<tr class="detail-row"><td colspan="8">' + optOutPanel(p) + '</td></tr>';

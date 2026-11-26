@@ -1003,6 +1003,84 @@ async def test_instantly(request: Request):
         return {"success": False, "message": f"Connection failed: {str(e)}"}
 
 
+@app.post("/api/settings/test-smtp")
+async def test_smtp_connection(request: Request):
+    """Test SMTP + IMAP mailbox credentials (falls back to saved .env values when empty)."""
+    try:
+        data = await request.json()
+    except Exception:
+        data = {}
+    if not isinstance(data, dict):
+        return JSONResponse({"success": False, "message": "Invalid request body."}, status_code=400)
+
+    env_vars = _read_env_file()
+    hosted_custom = _in_custom_home() and current_home().hosted
+
+    def _pick_setting(body_keys: tuple[str, ...], env_key: str, default: str = "") -> str:
+        for k in body_keys:
+            val = data.get(k)
+            if val is not None and str(val).strip():
+                return str(val).strip()
+        val = (env_vars.get(env_key, "") or "").strip()
+        if not val and not hosted_custom:
+            val = (os.getenv(env_key, "") or "").strip()
+        return val or default
+
+    smtp_host = _pick_setting(("smtp_host", "SMTP_HOST"), "SMTP_HOST")
+    smtp_port_raw = _pick_setting(("smtp_port", "SMTP_PORT"), "SMTP_PORT", "587")
+    smtp_user = _pick_setting(("smtp_username", "SMTP_USERNAME"), "SMTP_USERNAME")
+    smtp_pass = _pick_setting(("smtp_password", "SMTP_PASSWORD"), "SMTP_PASSWORD")
+    imap_host = _pick_setting(("imap_host", "IMAP_HOST"), "IMAP_HOST") or smtp_host
+    imap_port_raw = _pick_setting(("imap_port", "IMAP_PORT"), "IMAP_PORT", "993")
+    imap_user = _pick_setting(("imap_username", "IMAP_USERNAME"), "IMAP_USERNAME") or smtp_user
+    same_imap_pass = bool(data.get("imap_same_pass"))
+    imap_pass = (
+        smtp_pass
+        if same_imap_pass
+        else (_pick_setting(("imap_password", "IMAP_PASSWORD"), "IMAP_PASSWORD") or smtp_pass)
+    )
+
+    try:
+        smtp_port = int(smtp_port_raw or 587)
+        imap_port = int(imap_port_raw or 993)
+    except ValueError:
+        return JSONResponse(
+            {"success": False, "message": "SMTP and IMAP ports must be valid numbers."},
+            status_code=400,
+        )
+
+    if not (smtp_host and smtp_user and smtp_pass):
+        return {
+            "success": False,
+            "message": "Enter SMTP host, username, and password first (or save them in Settings).",
+        }
+
+    try:
+        from sellbird.config import load_env
+        from sellbird.integrations.smtp_mail import SmtpImapProvider, SmtpSettings
+
+        try:
+            config = _load_active_sellbird_config()
+        except Exception:
+            config = None
+        env = load_env()
+        settings = SmtpSettings(
+            host=smtp_host,
+            username=smtp_user,
+            password=smtp_pass,
+            port=smtp_port,
+            imap_host=imap_host,
+            imap_port=imap_port,
+        )
+        provider = SmtpImapProvider(config, env, smtp=settings)
+        provider.imap_user = imap_user
+        provider.imap_pass = imap_pass
+        ok, message = await provider.test_connection()
+        return {"success": bool(ok), "message": message}
+    except Exception as exc:
+        return {"success": False, "message": f"SMTP/IMAP check failed: {exc}"}
+
+
 @app.post("/api/integrations/test")
 async def test_integration_connection(request: Request):
     """Live connection & SSRF-validated configuration test for Calendar, CRM, and Copilot integrations."""
@@ -1916,6 +1994,222 @@ async def get_prospects(prospect_id: str = ""):
     return rows
 
 
+_FREEMAIL_DOMAINS = frozenset({
+    "gmail.com", "yahoo.com", "outlook.com", "hotmail.com", "live.com",
+    "icloud.com", "aol.com", "proton.me", "protonmail.com", "gmx.com",
+})
+
+
+def _live_dnc_entries() -> list:
+    try:
+        from sellbird.config import do_not_contact_from_file, live_do_not_contact, load_config
+        cfg_path = _resolve_config_file()
+        try:
+            cfg = load_config(str(cfg_path))
+            return live_do_not_contact(cfg)
+        except BaseException:
+            return do_not_contact_from_file(cfg_path) if cfg_path.exists() else []
+    except BaseException:
+        return []
+
+
+@app.post("/api/prospects")
+async def create_prospect(request: Request):
+    """Create a single contact manually with email validation, DNC/suppression checks, and dedup."""
+    try:
+        body = await request.json()
+    except Exception:
+        return JSONResponse({"success": False, "message": "Invalid JSON body."}, status_code=400)
+    if not isinstance(body, dict):
+        return JSONResponse({"success": False, "message": "Request body must be an object."}, status_code=400)
+
+    from sellbird.gate import EMAIL_RE, do_not_contact_match
+    from sellbird.models.prospect import Prospect
+
+    email = str(body.get("email") or "").strip().lower()
+    if not email or not EMAIL_RE.match(email):
+        return JSONResponse({"success": False, "message": "A valid email address is required."}, status_code=400)
+
+    first_name = str(body.get("first_name") or "").strip()
+    last_name = str(body.get("last_name") or "").strip()
+    title = str(body.get("title") or "").strip()
+    company_name = str(body.get("company") or "").strip()
+    phone = str(body.get("phone") or "").strip()
+    linkedin_url = str(body.get("linkedin_url") or "").strip()
+    industry = str(body.get("industry") or "").strip()
+    location = str(body.get("location") or "").strip()
+    email_status = str(body.get("email_status") or "verified").strip().lower()
+    if email_status not in ("verified", "risky", "guess", "invalid"):
+        email_status = "verified"
+
+    raw_dom = str(body.get("domain") or body.get("website") or "").strip()
+    domain = ""
+    website = ""
+    if raw_dom:
+        website = raw_dom if re.match(r"^https?://", raw_dom, re.IGNORECASE) else f"https://{raw_dom}"
+        parsed = urlparse(website)
+        domain = (parsed.hostname or "").removeprefix("www.").lower()
+    elif "@" in email:
+        mail_dom = email.split("@", 1)[1].lower()
+        if mail_dom not in _FREEMAIL_DOMAINS:
+            domain = mail_dom
+            website = f"https://{domain}"
+
+    state = _state()
+    await state.init_db()
+
+    dnc_hit = do_not_contact_match(email, _live_dnc_entries())
+    sup_reason = await state.is_suppressed(email)
+    if dnc_hit or sup_reason:
+        why = dnc_hit or sup_reason
+        return JSONResponse(
+            {"success": False, "message": f"Cannot add: '{email}' is on Do-Not-Contact ({why})."},
+            status_code=409,
+        )
+
+    existing = await state.get_prospect_by_email(email)
+    if existing:
+        return JSONResponse(
+            {"success": False, "message": f"A contact with '{email}' already exists."},
+            status_code=409,
+        )
+
+    company_id = ""
+    if company_name or domain:
+        company_id = await _ensure_import_company(
+            state,
+            name=company_name or domain,
+            domain=domain,
+            website=website,
+            industry=industry,
+            location=location,
+            source="manual",
+        )
+
+    prospect = Prospect(
+        company_id=company_id,
+        first_name=first_name,
+        last_name=last_name,
+        title=title,
+        company=company_name or domain,
+        email=email,
+        email_status=email_status,
+        email_verified=(email_status == "verified"),
+        linkedin_url=linkedin_url,
+        phone=phone,
+        source="manual",
+        score=70 if (company_name or title) else 60,
+        status="new",
+    )
+    prospect_id = await state.add_prospect(prospect)
+    await state.log_action(
+        "prospect_created",
+        "dashboard",
+        {"prospect_id": prospect_id, "email": email, "company": prospect.company},
+    )
+    return {
+        "success": True,
+        "id": prospect_id,
+        "prospect": {
+            "id": prospect_id,
+            "first_name": first_name,
+            "last_name": last_name,
+            "title": title,
+            "company": prospect.company,
+            "email": email,
+            "email_status": email_status,
+            "status": "new",
+            "source": "manual",
+        },
+    }
+
+
+@app.delete("/api/prospects/{prospect_id}")
+async def delete_prospect_api(prospect_id: str):
+    """Delete a contact and cancel any queued outbox emails for them."""
+    state = _state()
+    await state.init_db()
+    prospect = await state.get_prospect(prospect_id)
+    if not prospect:
+        return JSONResponse({"success": False, "message": "Contact not found."}, status_code=404)
+    if hasattr(state, "delete_prospect"):
+        deleted = await state.delete_prospect(prospect_id)
+    else:
+        await state.cancel_pending_outbox_for_prospect(prospect_id, reason="contact_deleted")
+        deleted = False
+    if not deleted:
+        return JSONResponse({"success": False, "message": "Contact not found."}, status_code=404)
+    await state.log_action(
+        "prospect_deleted",
+        "dashboard",
+        {"prospect_id": prospect_id, "email": getattr(prospect, "email", "")},
+    )
+    return {"success": True, "id": prospect_id}
+
+
+@app.get("/api/suppressions")
+async def get_suppressions_api():
+    """List email addresses and domains on the Do-Not-Contact suppression list."""
+    state = _state()
+    await state.init_db()
+    items = await state.list_suppressions(limit=500)
+    return {"items": items, "total": len(items)}
+
+
+@app.post("/api/suppressions")
+async def add_suppression_api(request: Request):
+    """Add an email address or domain to the suppression list and cancel queued mail for matches."""
+    try:
+        body = await request.json()
+    except Exception:
+        return JSONResponse({"success": False, "message": "Invalid JSON body."}, status_code=400)
+    if not isinstance(body, dict):
+        return JSONResponse({"success": False, "message": "Request body must be an object."}, status_code=400)
+
+    value = str(body.get("value") or "").strip()
+    if not value:
+        return JSONResponse({"success": False, "message": "Email address or domain is required."}, status_code=400)
+    raw_kind = str(body.get("kind") or "").strip().lower()
+    kind = raw_kind if raw_kind in ("address", "domain") else ("address" if "@" in value else "domain")
+    reason = str(body.get("reason") or "manual").strip().lower() or "manual"
+
+    state = _state()
+    await state.init_db()
+    try:
+        added = await state.add_suppression(kind, value, reason=reason, source="dashboard")
+        key = state.suppression_key(kind, value)
+    except ValueError as exc:
+        return JSONResponse({"success": False, "message": str(exc)}, status_code=400)
+
+    matched_prospects = 0
+    if hasattr(state, "suppress_matching_prospects"):
+        matched_prospects = await state.suppress_matching_prospects(kind, value, reason=reason)
+    await state.log_action(
+        "suppression_added",
+        "dashboard",
+        {"kind": kind, "value": key, "reason": reason, "matched_prospects": matched_prospects},
+    )
+    return {
+        "success": True,
+        "added": bool(added),
+        "kind": kind,
+        "value": key,
+        "matched_prospects": matched_prospects,
+    }
+
+
+@app.delete("/api/suppressions/{suppression_id}")
+async def remove_suppression_api(suppression_id: str):
+    """Remove an entry from the suppression list."""
+    state = _state()
+    await state.init_db()
+    removed = await state.remove_suppression(suppression_id)
+    if not removed:
+        return JSONResponse({"success": False, "message": "Suppression entry not found."}, status_code=404)
+    await state.log_action("suppression_removed", "dashboard", {"suppression_id": suppression_id})
+    return {"success": True, "id": suppression_id}
+
+
 async def _ensure_import_company(
     state,
     *,
@@ -2234,6 +2528,7 @@ async def get_outbox_api():
         await state.fail_stale_sending_outbox()
         return {
             **_compliance_view(),
+            "mailbox_ready": _sellbird_can_send(),
             "paused": await state.get_setting("sending_paused"),
             "pending": await _with_context(
                 await state.get_outbox(status="pending_review", limit=100)),
@@ -2565,6 +2860,40 @@ async def outbox_approve(item_id: str):
         return JSONResponse({"success": False, "message": str(e)}, status_code=500)
 
 
+async def _validate_outbox_draft(state, item: dict, subject: str, text: str) -> str | None:
+    """Validate an outbox draft against Sellbird style & pre-send compliance rules."""
+    if not subject.strip() or not text.strip():
+        return "Subject and body are both required."
+    from sellbird.gate import pre_send_check
+    from sellbird.email_style import style_problems
+
+    checked = text
+    footer = _compliance_view()["footer"]
+    if item.get("kind") == "sequence" and footer and not text.rstrip().endswith(footer):
+        checked = text.rstrip() + "\n\n" + footer  # as the Sender will send it
+    gate = pre_send_check("reviewer@example.com", subject, checked)
+    prospect = await state.get_prospect(item.get("prospect_id") or "")
+    names = [
+        n for n in (
+            getattr(prospect, "company", ""),
+            getattr(prospect, "first_name", ""),
+            getattr(prospect, "last_name", ""),
+        ) if n
+    ]
+    style = style_problems(
+        subject,
+        text,
+        shape=False,
+        names=names,
+        kind="reply" if item.get("kind") == "reply" else "cold",
+    )
+    if style:
+        return "The sender would hold this: the email " + "; ".join(style)
+    if not gate:
+        return "The sender would have blocked this: " + "; ".join(gate.reasons)
+    return None
+
+
 @app.post("/api/outbox/{item_id}/edit")
 async def outbox_edit(item_id: str, request: Request):
     """Rewrite a draft awaiting review. Never approves it."""
@@ -2589,36 +2918,9 @@ async def outbox_edit(item_id: str, request: Request):
             # fresh, unthreaded email to someone who wrote in. Only the body
             # of a reply is editable; its stored subject is kept exactly.
             subject = item.get("subject") or ""
-        if not subject.strip() or not text:
-            return JSONResponse({"success": False,
-                                 "message": "Subject and body are both required."},
-                                status_code=400)
-        # The sender re-checks every email before it goes out; an edit it
-        # would block is refused now, while the reviewer can still fix it,
-        # instead of failing quietly at send time. Content rules only: the
-        # recipient isn't something an edit can change.
-        from sellbird.gate import pre_send_check
-        checked = text
-        footer = _compliance_view()["footer"]
-        if item.get("kind") == "sequence" and footer and not text.rstrip().endswith(footer):
-            checked = text.rstrip() + "\n\n" + footer  # as the Sender will send it
-        gate = pre_send_check("reviewer@example.com", subject, checked)
-        from sellbird.email_style import style_problems
-        prospect = await state.get_prospect(item.get("prospect_id") or "")
-        names = [n for n in (getattr(prospect, "company", ""), getattr(prospect, "first_name", ""),
-                             getattr(prospect, "last_name", "")) if n]
-        style = style_problems(subject, text, shape=False, names=names,
-                               kind="reply" if item.get("kind") == "reply" else "cold")
-        if style:
-            return JSONResponse({"success": False,
-                                 "message": "The sender would hold this: the email "
-                                            + "; ".join(style)},
-                                status_code=400)
-        if not gate:
-            return JSONResponse({"success": False,
-                                 "message": "The sender would have blocked this: "
-                                            + "; ".join(gate.reasons)},
-                                status_code=400)
+        err_msg = await _validate_outbox_draft(state, item, subject, text)
+        if err_msg:
+            return JSONResponse({"success": False, "message": err_msg}, status_code=400)
         if not await state.edit_outbox_draft(item_id, subject, text):
             return JSONResponse({"success": False,
                                  "message": "Only drafts awaiting review can be edited."},
@@ -2630,6 +2932,129 @@ async def outbox_edit(item_id: str, request: Request):
         return {"success": True}
     except Exception as e:
         return JSONResponse({"success": False, "message": str(e)}, status_code=500)
+
+
+@app.post("/api/outbox/{item_id}/regenerate")
+async def outbox_regenerate(item_id: str, request: Request):
+    """Rewrite a pending outbox draft with Sellbird's Brain, preserving compliance & sign-off."""
+    try:
+        payload = await request.json()
+    except Exception:
+        payload = {}
+    if not isinstance(payload, dict):
+        payload = {}
+    instruction = str(payload.get("instruction") or "").strip()[:300]
+
+    state = _state()
+    await state.init_db()
+    item = await state.get_outbox_item(item_id)
+    if not item or item.get("status") != "pending_review":
+        return JSONResponse(
+            {"success": False, "message": "Only drafts awaiting review can be rewritten with AI."},
+            status_code=409,
+        )
+
+    runtime, err = await _prepare_agentic_runtime()
+    if err is not None:
+        return err
+    brain, _, config, _env = runtime
+    try:
+        from sellbird.agents.critic import CopyCritic, _unwrap_email_dict
+        from sellbird.email_style import tidy
+        from sellbird.gate import MAX_SUBJECT_LEN
+        from sellbird.untrusted import UNTRUSTED_RULE, fence
+
+        prospect = await state.get_prospect(item.get("prospect_id") or "")
+        skills = brain.load_skills_for_agent("writer")
+        is_reply = item.get("kind") == "reply"
+        sender_name = getattr(getattr(config, "persona", None), "name", "") or "the sender"
+        direction = (
+            instruction
+            or "Tighten this draft so it sounds genuinely human, clear, and concise (under 65 words for cold email), keeping any real facts intact and avoiding generic buzzwords or em-dashes."
+        )
+        prospect_ctx = (
+            f"Name: {getattr(prospect, 'first_name', '')} {getattr(prospect, 'last_name', '')}\n"
+            f"Title: {getattr(prospect, 'title', '')}\n"
+            f"Company: {getattr(prospect, 'company', '')}\n"
+            f"Email: {item.get('to_email', '')}"
+        ) if prospect else f"Email: {item.get('to_email', '')}"
+        names = [
+            n for n in (
+                getattr(prospect, "company", ""),
+                getattr(prospect, "first_name", ""),
+                getattr(prospect, "last_name", ""),
+            ) if n
+        ]
+
+        system = (
+            f"You are rewriting a B2B {'reply' if is_reply else 'cold'} email on behalf of {sender_name}.\n"
+            f"{UNTRUSTED_RULE}\n"
+            "Rules:\n"
+            "- Keep all factual claims grounded in the original draft and prospect record; never invent details.\n"
+            "- Do NOT include a sign-off name or opt-out/postal footer; Sellbird appends those when sending.\n"
+            "- Avoid banned AI cliches (delve, streamline, game-changer, synergy, reach out, quick question) and avoid em-dashes.\n"
+            + ("- Preserve the thread subject verbatim.\n" if is_reply else f"- Keep subject lowercase, 2-6 words, max {MAX_SUBJECT_LEN} chars, no 'Re:' or 'Fwd:'.\n")
+            + (f"\nProduct & email context:\n{skills[:2500]}" if skills else "")
+        )
+        prompt = (
+            f"Rewrite instruction: {direction}\n\n"
+            f"Prospect:\n{fence(prospect_ctx, 'prospect')}\n\n"
+            f"Current Subject:\n{fence(str(item.get('subject') or ''), 'subject')}\n\n"
+            f"Current Body:\n{fence(str(item.get('body') or ''), 'body')}\n\n"
+            'Return strictly JSON: {"subject": "...", "body": "..."}'
+        )
+        raw = await brain.think_json(prompt, system=system)
+        unwrapped = _unwrap_email_dict(raw)
+        if not unwrapped:
+            return JSONResponse(
+                {"success": False, "message": "AI returned an invalid draft format. Please try again."},
+                status_code=502,
+            )
+
+        new_subject = (
+            str(item.get("subject") or "")
+            if is_reply
+            else str(unwrapped.get("subject") or item.get("subject") or "").strip()[:MAX_SUBJECT_LEN]
+        )
+        new_body = tidy(str(unwrapped.get("body") or "").strip())
+
+        err_msg = await _validate_outbox_draft(state, item, new_subject, new_body)
+        if err_msg:
+            critic = CopyCritic(brain, config)
+            repaired = await critic.review_and_refine(
+                {"subject": new_subject, "body": new_body},
+                prospect_context=prospect_ctx,
+                step=1,
+                names=names,
+            )
+            if not is_reply and repaired.get("subject"):
+                new_subject = str(repaired["subject"]).strip()[:MAX_SUBJECT_LEN]
+            if repaired.get("body"):
+                new_body = tidy(str(repaired["body"]))
+            err_msg = await _validate_outbox_draft(state, item, new_subject, new_body)
+
+        if err_msg:
+            return JSONResponse({"success": False, "message": err_msg}, status_code=400)
+        if not await state.edit_outbox_draft(item_id, new_subject, new_body):
+            return JSONResponse(
+                {"success": False, "message": "Draft status changed before rewrite could be saved."},
+                status_code=409,
+            )
+        await state.log_action(
+            "outbox_regenerated",
+            "dashboard",
+            {
+                "outbox_id": item_id,
+                "to_email": item.get("to_email", ""),
+                "instruction": instruction,
+            },
+        )
+        return {"success": True, "id": item_id, "subject": new_subject, "body": new_body}
+    except Exception as exc:
+        logger.warning("Outbox AI rewrite failed for %s: %s", item_id, exc)
+        return JSONResponse({"success": False, "message": f"AI rewrite failed: {exc}"}, status_code=500)
+    finally:
+        await _close_brain(brain)
 
 
 # A hand send is only offered to someone Sellbird could still email: never to

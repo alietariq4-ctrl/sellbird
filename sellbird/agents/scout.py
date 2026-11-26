@@ -168,6 +168,7 @@ class Scout:
         self._seen_domains = set()
         self._site_reads, self._site_evidence, self._own_domains = {}, {}, {}
         self._challenged = set()
+        self._failed_search_engines = set()
 
         prospects_found = 0
 
@@ -444,22 +445,25 @@ class Scout:
 
         serper_key = getattr(self.env, "serper_api_key", "") or ""
         tinyfish_key = getattr(self.env, "tinyfish_api_key", "") or ""
+        failed = self.__dict__.setdefault("_failed_search_engines", set())
         backends = []
         if serper_key:
-            backends.append(lambda: self._search_serper(query, serper_key))
+            backends.append(("serper", lambda: self._search_serper(query, serper_key)))
         if tinyfish_key:
-            backends.append(lambda: self._search_tinyfish(query, tinyfish_key))
+            backends.append(("tinyfish", lambda: self._search_tinyfish(query, tinyfish_key)))
         backends.extend([
-            lambda: self._search_duckduckgo(query),
-            lambda: self._search_bing(query),
-            lambda: self._search_google(query),
+            ("duckduckgo", lambda: self._search_duckduckgo(query)),
+            ("bing", lambda: self._search_bing(query)),
+            ("google", lambda: self._search_google(query)),
         ])
 
-        for backend in backends:
+        for engine, backend in backends:
+            if engine in failed:
+                continue
             try:
                 results = await backend()
             except Exception as e:
-                logger.debug(f"Search backend raised: {e}")
+                logger.debug(f"Search backend '{engine}' raised: {e}")
                 results = []
             if results:
                 return self._dedupe_results(results)
@@ -538,15 +542,24 @@ class Scout:
                 results.append((url, snippet))
         return results[:MAX_RESULTS_PER_QUERY]
 
+    def _mark_search_engine_failed(self, engine: str) -> None:
+        """Disable a blocked or unreachable search engine for the rest of this cycle."""
+        failed = self.__dict__.setdefault("_failed_search_engines", set())
+        if engine not in failed:
+            failed.add(engine)
+            logger.info(f"Scout: Disabling search backend '{engine}' for remainder of cycle.")
+
     async def _search_duckduckgo(self, query: str) -> list[tuple[str, str]]:
-        """Search via DuckDuckGo HTML — free, no rate limiting."""
+        """Search via DuckDuckGo HTML — single fast attempt per query."""
         url = f"https://html.duckduckgo.com/html/?q={quote_plus(query)}"
-        resp = await self._fetch(url)
+        resp = await self._fetch(url, timeout=10.0, retries=1)
         if resp is None:
+            self._mark_search_engine_failed("duckduckgo")
             return []
 
         soup = self._safe_soup(resp.text)
         if soup is None:
+            self._mark_search_engine_failed("duckduckgo")
             return []
 
         results = []
@@ -574,14 +587,16 @@ class Scout:
         return results[:MAX_RESULTS_PER_QUERY]
 
     async def _search_bing(self, query: str) -> list[tuple[str, str]]:
-        """Search via Bing HTML scraping — less aggressive than Google."""
+        """Search via Bing HTML scraping — single fast attempt per query."""
         url = f"https://www.bing.com/search?q={quote_plus(query)}&count={MAX_RESULTS_PER_QUERY}"
-        resp = await self._fetch(url)
+        resp = await self._fetch(url, timeout=10.0, retries=1)
         if resp is None:
+            self._mark_search_engine_failed("bing")
             return []
 
         soup = self._safe_soup(resp.text)
         if soup is None:
+            self._mark_search_engine_failed("bing")
             return []
 
         results = []
@@ -603,12 +618,14 @@ class Scout:
         """Search via Google HTML scraping — aggressive rate limiting, last resort."""
         url = f"https://www.google.com/search?q={quote_plus(query)}&num={MAX_RESULTS_PER_QUERY}"
         # Google throttles hard; a single quick try avoids burning the cycle.
-        resp = await self._fetch(url, retries=1)
+        resp = await self._fetch(url, timeout=10.0, retries=1)
         if resp is None:
+            self._mark_search_engine_failed("google")
             return []
 
         soup = self._safe_soup(resp.text)
         if soup is None:
+            self._mark_search_engine_failed("google")
             return []
 
         results = []

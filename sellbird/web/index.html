@@ -276,11 +276,14 @@
   <div class="section-head">
     <div><h2>Contacts</h2><p>People Sellbird has found, how sure it is of their address, and where each one stands.</p></div>
     <div class="page-actions">
-      <button class="btn btn-primary btn-sm" onclick="openImportCsvModal()">+ Import CSV</button>
+      <button class="btn btn-primary btn-sm" onclick="openAddContactModal()">+ Add Contact</button>
+      <button class="btn btn-secondary btn-sm" onclick="openImportCsvModal()">+ Import CSV</button>
+      <button class="btn btn-secondary btn-sm" id="suppressions-toggle-btn" onclick="toggleSuppressionsPanel()">Suppressions</button>
       <button class="btn btn-secondary btn-sm" onclick="downloadCsv('/api/export/prospects.csv', 'prospects.csv', this)"><svg class="icon" aria-hidden="true"><use href="#i-download"/></svg>Export deliverable</button>
       <button class="btn btn-ghost btn-sm" onclick="downloadCsv('/api/export/prospects.csv?all=true', 'prospects-all.csv', this)">Export all</button>
     </div>
   </div>
+  <div id="suppressions-panel" style="display:none;margin-bottom:14px"></div>
   <div id="prospects-table"></div>
 </div>
 
@@ -389,6 +392,61 @@
   <div class="modal-foot">
     <button class="btn btn-secondary" onclick="closeImportCsvModal()">Cancel</button>
     <button class="btn btn-primary" id="import-csv-submit-btn" onclick="submitImportCsv(this)">Import Contacts</button>
+  </div>
+</dialog>
+
+<dialog id="add-contact-dialog" class="modal" aria-labelledby="add-contact-dialog-title">
+  <div class="modal-head">
+    <h3 id="add-contact-dialog-title">Add Contact</h3>
+    <button class="btn btn-ghost" onclick="closeAddContactModal()"><svg class="icon"><use href="#i-close"/></svg></button>
+  </div>
+  <div class="modal-body">
+    <div class="form-row">
+      <div class="form-group">
+        <label class="form-label" for="ac-first">First name</label>
+        <input type="text" class="form-input" id="ac-first" placeholder="Jane" autocomplete="off">
+      </div>
+      <div class="form-group">
+        <label class="form-label" for="ac-last">Last name</label>
+        <input type="text" class="form-input" id="ac-last" placeholder="Doe" autocomplete="off">
+      </div>
+    </div>
+    <div class="form-group">
+      <label class="form-label" for="ac-email">Work email *</label>
+      <input type="email" class="form-input" id="ac-email" placeholder="jane@acme.com" autocomplete="off">
+    </div>
+    <div class="form-row">
+      <div class="form-group">
+        <label class="form-label" for="ac-title">Role / Title</label>
+        <input type="text" class="form-input" id="ac-title" placeholder="VP Sales" autocomplete="off">
+      </div>
+      <div class="form-group">
+        <label class="form-label" for="ac-company">Company</label>
+        <input type="text" class="form-input" id="ac-company" placeholder="Acme Corp" autocomplete="off">
+      </div>
+    </div>
+    <div class="form-row">
+      <div class="form-group">
+        <label class="form-label" for="ac-domain">Company domain</label>
+        <input type="text" class="form-input" id="ac-domain" placeholder="acme.com" autocomplete="off">
+      </div>
+      <div class="form-group">
+        <label class="form-label" for="ac-status">Deliverability</label>
+        <select class="form-input" id="ac-status">
+          <option value="verified" selected>Verified</option>
+          <option value="risky">Risky</option>
+          <option value="guess">Guess</option>
+        </select>
+      </div>
+    </div>
+    <div class="form-group">
+      <label class="form-label" for="ac-phone">Phone (optional)</label>
+      <input type="text" class="form-input" id="ac-phone" placeholder="+1 555 010 2030" autocomplete="off">
+    </div>
+  </div>
+  <div class="modal-foot">
+    <button class="btn btn-secondary" onclick="closeAddContactModal()">Cancel</button>
+    <button class="btn btn-primary" id="add-contact-submit-btn" onclick="submitAddContact(this)">Save Contact</button>
   </div>
 </dialog>
 
@@ -666,7 +724,11 @@
               <button class="btn btn-secondary" onclick="toggleVisibility('imap-pass')">Show</button></div></div>
           <label class="check-line"><input type="checkbox" id="imap-same-pass"> Use the SMTP password for IMAP</label>
         </details>
-        <button class="btn btn-primary btn-sm" onclick="saveSmtp()">Save SMTP</button>
+        <div style="display:flex;gap:8px;align-items:center;flex-wrap:wrap;margin-top:6px;">
+          <button class="btn btn-primary btn-sm" onclick="saveSmtp()">Save SMTP</button>
+          <button class="btn btn-secondary btn-sm" id="test-smtp-btn" onclick="testSmtpConnection(this)">Test SMTP / IMAP</button>
+          <span id="smtp-test-result" class="muted" style="font-size:12px;"></span>
+        </div>
       </div>
     </div>
 

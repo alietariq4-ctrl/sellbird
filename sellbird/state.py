@@ -1176,6 +1176,19 @@ class StateManager:
                 row = await cursor.fetchone()
                 return self._prospect_from_row(row) if row else None
 
+    async def delete_prospect(self, prospect_id: str) -> bool:
+        """Cancel queued outbox items and remove a prospect record."""
+        async with self._connect() as db:
+            now = _utcnow().isoformat()
+            await db.execute(
+                "UPDATE outbox SET status = 'cancelled', error = ?, updated_at = ? "
+                "WHERE prospect_id = ? AND status IN ('pending_review', 'approved')",
+                ("contact_deleted", now, prospect_id),
+            )
+            cursor = await db.execute("DELETE FROM prospects WHERE id = ?", (prospect_id,))
+            await db.commit()
+            return cursor.rowcount > 0
+
     async def update_prospect_email(
         self, prospect_id: str, email: str, email_status: str
     ):
@@ -1782,6 +1795,67 @@ class StateManager:
             cursor = await db.execute("DELETE FROM suppressions WHERE id = ?", (suppression_id,))
             await db.commit()
             return cursor.rowcount > 0
+
+    async def suppress_matching_prospects(
+        self, kind: str, value: str, reason: str = "manual"
+    ) -> int:
+        """Mark prospects matching a newly suppressed address/domain opted_out and cancel queued mail."""
+        key = self.suppression_key(kind, value)
+        if not key:
+            return 0
+        async with self._connect() as db:
+            db.row_factory = aiosqlite.Row
+            if kind == "address":
+                local, _, host = key.rpartition("@")
+                base_local = local.split("+", 1)[0]
+                async with db.execute(
+                    "SELECT id, email FROM prospects WHERE LOWER(email) LIKE ?",
+                    (f"{base_local}%@{host}",),
+                ) as cursor:
+                    candidates = [dict(r) for r in await cursor.fetchall()]
+            else:
+                async with db.execute(
+                    "SELECT id, email FROM prospects WHERE LOWER(email) LIKE ?",
+                    (f"%@{key}" if "." in key else "%",),
+                ) as cursor:
+                    rows = [dict(r) for r in await cursor.fetchall()]
+                async with db.execute(
+                    "SELECT id, email FROM prospects WHERE LOWER(email) LIKE ?",
+                    (f"%.{key}",),
+                ) as cursor:
+                    rows.extend(dict(r) for r in await cursor.fetchall())
+                seen_ids: set[str] = set()
+                candidates = []
+                for r in rows:
+                    if r["id"] not in seen_ids:
+                        seen_ids.add(r["id"])
+                        candidates.append(r)
+
+        if not candidates:
+            return 0
+        matched_map = await self.suppressed_among([c["email"] for c in candidates])
+        matched_ids = [
+            c["id"] for c in candidates if _norm(c["email"]) in matched_map
+        ]
+        if not matched_ids:
+            return 0
+
+        now = _utcnow().isoformat()
+        cancel_reason = f"suppressed:{reason or 'manual'}"
+        placeholders = ",".join("?" for _ in matched_ids)
+        async with self._connect() as db:
+            await db.execute(
+                f"UPDATE prospects SET status = 'opted_out', updated_at = ? "
+                f"WHERE id IN ({placeholders}) AND status NOT IN ('opted_out', 'bounced')",
+                [now, *matched_ids],
+            )
+            await db.execute(
+                f"UPDATE outbox SET status = 'cancelled', error = ?, updated_at = ? "
+                f"WHERE prospect_id IN ({placeholders}) AND status IN ('pending_review', 'approved')",
+                [cancel_reason, now, *matched_ids],
+            )
+            await db.commit()
+        return len(matched_ids)
 
 
     async def colleague_who_replied(self, prospect_id: str) -> str | None:
