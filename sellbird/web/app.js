@@ -419,20 +419,71 @@ function toggleVisibility(inputId) {
 // ── Tabs ──
 
 function showTab(id, btn, skipLoad) {
-  currentTab = id;
-  if (id === 'companies') companyDrill = false;
-  document.querySelectorAll('.section').forEach(s => s.classList.remove('active'));
-  document.querySelectorAll('nav button').forEach(b => b.classList.remove('active'));
-  const sec = document.getElementById(id);
-  if (sec) sec.classList.add('active');
-  const activeBtn = btn || Array.from(document.querySelectorAll('nav button'))
-    .find(b => (b.getAttribute('onclick') || '').includes("'" + id + "'"));
-  if (activeBtn) activeBtn.classList.add('active');
-  if (!skipLoad && typeof window.scrollTo === 'function') window.scrollTo(0, 0);
+  const apply = () => {
+    currentTab = id;
+    if (id === 'companies') companyDrill = false;
+    document.querySelectorAll('.section').forEach(s => s.classList.remove('active'));
+    document.querySelectorAll('nav button').forEach(b => b.classList.remove('active'));
+    const sec = document.getElementById(id);
+    if (sec) sec.classList.add('active');
+    const activeBtn = btn || Array.from(document.querySelectorAll('nav button'))
+      .find(b => (b.getAttribute('onclick') || '').includes("'" + id + "'"));
+    if (activeBtn) activeBtn.classList.add('active');
+    if (!skipLoad && typeof window.scrollTo === 'function') window.scrollTo(0, 0);
+  };
+  const reduced = window.matchMedia && window.matchMedia('(prefers-reduced-motion: reduce)').matches;
+  if (!skipLoad && typeof document.startViewTransition === 'function' && !reduced) {
+    try { document.startViewTransition(apply); } catch { apply(); }
+  } else {
+    apply();
+  }
   if (!skipLoad) loadCurrentTab();
 }
 
 function goToTab(id) { showTab(id, null); }
+
+let _asciiTimer = null;
+let _asciiIdx = 0;
+const _ASCII_FRAMES = ['|', '/', '-', '\\'];
+
+function updateAsciiTelemetry(runningNow) {
+  const stateEl = document.getElementById('ascii-state');
+  const barsEl = document.getElementById('ascii-bars');
+  const spinEl = document.getElementById('ascii-spinner');
+  if (!stateEl || !barsEl) return;
+  const stats = typeof _todayStats === 'object' && _todayStats ? _todayStats : {};
+  const busy = !!(runningNow || _todayLoopRunning);
+  stateEl.textContent = busy ? '[PIPE :: ACTIVE]' : '[PIPE :: READY]';
+  const co = Number(stats.companies_total ?? stats.companies ?? 0) || 0;
+  const pr = Number(stats.prospects_total ?? stats.prospects ?? 0) || 0;
+  const ob = Number(stats.outbox_pending ?? 0) || 0;
+  const lit = busy ? 5 : Math.min(5, Math.max(1, (co ? 1 : 0) + (pr ? 2 : 0) + (ob ? 2 : 0)));
+  barsEl.textContent = '▓'.repeat(lit) + '░'.repeat(5 - lit) + ' ' + co + 'CO · ' + pr + 'P · ' + ob + 'Q';
+  if (spinEl) {
+    if (busy && !_asciiTimer) {
+      _asciiTimer = setInterval(() => {
+        _asciiIdx = (_asciiIdx + 1) % _ASCII_FRAMES.length;
+        spinEl.textContent = _ASCII_FRAMES[_asciiIdx];
+      }, 180);
+    } else if (!busy) {
+      if (_asciiTimer) { clearInterval(_asciiTimer); _asciiTimer = null; }
+      spinEl.textContent = '::';
+    }
+  }
+}
+
+(function wireSpecularDepth() {
+  if (typeof document.addEventListener !== 'function') return;
+  document.addEventListener('pointermove', (e) => {
+    const t = e.target && typeof e.target.closest === 'function'
+      ? e.target.closest('.kpi, .stat-card, .prov-card, .preset-card') : null;
+    if (!t || typeof t.getBoundingClientRect !== 'function') return;
+    const r = t.getBoundingClientRect();
+    if (!r.width || !r.height) return;
+    t.style.setProperty('--mx', Math.round(((e.clientX - r.left) / r.width) * 100) + '%');
+    t.style.setProperty('--my', Math.round(((e.clientY - r.top) / r.height) * 100) + '%');
+  }, { passive: true });
+})();
 
 // The container each tab refills, painted with loadingState() while its
 // fetch is in flight. Controls and Help are static; Today's smaller cards
@@ -506,6 +557,7 @@ async function loadToday() {
   _todayStats = data.stats || {};
   renderFigures(_todayStats);
   renderTodayAgentic(data.agentic || null);
+  updateAsciiTelemetry(!!(data.agentic && data.agentic.running));
 
   const items = data.items || [];
   if (!items.length) {
@@ -1764,6 +1816,7 @@ let _todayAgenticStatusHtml = '';
 
 function syncTodayLoopBtn(running) {
   _todayLoopRunning = !!running;
+  updateAsciiTelemetry(_todayLoopRunning);
   const btn = document.getElementById('today-loop-btn');
   if (!btn) return;
   btn.textContent = _todayLoopRunning ? 'Stop Loop' : 'Start Loop';

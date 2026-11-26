@@ -174,11 +174,13 @@ def test_custom_saas_ui_js_vm_and_css_checks():
     proc = subprocess.run(["node", "--check", str(app_js)], capture_output=True, text=True)
     assert proc.returncode == 0, f"node --check failed:\n{proc.stderr}"
 
-    # Ensure broken showSection calls are completely gone
+    # Ensure broken showSection calls are completely gone & 2026 Liquid Glass + ASCII telemetry anchors exist
     assert "showSection(" not in app_js.read_text(encoding="utf-8")
     assert "auto repair" in index_html
+    assert 'id="ascii-telemetry"' in index_html
     assert "scroll-margin-top: 120px" in app_css
     assert ".playbook-steps" in app_css and ".preset-grid" in app_css
+    assert "backdrop-filter: blur(" in app_css and "::view-transition-new(root)" in app_css
 
     vm_script = """
 const fs = require('fs');
@@ -273,6 +275,18 @@ vm.runInContext(code, context);
   if (getEl('co-i-industries').value.includes('auto repair')) throw new Error('Chip toggle failed to remove industry');
   context.toggleIndustryChip('auto repair');
   if (!getEl('co-i-industries').value.includes('auto repair')) throw new Error('Chip toggle failed to add industry');
+
+  // Verify live ASCII telemetry updater formats active vs ready cleanly
+  vm.runInContext("_todayStats = { companies: 12, prospects: 4, outbox_pending: 2 };", context);
+  context.updateAsciiTelemetry(false);
+  if (!getEl('ascii-state').textContent.includes('READY') || !getEl('ascii-bars').textContent.includes('12CO')) {
+    throw new Error('ASCII telemetry ready render failed: ' + getEl('ascii-bars').textContent);
+  }
+  context.updateAsciiTelemetry(true);
+  if (!getEl('ascii-state').textContent.includes('ACTIVE')) {
+    throw new Error('ASCII telemetry active render failed');
+  }
+  context.updateAsciiTelemetry(false);
 
   console.log('VM_CUSTOM_SAAS_OK');
 })().catch(e => { console.error(e); process.exit(1); });
