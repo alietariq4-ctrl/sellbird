@@ -297,6 +297,7 @@
   <div class="section-head">
     <div><h2>Campaigns</h2><p>Email sequences Sellbird has written, and how far each one has got.</p></div>
     <div class="page-actions">
+      <button class="btn btn-secondary btn-sm" id="new-campaign-btn" onclick="openCampaignBuilderModal()">+ New Campaign</button>
       <button class="btn btn-primary btn-sm" id="writer-run-btn" onclick="triggerWriterRun(this)">Write Emails Now</button>
     </div>
   </div>
@@ -448,10 +449,56 @@
       <label class="form-label" for="ac-phone">Phone (optional)</label>
       <input type="text" class="form-input" id="ac-phone" placeholder="+1 555 010 2030" autocomplete="off">
     </div>
+    <div class="form-group">
+      <label class="form-label" for="ac-tags">Audience tags (optional, comma-separated)</label>
+      <input type="text" class="form-input" id="ac-tags" placeholder="saas, founder, q4-launch" autocomplete="off">
+    </div>
   </div>
   <div class="modal-foot">
     <button class="btn btn-secondary" onclick="closeAddContactModal()">Cancel</button>
     <button class="btn btn-primary" id="add-contact-submit-btn" onclick="submitAddContact(this)">Save Contact</button>
+  </div>
+</dialog>
+
+<dialog id="campaign-builder-dialog" class="modal modal-wide" aria-labelledby="campaign-builder-title">
+  <div class="modal-head">
+    <h3 id="campaign-builder-title">New Campaign Sequence</h3>
+    <button class="btn btn-ghost" onclick="closeCampaignBuilderModal()"><svg class="icon"><use href="#i-close"/></svg></button>
+  </div>
+  <div class="modal-body">
+    <div class="form-row">
+      <div class="form-group">
+        <label class="form-label" for="cb-name">Campaign name *</label>
+        <input type="text" class="form-input" id="cb-name" placeholder="e.g. SaaS Founders Q4 Launch" autocomplete="off">
+      </div>
+      <div class="form-group">
+        <label class="form-label" for="cb-tags">Target audience tags (blank = all deliverable)</label>
+        <input type="text" class="form-input" id="cb-tags" placeholder="e.g. saas, founder" autocomplete="off">
+      </div>
+    </div>
+    <div class="form-row">
+      <div class="form-group">
+        <label class="form-label" for="cb-framework">Copywriting framework / angle</label>
+        <input type="text" class="form-input" id="cb-framework" placeholder="PAS, AIDA, Direct Value..." autocomplete="off">
+      </div>
+      <div class="form-group">
+        <label class="form-label" for="cb-goal">Offer / campaign goal (for AI step drafter)</label>
+        <div class="inline-action-row">
+          <input type="text" class="form-input" id="cb-goal" placeholder="e.g. 15-min demo showing automated lead follow-up" autocomplete="off">
+          <button type="button" class="btn btn-secondary btn-sm" id="cb-ai-draft-btn" onclick="aiDraftCampaignSteps(this)">AI Draft 3 Steps</button>
+        </div>
+      </div>
+    </div>
+    <div class="cb-steps-head">
+      <span class="form-label" style="margin:0">Sequence steps <span class="hint muted">supports {{first_name}} and {{company}}</span></span>
+      <button type="button" class="btn btn-ghost btn-sm" onclick="addBuilderStep()">+ Add step</button>
+    </div>
+    <div id="cb-steps"></div>
+  </div>
+  <div class="modal-foot">
+    <button class="btn btn-secondary" onclick="closeCampaignBuilderModal()">Cancel</button>
+    <button class="btn btn-secondary" id="cb-save-btn" onclick="submitCampaignBuilder(false, this)">Save Campaign</button>
+    <button class="btn btn-primary" id="cb-launch-btn" onclick="submitCampaignBuilder(true, this)">Save &amp; Launch to Outbox</button>
   </div>
 </dialog>
 

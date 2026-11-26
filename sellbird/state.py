@@ -647,6 +647,11 @@ MIGRATIONS: list[str] = [
     CREATE INDEX IF NOT EXISTS idx_conversations_prospect_updated
         ON conversations(prospect_id, updated_at DESC, created_at DESC);
     """,
+    # ── v22: audience segmentation tags on prospects and campaigns ──
+    """
+    ALTER TABLE prospects ADD COLUMN tags TEXT DEFAULT '';
+    ALTER TABLE campaigns ADD COLUMN target_tags TEXT DEFAULT '';
+    """,
 ]
 
 BRAIN_PROVIDERS = ("claude", "codex", "openrouter")
@@ -669,7 +674,7 @@ _LAST_PROFILED = (
 # Column whitelists for dynamic UPDATEs (prevents SQL injection via kwargs).
 _CAMPAIGN_COLUMNS = frozenset({
     "name", "channel", "instantly_campaign_id",
-    "sequence_json", "prospect_ids_json", "status", "framework",
+    "sequence_json", "prospect_ids_json", "status", "framework", "target_tags",
 })
 _CONVERSATION_COLUMNS = frozenset({
     "prospect_id", "campaign_id", "channel",
@@ -1015,9 +1020,9 @@ class StateManager:
                    (id, company_id, first_name, last_name, email, email_verified,
                     email_status, phone, phone_verified, linkedin_url, title,
                     seniority, department, source, source_url, status, score,
-                    personalization_notes, company, industry, company_size,
+                    personalization_notes, tags, company, industry, company_size,
                     created_at, updated_at)
-                   VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+                   VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
                 (
                     prospect.id, prospect.company_id,
                     prospect.first_name, prospect.last_name,
@@ -1029,6 +1034,7 @@ class StateManager:
                     prospect.source, prospect.source_url,
                     prospect.status, prospect.score,
                     prospect.personalization_notes,
+                    getattr(prospect, "tags", "") or "",
                     prospect.company, prospect.industry, prospect.company_size,
                     prospect.created_at.isoformat(),
                     prospect.updated_at.isoformat(),
@@ -1188,6 +1194,66 @@ class StateManager:
             cursor = await db.execute("DELETE FROM prospects WHERE id = ?", (prospect_id,))
             await db.commit()
             return cursor.rowcount > 0
+
+    async def delete_prospects(self, prospect_ids: list[str]) -> int:
+        """Cancel queued outbox items and delete multiple contacts in one batch."""
+        ids = [str(pid).strip() for pid in prospect_ids if str(pid).strip()]
+        if not ids:
+            return 0
+        placeholders = ",".join("?" for _ in ids)
+        now = _utcnow().isoformat()
+        async with self._connect() as db:
+            await db.execute(
+                f"UPDATE outbox SET status = 'cancelled', error = ?, updated_at = ? "
+                f"WHERE prospect_id IN ({placeholders}) AND status IN ('pending_review', 'approved')",
+                ["contact_deleted", now, *ids],
+            )
+            cursor = await db.execute(
+                f"DELETE FROM prospects WHERE id IN ({placeholders})",
+                ids,
+            )
+            await db.commit()
+            return cursor.rowcount
+
+    async def update_prospect_tags(
+        self,
+        prospect_ids: list[str],
+        *,
+        add_tags: list[str] | tuple[str, ...] = (),
+        remove_tags: list[str] | tuple[str, ...] = (),
+    ) -> int:
+        """Add or remove normalized audience tags on selected contacts."""
+        ids = [str(pid).strip() for pid in prospect_ids if str(pid).strip()]
+        if not ids:
+            return 0
+        adds = [t.strip().lower() for t in add_tags if str(t).strip()]
+        rems = {t.strip().lower() for t in remove_tags if str(t).strip()}
+        placeholders = ",".join("?" for _ in ids)
+        now = _utcnow().isoformat()
+        updated = 0
+        async with self._connect() as db:
+            db.row_factory = aiosqlite.Row
+            async with db.execute(
+                f"SELECT id, COALESCE(tags, '') AS tags FROM prospects WHERE id IN ({placeholders})",
+                ids,
+            ) as cursor:
+                rows = [dict(r) for r in await cursor.fetchall()]
+            for r in rows:
+                current = [
+                    x.strip().lower() for x in (r.get("tags") or "").split(",") if x.strip()
+                ]
+                merged: list[str] = []
+                for t in [*current, *adds]:
+                    if t not in rems and t not in merged:
+                        merged.append(t)
+                new_val = ", ".join(merged)
+                await db.execute(
+                    "UPDATE prospects SET tags = ?, updated_at = ? WHERE id = ?",
+                    (new_val, now, r["id"]),
+                )
+                updated += 1
+            await db.commit()
+        return updated
 
     async def update_prospect_email(
         self, prospect_id: str, email: str, email_status: str
@@ -3048,18 +3114,46 @@ class StateManager:
             await db.execute(
                 """INSERT INTO campaigns
                    (id, name, channel, instantly_campaign_id, sequence_json,
-                    prospect_ids_json, status, framework, created_at)
-                   VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+                    prospect_ids_json, status, framework, target_tags, created_at)
+                   VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
                 (
                     campaign.id, campaign.name, campaign.channel,
                     campaign.instantly_campaign_id, campaign.sequence_json(),
                     json.dumps(campaign.prospect_ids), campaign.status,
                     getattr(campaign, "framework", "") or "",
+                    getattr(campaign, "target_tags", "") or "",
                     campaign.created_at.isoformat(),
                 ),
             )
             await db.commit()
         return campaign.id
+
+    async def get_campaign(self, campaign_id: str) -> dict | None:
+        async with self._connect() as db:
+            db.row_factory = aiosqlite.Row
+            async with db.execute(
+                "SELECT * FROM campaigns WHERE id = ?", (campaign_id,)
+            ) as cursor:
+                row = await cursor.fetchone()
+                if not row:
+                    return None
+                d = dict(row)
+                d["sequence"] = json.loads(d.get("sequence_json") or "[]")
+                d["prospect_ids"] = json.loads(d.get("prospect_ids_json") or "[]")
+                return d
+
+    async def delete_campaign(self, campaign_id: str) -> bool:
+        """Cancel queued campaign outbox drafts and delete the campaign."""
+        now = _utcnow().isoformat()
+        async with self._connect() as db:
+            await db.execute(
+                "UPDATE outbox SET status = 'cancelled', error = ?, updated_at = ? "
+                "WHERE campaign_id = ? AND status IN ('pending_review', 'approved')",
+                ("campaign_deleted", now, campaign_id),
+            )
+            cursor = await db.execute("DELETE FROM campaigns WHERE id = ?", (campaign_id,))
+            await db.commit()
+            return cursor.rowcount > 0
 
     async def get_campaigns_by_status(self, status: str) -> list[Campaign]:
         async with self._connect() as db:

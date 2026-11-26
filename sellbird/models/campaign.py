@@ -29,6 +29,7 @@ class Campaign(BaseModel):
     # Which copywriting framework this batch was written in ('' = built-in
     # shape). The Thompson sampler (sellbird/bandit.py) learns from outcomes.
     framework: str = ""
+    target_tags: str = ""  # comma-separated target audience tags ('' = all writable)
     created_at: datetime = Field(default_factory=_utcnow)
 
     def sequence_json(self) -> str:

@@ -2234,6 +2234,9 @@ async function loadUsage() {
 // the approval ladder exists to prevent. One email fills the pane; the rest
 // wait in the rail.
 
+let _outboxSelected = new Set();
+let _outboxSenderName = '';
+
 async function loadOutbox() {
   const [data, mode] = await Promise.all([api('/api/outbox'), api('/api/sending-mode')]);
   _sendingMode = mode && !mode.error ? mode : null;
@@ -2252,6 +2255,9 @@ async function loadOutbox() {
   const pending = data.pending || [];
   _desk.items = pending;
   _desk.footer = data.footer || '';
+  _outboxSenderName = data.sender_name || '';
+  const pendingIds = new Set(pending.map(p => p.id));
+  _outboxSelected = new Set([..._outboxSelected].filter(id => pendingIds.has(id)));
   // Keep the desk on the draft being edited even if the list shifted.
   const editingAt = _desk.editing ? pending.findIndex(p => p.id === _desk.editing) : -1;
   if (editingAt >= 0) _desk.i = editingAt;
@@ -2262,17 +2268,7 @@ async function loadOutbox() {
   if (_desk.i >= pending.length) _desk.i = Math.max(0, pending.length - 1);
   navCount('nav-outbox', pending.length);
 
-  actions.innerHTML =
-    (pending.length && !data.paused
-      ? (pending.length > pending.filter(p => heldReason(p)).length
-        ? '<button class="btn btn-primary btn-sm" onclick="outboxApproveAll()" ' +
-          'title="Emails Sellbird held are left for you to approve one by one">Approve all ' +
-          (pending.length - pending.filter(p => heldReason(p)).length) + '</button>' : '') : '') +
-    (data.paused
-      ? '<button class="btn btn-secondary btn-sm" onclick="sendingToggle(\'resume\')">' +
-        'Resume sending</button>'
-      : '<button class="btn btn-secondary btn-sm" onclick="sendingToggle(\'pause\')">' +
-        'Pause all sending</button>');
+  renderOutboxActions(actions, pending, data.paused);
 
   // The kill switch gets a banner only when it's actually on — a permanent
   // bar for a thing that isn't happening is just noise.
@@ -2479,15 +2475,46 @@ function heldReason(item) {
   return why.charAt(0).toUpperCase() + why.slice(1);
 }
 
+function renderOutboxActions(actionsEl, pending, paused) {
+  if (!actionsEl) return;
+  const selCount = _outboxSelected.size;
+  const unheld = pending.filter(p => !heldReason(p)).length;
+  actionsEl.innerHTML =
+    (pending.length
+      ? '<button class="btn btn-ghost btn-sm" id="outbox-select-all-btn" onclick="outboxToggleSelectAll()">' +
+          (selCount === pending.length && pending.length ? 'Clear selected (' + selCount + ')' : 'Select all (' + pending.length + ')') +
+        '</button>'
+      : '') +
+    (selCount && !paused
+      ? '<button class="btn btn-primary btn-sm" id="outbox-bulk-approve-btn" onclick="outboxBulk(\'approve\', this)">Approve selected ' + selCount + '</button>'
+      : '') +
+    (selCount
+      ? '<button class="btn btn-secondary btn-sm" id="outbox-bulk-reject-btn" onclick="outboxBulk(\'reject\', this)">Reject selected ' + selCount + '</button>'
+      : '') +
+    (!selCount && pending.length && !paused && unheld
+      ? '<button class="btn btn-primary btn-sm" onclick="outboxApproveAll()" ' +
+        'title="Emails Sellbird held are left for you to approve one by one">Approve all ' + unheld + '</button>'
+      : '') +
+    (paused
+      ? '<button class="btn btn-secondary btn-sm" onclick="sendingToggle(\'resume\')">Resume sending</button>'
+      : '<button class="btn btn-secondary btn-sm" onclick="sendingToggle(\'pause\')">Pause all sending</button>');
+  actionsEl.dataset.paused = paused ? '1' : '';
+}
+
 function renderDesk(items, i) {
   const cur = items[i];
   const rail = items.map((it, n) => {
     const who = it.context && it.context.contact ? it.context.contact : it.to_email;
     const parts = String(who || '').split(/[\s@.]+/);
+    const checked = _outboxSelected.has(it.id) ? ' checked' : '';
+    const hasTags = Array.isArray(it.unrendered_tags) && it.unrendered_tags.length > 0;
     return '<div class="desk-item ' + (n === i ? 'active' : '') + '" onclick="deskGo(' + n + ')">' +
+      '<input type="checkbox" class="desk-check" aria-label="Select email to ' + escHtml(who) + '"' + checked +
+        ' onclick="event.stopPropagation();toggleOutboxSelect(' + jsq(it.id) + ',this.checked)">' +
       '<span class="avatar">' + initials(parts[0], parts[1]) + '</span>' +
       '<div class="di-text"><div class="to">' + escHtml(who) +
         (heldReason(it) ? ' <span class="tag t-bad" title="Sellbird held this instead of sending it">Held</span>' : '') +
+        (hasTags ? ' <span class="tag t-warn" title="Unrendered merge tag found">Tag!</span>' : '') +
         '</div>' +
       '<div class="sub">' + escHtml(it.subject || '(no subject)') + '</div></div>' +
     '</div>';
@@ -2505,6 +2532,18 @@ function renderDesk(items, i) {
         escHtml(unsaved.body) + '</textarea>'
     : '<div class="subject">' + escHtml(cur.subject || '(no subject)') + '</div>' +
       '<div class="body">' + escHtml(cur.body) + '</div>';
+  const unrendered = Array.isArray(cur.unrendered_tags) ? cur.unrendered_tags : [];
+  const tagWarn = unrendered.length
+    ? '<div class="banner bad desk-held" id="desk-tag-warning">' + icon('alert') +
+        '<div><b>Unrendered merge tag' + (unrendered.length > 1 ? 's' : '') + ' detected</b>' +
+        '<p>Replace ' + unrendered.map(t => '<code>' + escHtml(String(t).startsWith('{{') ? t : '{{' + t + '}}') + '</code>').join(', ') +
+        ' with real details via Edit or Rewrite with AI before approving.</p></div></div>'
+    : '';
+  const hasSignoff = _outboxSenderName && (cur.body || '').toLowerCase().includes(_outboxSenderName.toLowerCase());
+  const signoffPreview = !editing && cur.kind === 'sequence' && _outboxSenderName && !hasSignoff
+    ? '<div class="desk-signoff" title="Added when sent (sender.from_name in sellbird.yaml)">Best regards,<br>' +
+        escHtml(_outboxSenderName) + '</div>'
+    : '';
   // Cold email leaves with the footer underneath; show it as it will go out.
   // Not added again when the body already ends with it, as in the Sender.
   const added = cur.kind === 'sequence' && !(cur.body || '').trimEnd().endsWith(_desk.footer)
@@ -2531,12 +2570,13 @@ function renderDesk(items, i) {
         '<span class="tag">' + (cur.kind === 'reply' ? 'Reply' : 'Email ' + escHtml(String(cur.step))) + '</span>' +
         '<span class="muted">sends ' + formatDate(cur.send_at) + '</span></div>' +
       renderDeskContext(cur.context) +
+      tagWarn +
       (heldReason(cur)
         ? '<div class="banner wait desk-held">' + icon('alert') + '<div><b>Sellbird held this instead of sending it</b>' +
           '<div>' + escHtml(heldReason(cur)) + '. Read it before approving: text from a website or an ' +
           'email can try to steer what Sellbird writes.</div></div></div>'
         : '') +
-      draft + footer +
+      draft + signoffPreview + footer +
       '<div class="desk-actions">' + actions +
         '<span class="muted" style="font-size:12px;margin-left:auto">' +
           (i + 1) + ' of ' + items.length + '</span>' +
@@ -2673,6 +2713,52 @@ async function outboxApproveAll() {
     else showToast(failMsg(data, 'Approve-all failed.'), 'error');
     await loadOutbox();
   } finally {
+    _outboxBusy = false;
+  }
+}
+
+function toggleOutboxSelect(id, checked) {
+  if (checked) _outboxSelected.add(id);
+  else _outboxSelected.delete(id);
+  const actions = document.getElementById('outbox-actions');
+  const paused = !!(actions && actions.dataset.paused);
+  renderOutboxActions(actions, _desk.items, paused);
+}
+
+function outboxToggleSelectAll() {
+  if (_outboxSelected.size === _desk.items.length && _desk.items.length) {
+    _outboxSelected.clear();
+  } else {
+    _outboxSelected = new Set(_desk.items.map(it => it.id));
+  }
+  const actions = document.getElementById('outbox-actions');
+  const paused = !!(actions && actions.dataset.paused);
+  renderOutboxActions(actions, _desk.items, paused);
+  const desk = document.getElementById('outbox-desk');
+  if (desk && _desk.items.length) desk.innerHTML = renderDesk(_desk.items, _desk.i);
+}
+
+async function outboxBulk(action, btn) {
+  if (deskBusy() || _outboxBusy) return;
+  const ids = [..._outboxSelected];
+  if (!ids.length) return;
+  _outboxBusy = true;
+  if (btn) btn.disabled = true;
+  try {
+    const data = await api('/api/outbox/bulk', {
+      method: 'POST',
+      headers: {'Content-Type': 'application/json'},
+      body: JSON.stringify({ids, action}),
+    });
+    if (data && data.success) {
+      _outboxSelected.clear();
+      showToast((action === 'approve' ? 'Approved ' : 'Rejected ') + (data.count || 0) + ' email(s).', 'success');
+      await loadOutbox();
+    } else {
+      showToast(failMsg(data, 'Bulk outbox action failed.'), 'error');
+    }
+  } finally {
+    if (btn) btn.disabled = false;
     _outboxBusy = false;
   }
 }
@@ -2944,7 +3030,9 @@ function fbCampaign(i) {
 
 // Search and status filter live outside the table, so the 15-second refresh
 // re-renders rows without losing what you typed.
-let _contactQuery = '', _contactFilter = 'all';
+let _contactQuery = '', _contactFilter = 'all', _contactTag = '';
+let _contactSelected = new Set();
+let _armedBulkDelete = false;
 const CONTACT_FILTERS = [
   ['all', 'All', null],
   ['todo', 'To write', ['new', 'queued']],
@@ -2957,8 +3045,13 @@ let _suppressions = [];
 let _suppressionsOpen = false;
 let _armedDeleteContactId = null;
 
+function parseTags(str) {
+  return String(str || '').split(',').map(t => t.trim().toLowerCase()).filter(Boolean);
+}
+
 async function loadProspects(ensureId) {
   _armedDeleteContactId = null;
+  _armedBulkDelete = false;
   const el = document.getElementById('prospects-table');
   const qs = ensureId ? '?prospect_id=' + encodeURIComponent(ensureId) : '';
   const [data] = await Promise.all([
@@ -2967,6 +3060,8 @@ async function loadProspects(ensureId) {
   ]);
   if (!data) { el.innerHTML = offlineState(); return; }
   _prospects = data;
+  const validIds = new Set(data.map(p => p.id));
+  _contactSelected = new Set([..._contactSelected].filter(id => validIds.has(id)));
   if (!data.length) {
     el.innerHTML = emptyState(icon('contacts'), 'No contacts yet',
       'Add a contact manually with <b>+ Add Contact</b>, upload a list with <b>+ Import CSV</b>, or run <b>Scout</b> from Today.');
@@ -2975,10 +3070,12 @@ async function loadProspects(ensureId) {
   if (!document.getElementById('contact-rows')) {
     el.innerHTML = '<div class="toolbar">' +
       '<label class="search">' + icon('discover') +
-        '<input class="form-input" id="contact-search" type="search" placeholder="Search name, company, email" ' +
+        '<input class="form-input" id="contact-search" type="search" placeholder="Search name, company, email, tags" ' +
         'aria-label="Search contacts" oninput="_contactQuery=this.value;renderContacts()"></label>' +
+      '<select class="form-input toolbar-select" id="contact-tag-filter" aria-label="Filter by tag" ' +
+        'onchange="_contactTag=this.value;renderContacts()"><option value="">All tags</option></select>' +
       '<div class="segmented" id="contact-filters" role="group" aria-label="Filter by status"></div>' +
-      '</div><div id="contact-rows"></div>';
+      '</div><div id="contacts-bulk-bar"></div><div id="contact-rows"></div>';
     // A rebuild after an offline blip must show the search still applied.
     document.getElementById('contact-search').value = _contactQuery;
   }
@@ -2986,7 +3083,7 @@ async function loadProspects(ensureId) {
 }
 
 function openAddContactModal() {
-  ['ac-first', 'ac-last', 'ac-email', 'ac-title', 'ac-company', 'ac-domain', 'ac-phone'].forEach(id => {
+  ['ac-first', 'ac-last', 'ac-email', 'ac-title', 'ac-company', 'ac-domain', 'ac-phone', 'ac-tags'].forEach(id => {
     const el = document.getElementById(id);
     if (el) el.value = '';
   });
@@ -3019,6 +3116,7 @@ async function submitAddContact(btn) {
     domain: (document.getElementById('ac-domain')?.value || '').trim(),
     email_status: (document.getElementById('ac-status')?.value || 'verified').trim(),
     phone: (document.getElementById('ac-phone')?.value || '').trim(),
+    tags: (document.getElementById('ac-tags')?.value || '').trim(),
   };
   if (btn) btn.disabled = true;
   try {
@@ -3238,40 +3336,133 @@ function contactMatches(p, f) {
 
 function setContactFilter(f) { _contactFilter = f; renderContacts(); }
 
+function renderContactsBulkBar() {
+  const bar = document.getElementById('contacts-bulk-bar');
+  if (!bar) return;
+  if (!_contactSelected.size) { bar.innerHTML = ''; return; }
+  const count = _contactSelected.size;
+  bar.innerHTML = '<div class="contacts-bulk-bar">' +
+    '<span class="bulk-count">' + count + ' selected</span>' +
+    '<input type="text" class="form-input form-input-sm" id="bulk-tag-input" placeholder="tag (e.g. saas, vip)" autocomplete="off">' +
+    '<button class="btn btn-secondary btn-sm" onclick="bulkContactAction(\'tag\', this)">Add Tag</button>' +
+    '<button class="btn btn-ghost btn-sm" onclick="bulkContactAction(\'untag\', this)">Remove Tag</button>' +
+    '<button class="btn btn-secondary btn-sm" onclick="bulkContactAction(\'suppress\', this)">Suppress</button>' +
+    '<button class="btn btn-secondary btn-sm" onclick="bulkContactAction(\'delete\', this)">' +
+      (_armedBulkDelete ? 'Confirm Delete ' + count + '?' : 'Delete') + '</button>' +
+    '<button class="btn btn-ghost btn-sm" onclick="_contactSelected.clear();_armedBulkDelete=false;renderContacts()">Clear</button>' +
+  '</div>';
+}
+
+function toggleContactSelect(id, checked) {
+  _armedBulkDelete = false;
+  if (checked) _contactSelected.add(id);
+  else _contactSelected.delete(id);
+  renderContacts();
+}
+
+function toggleSelectAllVisibleContacts(checked) {
+  _armedBulkDelete = false;
+  const q = _contactQuery.trim().toLowerCase();
+  const tagOk = p => !_contactTag || parseTags(p.tags).includes(_contactTag);
+  const found = p => !q || [p.first_name, p.last_name, p.company, p.email, p.title, p.tags].join(' ').toLowerCase().includes(q);
+  const visible = _prospects.filter(p => contactMatches(p, _contactFilter) && tagOk(p) && found(p));
+  for (const p of visible) {
+    if (checked) _contactSelected.add(p.id);
+    else _contactSelected.delete(p.id);
+  }
+  renderContacts();
+}
+
+async function bulkContactAction(action, btn) {
+  const ids = [..._contactSelected];
+  if (!ids.length) return;
+  if (action === 'delete' && !_armedBulkDelete) {
+    _armedBulkDelete = true;
+    renderContactsBulkBar();
+    return;
+  }
+  const tagVal = (document.getElementById('bulk-tag-input')?.value || '').trim();
+  if ((action === 'tag' || action === 'untag') && !tagVal) {
+    showToast('Enter a tag name first.', 'error');
+    return;
+  }
+  _armedBulkDelete = false;
+  if (btn) btn.disabled = true;
+  try {
+    const payload = {ids, action};
+    if (action === 'tag' || action === 'untag') payload.tags = tagVal;
+    const res = await api('/api/prospects/bulk', {
+      method: 'POST',
+      headers: {'Content-Type': 'application/json'},
+      body: JSON.stringify(payload),
+    });
+    if (res && res.success) {
+      if (action === 'delete') _contactSelected.clear();
+      showToast('Updated ' + (res.count || 0) + ' contact(s) (' + action + ').', 'success');
+      await loadProspects();
+    } else {
+      showToast(failMsg(res, 'Bulk contact action failed.'), 'error');
+    }
+  } finally {
+    if (btn) btn.disabled = false;
+  }
+}
+
 function renderContacts() {
   const rowsEl = document.getElementById('contact-rows');
   const filtersEl = document.getElementById('contact-filters');
+  const tagSel = document.getElementById('contact-tag-filter');
   if (!rowsEl) return;
+  if (tagSel) {
+    const allTags = [...new Set(_prospects.flatMap(p => parseTags(p.tags)))].sort();
+    if (_contactTag && !allTags.includes(_contactTag)) _contactTag = '';
+    tagSel.innerHTML = '<option value="">All tags</option>' +
+      allTags.map(t => '<option value="' + escHtml(t) + '"' + (t === _contactTag ? ' selected' : '') + '>' + escHtml(t) + '</option>').join('');
+  }
   const q = _contactQuery.trim().toLowerCase();
-  const found = p => !q || [p.first_name, p.last_name, p.company, p.email, p.title].join(' ').toLowerCase().includes(q);
+  const tagOk = p => !_contactTag || parseTags(p.tags).includes(_contactTag);
+  const found = p => !q || [p.first_name, p.last_name, p.company, p.email, p.title, p.tags].join(' ').toLowerCase().includes(q);
   filtersEl.innerHTML = CONTACT_FILTERS.map(f =>
     '<button class="' + (f[0] === _contactFilter ? 'on' : '') + '" aria-pressed="' + (f[0] === _contactFilter) + '" onclick="setContactFilter(\'' + f[0] + '\')">' +
-      f[1] + ' <span class="n">' + _prospects.filter(p => contactMatches(p, f[0]) && found(p)).length + '</span></button>'
+      f[1] + ' <span class="n">' + _prospects.filter(p => contactMatches(p, f[0]) && tagOk(p) && found(p)).length + '</span></button>'
   ).join('');
 
-  const rows = _prospects.map((p, i) => [p, i]).filter(([p]) => contactMatches(p, _contactFilter) && found(p));
+  renderContactsBulkBar();
+
+  const rows = _prospects.map((p, i) => [p, i]).filter(([p]) => contactMatches(p, _contactFilter) && tagOk(p) && found(p));
   if (!rows.length) {
     rowsEl.innerHTML = '<div class="table-card">' + emptyState(icon('discover'), 'No matches',
       'Nothing matches that search and filter.') + '</div>';
     return;
   }
-  let html = '<div class="table-card"><table class="nowrap"><thead><tr><th>Name</th><th>Company</th><th>Email</th>' +
-    '<th>Score</th><th>Status</th><th>Source</th><th>Added</th><th></th></tr></thead><tbody>';
+  const allVisibleSelected = rows.length > 0 && rows.every(([p]) => _contactSelected.has(p.id));
+  let html = '<div class="table-card"><table class="contacts-table-fit"><thead><tr>' +
+    '<th class="col-check"><input type="checkbox" aria-label="Select all visible contacts"' +
+      (allVisibleSelected ? ' checked' : '') + ' onchange="toggleSelectAllVisibleContacts(this.checked)"></th>' +
+    '<th class="col-name">Name</th><th class="col-company">Company &amp; Tags</th><th class="col-email">Email</th>' +
+    '<th>Score</th><th>Status</th><th>Source</th><th></th></tr></thead><tbody>';
   for (const [p, i] of rows) {
-    html += '<tr><td><div class="cell-row"><span class="avatar">' + initials(p.first_name, p.last_name) + '</span>' +
+    const tags = parseTags(p.tags);
+    const tagPills = tags.length
+      ? '<div class="tag-pills">' + tags.map(t => '<span class="tag-pill">' + escHtml(t) + '</span>').join('') + '</div>'
+      : '';
+    html += '<tr>' +
+      '<td class="col-check"><input type="checkbox" aria-label="Select ' + escHtml(p.email || 'contact') + '"' +
+        (_contactSelected.has(p.id) ? ' checked' : '') + ' onchange="toggleContactSelect(' + jsq(p.id) + ',this.checked)"></td>' +
+      '<td class="col-name"><div class="cell-row"><span class="avatar">' + initials(p.first_name, p.last_name) + '</span>' +
         '<div class="cell-stack"><span class="cell-main">' + escHtml(p.first_name) + ' ' + escHtml(p.last_name) + '</span>' +
         '<span class="cell-sub">' + escHtml(p.title) + '</span></div></div></td>' +
-      '<td>' + escHtml(p.company) + '</td>' +
-      '<td><div class="cell-stack"><span>' + escHtml(p.email) + '</span>' +
+      '<td class="col-company"><span>' + escHtml(p.company) + '</span>' + tagPills + '</td>' +
+      '<td class="col-email"><div class="cell-stack"><span>' + escHtml(p.email) + '</span>' +
         '<span class="cell-sub">' + [emailTag(p).trim(), p.phone ? escHtml(p.phone) +
           (p.phone_verified ? ' <span class="verified" title="Phone verified">&#10003;</span>' : '') : '']
           .filter(Boolean).join(' · ') + '</span>' +
         '</div></td>' +
       '<td>' + (p.score || p.score === 0 ? meterHtml(p.score) : '') + '</td>' +
       '<td>' + badge(p.status) + '</td>' +
-      '<td class="muted">' + sourceLabel(p.source) + '</td>' +
-      '<td class="muted" style="white-space:nowrap">' + relTime(p.created_at) + '</td>' +
-      '<td><div class="cell-row">' + (p.status === 'opted_out' || p.opt_out_undone || _optOut.id === p.id
+      '<td class="muted"><div class="cell-stack"><span>' + sourceLabel(p.source) + '</span>' +
+        '<span class="cell-sub">' + relTime(p.created_at) + '</span></div></td>' +
+      '<td class="actions-td"><div class="cell-row">' + (p.status === 'opted_out' || p.opt_out_undone || _optOut.id === p.id
         ? '<button class="btn btn-ghost btn-sm" onclick="toggleOptOut(' + i + ')" ' +
           'aria-expanded="' + (_optOut.id === p.id) + '" title="What made Sellbird stop emailing them">' +
           (p.status === 'opted_out' ? 'Why?' : 'Opt-out history') + '</button>' : '') +
@@ -3660,6 +3851,261 @@ async function triggerWriterRun(btn) {
   }
 }
 
+let _armedDeleteCampaignId = null;
+let _campaignBuilder = { id: null, steps: [] };
+
+function openCampaignBuilderModal(campaignId) {
+  const existing = campaignId ? (_campaigns || []).find(c => c.id === campaignId) : null;
+  _campaignBuilder = {
+    id: existing ? existing.id : null,
+    steps: existing && Array.isArray(existing.sequence) && existing.sequence.length
+      ? existing.sequence.map((s, idx) => ({
+          step: s.step || idx + 1,
+          delay_days: Number(s.delay_days ?? (idx === 0 ? 0 : 3)),
+          subject: s.subject || '',
+          body: s.body || '',
+        }))
+      : [
+          { step: 1, delay_days: 0, subject: 'Quick question for {{company}}', body: 'Hi {{first_name}},\n\nNoticed {{company}}...\n' },
+          { step: 2, delay_days: 3, subject: 'Re: Quick question for {{company}}', body: 'Hi {{first_name}},\n\nWanted to bump this in case it got buried.\n' },
+        ],
+  };
+  const title = document.getElementById('campaign-builder-title');
+  if (title) title.textContent = existing ? 'Edit Campaign Sequence' : 'New Campaign Sequence';
+  const nameEl = document.getElementById('cb-name');
+  const tagsEl = document.getElementById('cb-tags');
+  const fwEl = document.getElementById('cb-framework');
+  const goalEl = document.getElementById('cb-goal');
+  if (nameEl) nameEl.value = existing ? (existing.name || '') : '';
+  if (tagsEl) tagsEl.value = existing ? (existing.target_tags || '') : '';
+  if (fwEl) fwEl.value = existing ? (existing.framework || '') : '';
+  if (goalEl) goalEl.value = '';
+  renderBuilderSteps();
+  const d = document.getElementById('campaign-builder-dialog');
+  if (d && d.showModal) d.showModal();
+}
+
+function closeCampaignBuilderModal() {
+  const d = document.getElementById('campaign-builder-dialog');
+  if (d && d.close) d.close();
+}
+
+(function wireCampaignBuilderDialog() {
+  const d = document.getElementById('campaign-builder-dialog');
+  if (!d) return;
+  d.addEventListener('click', e => { if (e.target === d) closeCampaignBuilderModal(); });
+})();
+
+function renderBuilderSteps() {
+  const wrap = document.getElementById('cb-steps');
+  if (!wrap) return;
+  wrap.innerHTML = _campaignBuilder.steps.map((s, idx) =>
+    '<div class="cb-step-card">' +
+      '<div class="cb-step-bar">' +
+        '<span class="cb-step-label">Step ' + (idx + 1) + (idx === 0 ? ' (Initial)' : ' (Follow-up)') + '</span>' +
+        '<div class="inline-action-row">' +
+          '<label class="hint muted" style="font-size:12px">Delay (days): ' +
+            '<input type="number" min="0" class="form-input cb-delay-input" value="' + escHtml(String(s.delay_days ?? 0)) + '" ' +
+              'onchange="updateBuilderStepField(' + idx + ',\'delay_days\',Number(this.value||0))"></label>' +
+          (_campaignBuilder.steps.length > 1
+            ? '<button type="button" class="btn btn-ghost btn-sm" onclick="removeBuilderStep(' + idx + ')">Remove</button>'
+            : '') +
+        '</div>' +
+      '</div>' +
+      '<div class="form-group" style="margin-bottom:8px">' +
+        '<input type="text" class="form-input" placeholder="Email subject line (supports {{company}}, {{first_name}})" ' +
+          'value="' + escHtml(s.subject || '') + '" oninput="updateBuilderStepField(' + idx + ',\'subject\',this.value)">' +
+      '</div>' +
+      '<div class="form-group" style="margin-bottom:0">' +
+        '<textarea class="form-input" rows="4" placeholder="Email body..." ' +
+          'oninput="updateBuilderStepField(' + idx + ',\'body\',this.value)">' + escHtml(s.body || '') + '</textarea>' +
+      '</div>' +
+    '</div>'
+  ).join('');
+}
+
+function updateBuilderStepField(idx, field, val) {
+  if (!_campaignBuilder.steps[idx]) return;
+  _campaignBuilder.steps[idx][field] = val;
+}
+
+function addBuilderStep() {
+  const n = _campaignBuilder.steps.length + 1;
+  const lastSubj = (_campaignBuilder.steps[0] && _campaignBuilder.steps[0].subject) || '';
+  _campaignBuilder.steps.push({
+    step: n,
+    delay_days: 3,
+    subject: lastSubj ? 'Re: ' + lastSubj.replace(/^Re:\s*/i, '') : '',
+    body: '',
+  });
+  renderBuilderSteps();
+}
+
+function removeBuilderStep(idx) {
+  if (_campaignBuilder.steps.length <= 1) return;
+  _campaignBuilder.steps.splice(idx, 1);
+  _campaignBuilder.steps.forEach((s, i) => { s.step = i + 1; });
+  renderBuilderSteps();
+}
+
+async function aiDraftCampaignSteps(btn) {
+  const name = (document.getElementById('cb-name')?.value || '').trim();
+  const target_tags = (document.getElementById('cb-tags')?.value || '').trim();
+  const goal = (document.getElementById('cb-goal')?.value || '').trim();
+  const orig = btn ? btn.textContent : '';
+  if (btn) { btn.disabled = true; btn.textContent = 'Drafting…'; }
+  try {
+    const res = await api('/api/campaigns/draft-steps', {
+      method: 'POST',
+      headers: {'Content-Type': 'application/json'},
+      body: JSON.stringify({name, target_tags, goal}),
+    });
+    if (res && res.success && Array.isArray(res.sequence) && res.sequence.length) {
+      _campaignBuilder.steps = res.sequence.map((s, idx) => ({
+        step: idx + 1,
+        delay_days: Number(s.delay_days ?? (idx === 0 ? 0 : 3)),
+        subject: s.subject || '',
+        body: s.body || '',
+      }));
+      renderBuilderSteps();
+      showToast('AI drafted 3 sequence steps.', 'success');
+    } else {
+      showToast(failMsg(res, 'Could not draft campaign steps.'), 'error');
+    }
+  } finally {
+    if (btn) { btn.disabled = false; btn.textContent = orig || 'AI Draft 3 Steps'; }
+  }
+}
+
+async function submitCampaignBuilder(alsoLaunch, btn) {
+  const name = (document.getElementById('cb-name')?.value || '').trim();
+  if (!name) { showToast('Campaign name is required.', 'error'); return; }
+  const target_tags = (document.getElementById('cb-tags')?.value || '').trim();
+  const framework = (document.getElementById('cb-framework')?.value || '').trim();
+  const cleanSteps = _campaignBuilder.steps
+    .map((s, idx) => ({
+      step: idx + 1,
+      delay_days: Math.max(0, Number(s.delay_days || 0)),
+      subject: (s.subject || '').trim(),
+      body: (s.body || '').trim(),
+    }))
+    .filter(s => s.subject && s.body);
+  if (!cleanSteps.length) {
+    showToast('Add at least one step with both subject and body.', 'error');
+    return;
+  }
+  if (btn) btn.disabled = true;
+  try {
+    const isEdit = !!_campaignBuilder.id;
+    const url = isEdit ? '/api/campaigns/' + encodeURIComponent(_campaignBuilder.id) : '/api/campaigns';
+    const res = await api(url, {
+      method: isEdit ? 'PATCH' : 'POST',
+      headers: {'Content-Type': 'application/json'},
+      body: JSON.stringify({name, target_tags, framework, sequence: cleanSteps}),
+    });
+    if (!res || !res.success) {
+      showToast(failMsg(res, 'Could not save campaign.'), 'error');
+      return;
+    }
+    const cid = res.id || _campaignBuilder.id;
+    if (alsoLaunch && cid) {
+      const lres = await api('/api/campaigns/' + encodeURIComponent(cid) + '/launch', {
+        method: 'POST',
+        headers: {'Content-Type': 'application/json'},
+        body: JSON.stringify({target_tags}),
+      });
+      if (lres && lres.success) {
+        showToast('Saved and staged ' + (lres.queued_emails || 0) + ' draft(s) for ' +
+          (lres.queued_prospects || 0) + ' contact(s) in Outbox.', 'success');
+      } else {
+        showToast(failMsg(lres, 'Saved, but launch did not queue drafts.'), 'error');
+      }
+    } else {
+      showToast(isEdit ? 'Campaign updated.' : 'Campaign saved.', 'success');
+    }
+    closeCampaignBuilderModal();
+    await Promise.all([loadCampaigns(), loadOutbox()]);
+  } finally {
+    if (btn) btn.disabled = false;
+  }
+}
+
+async function launchCampaignById(id, btn) {
+  if (btn) btn.disabled = true;
+  try {
+    const res = await api('/api/campaigns/' + encodeURIComponent(id) + '/launch', {
+      method: 'POST',
+      headers: {'Content-Type': 'application/json'},
+      body: JSON.stringify({}),
+    });
+    if (res && res.success) {
+      showToast('Launched to Outbox: ' + (res.queued_emails || 0) + ' draft(s) staged for ' +
+        (res.queued_prospects || 0) + ' contact(s)' +
+        (res.skipped ? ' (' + res.skipped + ' skipped).' : '.'), 'success');
+      await Promise.all([loadCampaigns(), loadOutbox()]);
+    } else {
+      showToast(failMsg(res, 'Could not launch campaign.'), 'error');
+    }
+  } finally {
+    if (btn) btn.disabled = false;
+  }
+}
+
+async function toggleCampaignStatus(id, nextStatus, btn) {
+  if (btn) btn.disabled = true;
+  try {
+    const res = await api('/api/campaigns/' + encodeURIComponent(id) + '/status', {
+      method: 'POST',
+      headers: {'Content-Type': 'application/json'},
+      body: JSON.stringify({status: nextStatus}),
+    });
+    if (res && res.success) {
+      showToast('Campaign marked ' + nextStatus + '.', 'success');
+      await loadCampaigns();
+    } else {
+      showToast(failMsg(res, 'Could not update campaign status.'), 'error');
+    }
+  } finally {
+    if (btn) btn.disabled = false;
+  }
+}
+
+async function cloneCampaignById(id, btn) {
+  if (btn) btn.disabled = true;
+  try {
+    const res = await api('/api/campaigns/' + encodeURIComponent(id) + '/clone', {method: 'POST'});
+    if (res && res.success) {
+      showToast('Campaign cloned.', 'success');
+      await loadCampaigns();
+    } else {
+      showToast(failMsg(res, 'Could not clone campaign.'), 'error');
+    }
+  } finally {
+    if (btn) btn.disabled = false;
+  }
+}
+
+async function deleteCampaignById(id, btn) {
+  if (_armedDeleteCampaignId !== id) {
+    _armedDeleteCampaignId = id;
+    await loadCampaigns();
+    return;
+  }
+  _armedDeleteCampaignId = null;
+  if (btn) btn.disabled = true;
+  try {
+    const res = await api('/api/campaigns/' + encodeURIComponent(id), {method: 'DELETE'});
+    if (res && res.success) {
+      showToast('Campaign deleted.', 'success');
+      await loadCampaigns();
+    } else {
+      showToast(failMsg(res, 'Could not delete campaign.'), 'error');
+    }
+  } finally {
+    if (btn) btn.disabled = false;
+  }
+}
+
 async function loadCampaigns() {
   const el = document.getElementById('campaigns-list');
   const [fwData, statsData] = await Promise.all([api('/api/frameworks'), api('/api/stats')]);
@@ -3670,7 +4116,7 @@ async function loadCampaigns() {
   _campaigns = data;
   if (!data.length) {
     el.innerHTML = emptyState(icon('campaigns'), 'No campaigns yet',
-      'The Writer agent hasn\'t drafted any sequences. It kicks in automatically once Sellbird has scored prospects to write for.');
+      'Create a sequence with <b>+ New Campaign</b> or click <b>Write Emails Now</b> to let Sellbird draft from your scored prospects.');
     return;
   }
   let html = '';
@@ -3716,12 +4162,27 @@ async function loadCampaigns() {
         '</div></div>';
     });
     const pc = (c.prospect_ids || []).length;
+    const oc = c.outbox_counts || {};
+    const tagPills = parseTags(c.target_tags).map(t => '<span class="tag-pill">' + escHtml(t) + '</span>').join('');
+    const nextStatus = c.status === 'active' ? 'paused' : 'active';
+    const statusLabel = c.status === 'active' ? 'Pause' : 'Activate';
+    const delLabel = _armedDeleteCampaignId === c.id ? 'Confirm delete?' : 'Delete';
     html += '<div class="campaign-card"><div class="campaign-top">' +
       '<div class="campaign-title"><h3>' + escHtml(c.name || 'Untitled Campaign') + '</h3>' +
         (c.framework ? '<span class="mini" title="Copywriting framework this campaign tests">' + escHtml(c.framework) + '</span>' : '') +
-        '<button class="btn btn-ghost btn-sm" onclick="fbCampaign(' + i + ')">Feedback</button></div>' +
+        '<div class="campaign-actions">' +
+          '<button class="btn btn-primary btn-sm" onclick="launchCampaignById(' + jsq(c.id) + ', this)">Launch to Outbox</button>' +
+          '<button class="btn btn-secondary btn-sm" onclick="toggleCampaignStatus(' + jsq(c.id) + ',' + jsq(nextStatus) + ', this)">' + statusLabel + '</button>' +
+          '<button class="btn btn-ghost btn-sm" onclick="openCampaignBuilderModal(' + jsq(c.id) + ')">Edit</button>' +
+          '<button class="btn btn-ghost btn-sm" onclick="cloneCampaignById(' + jsq(c.id) + ', this)">Clone</button>' +
+          '<button class="btn btn-ghost btn-sm" onclick="fbCampaign(' + i + ')">Feedback</button>' +
+          '<button class="btn btn-ghost btn-sm" onclick="deleteCampaignById(' + jsq(c.id) + ', this)">' + delLabel + '</button>' +
+        '</div></div>' +
       '<div class="meta">' + badge(c.status) + '<span>' + pc + ' prospect' + (pc !== 1 ? 's' : '') + '</span>' +
-        '<span>' + (c.sequence || []).length + ' emails</span><span>Created ' + relTime(c.created_at) + '</span></div>' +
+        '<span>' + (c.sequence || []).length + ' emails</span>' +
+        '<span>Outbox: ' + (oc.pending_review || 0) + ' pending · ' + ((oc.approved || 0) + (oc.sending || 0)) + ' scheduled · ' + (oc.sent || 0) + ' sent</span>' +
+        '<span>Created ' + relTime(c.created_at) + '</span>' +
+        (tagPills ? '<span class="tag-pills">Targets: ' + tagPills + '</span>' : '') + '</div>' +
       campaignProgress(c) + '</div>' +
       '<div class="sequence">' +
       (stepsHtml || '<p class="muted" style="font-size:13px;padding-top:16px">No email steps in this campaign.</p>') + '</div></div>';
@@ -3823,10 +4284,24 @@ let _convoSlots = {};
 // Sellbird answers new replies only on open conversations: an escalated one
 // waits for you to reply yourself, then close it or hand it back.
 function convoActions(c) {
-  const canBook = (c.status === 'open' || c.status === 'awaiting_reply' || c.status === 'needs_human') &&
-    c.prospect_status !== 'opted_out';
+  const canReply = c.prospect_status !== 'opted_out';
+  const canBook = (c.status === 'open' || c.status === 'awaiting_reply' || c.status === 'needs_human') && canReply;
+  const replyBtn = canReply
+    ? '<button class="btn btn-primary btn-sm" onclick="toggleConvoReply(' + jsq(c.id) + ')">Reply</button>'
+    : '';
   const bookBtn = canBook
     ? '<button class="btn btn-secondary btn-sm" onclick="toggleConvoBooking(' + jsq(c.id) + ')">Book Meeting</button>'
+    : '';
+  const replyPanel = canReply
+    ? '<div id="convo-reply-' + escHtml(c.id) + '" class="convo-reply-panel" style="display:none">' +
+        '<textarea id="convo-reply-text-' + escHtml(c.id) + '" class="form-input" rows="3" ' +
+          'placeholder="Write your reply to stage in Outbox, or type guidance and click AI Draft Reply..."></textarea>' +
+        '<div class="convo-reply-actions">' +
+          '<button class="btn btn-primary btn-sm" onclick="submitConvoReply(' + jsq(c.id) + ',\'queue\',this)">Stage Reply to Outbox</button>' +
+          '<button class="btn btn-secondary btn-sm" onclick="submitConvoReply(' + jsq(c.id) + ',\'ai_draft\',this)">AI Draft Reply</button>' +
+          '<button class="btn btn-ghost btn-sm" onclick="toggleConvoReply(' + jsq(c.id) + ')">Cancel</button>' +
+        '</div>' +
+      '</div>'
     : '';
   const bookPanel = canBook
     ? '<div id="convo-book-' + escHtml(c.id) + '" class="convo-book-panel" style="display:none"></div>'
@@ -3842,18 +4317,18 @@ function convoActions(c) {
   }
   if (c.status === 'needs_human') {
     return '<div class="convo-actions"><span class="muted">' + icon('alert') +
-      'Sellbird handed this to you. Reply from your inbox, then:</span>' +
-      bookBtn +
+      'Sellbird handed this to you. Stage a reply below or handle directly:</span>' +
+      replyBtn + bookBtn +
       '<button class="btn btn-secondary btn-sm" onclick="setConvoStatus(' + jsq(c.id) + ',\'open\')">Hand back to Sellbird</button>' +
       '<button class="btn btn-secondary btn-sm" onclick="setConvoStatus(' + jsq(c.id) + ',\'closed\')">Close</button></div>' +
-      bookPanel;
+      replyPanel + bookPanel;
   }
   if (c.status === 'open') {
-    return '<div class="convo-actions">' + bookBtn + '<button class="btn btn-ghost btn-sm" onclick="setConvoStatus(' +
-      jsq(c.id) + ',\'closed\')">Close conversation</button></div>' + bookPanel;
+    return '<div class="convo-actions">' + replyBtn + bookBtn + '<button class="btn btn-ghost btn-sm" onclick="setConvoStatus(' +
+      jsq(c.id) + ',\'closed\')">Close conversation</button></div>' + replyPanel + bookPanel;
   }
   if (c.status === 'awaiting_reply' && canBook) {
-    return '<div class="convo-actions">' + bookBtn + '</div>' + bookPanel;
+    return '<div class="convo-actions">' + replyBtn + bookBtn + '</div>' + replyPanel + bookPanel;
   }
   if (c.status === 'closed' && c.prospect_status === 'opted_out') {
     // Reopening wouldn't help: Sellbird never answers someone who opted out.
@@ -3862,10 +4337,52 @@ function convoActions(c) {
       ')">Why opted out?</button></div>';
   }
   if (c.status === 'closed') {
-    return '<div class="convo-actions"><button class="btn btn-ghost btn-sm" onclick="setConvoStatus(' +
-      jsq(c.id) + ',\'open\')">Reopen</button></div>';
+    return '<div class="convo-actions">' + replyBtn + '<button class="btn btn-ghost btn-sm" onclick="setConvoStatus(' +
+      jsq(c.id) + ',\'open\')">Reopen</button></div>' + replyPanel;
   }
-  return '';
+  return replyBtn ? '<div class="convo-actions">' + replyBtn + '</div>' + replyPanel : '';
+}
+
+function toggleConvoReply(convoId) {
+  const panel = document.getElementById('convo-reply-' + convoId);
+  if (!panel) return;
+  const open = panel.style.display !== 'none';
+  panel.style.display = open ? 'none' : 'block';
+  if (!open) {
+    const ta = document.getElementById('convo-reply-text-' + convoId);
+    if (ta) ta.focus();
+  }
+}
+
+async function submitConvoReply(convoId, mode, btn) {
+  const ta = document.getElementById('convo-reply-text-' + convoId);
+  const text = (ta?.value || '').trim();
+  if (mode === 'queue' && !text) {
+    showToast('Write a reply message first (or click AI Draft Reply).', 'error');
+    return;
+  }
+  if (btn) btn.disabled = true;
+  try {
+    const payload = mode === 'ai_draft'
+      ? {mode: 'ai_draft', instruction: text}
+      : {mode: 'queue', body: text};
+    const res = await api('/api/conversations/' + encodeURIComponent(convoId) + '/reply', {
+      method: 'POST',
+      headers: {'Content-Type': 'application/json'},
+      body: JSON.stringify(payload),
+    });
+    if (res && res.success) {
+      if (ta) ta.value = '';
+      showToast(mode === 'ai_draft'
+        ? 'AI reply drafted and staged in Outbox for review.'
+        : 'Reply staged in Outbox for review.', 'success');
+      await Promise.all([loadConversations(), loadOutbox()]);
+    } else {
+      showToast(failMsg(res, 'Could not stage reply.'), 'error');
+    }
+  } finally {
+    if (btn) btn.disabled = false;
+  }
 }
 
 async function toggleConvoBooking(convoId) {

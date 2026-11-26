@@ -2042,6 +2042,11 @@ async def create_prospect(request: Request):
     email_status = str(body.get("email_status") or "verified").strip().lower()
     if email_status not in ("verified", "risky", "guess", "invalid"):
         email_status = "verified"
+    raw_tags = body.get("tags")
+    if isinstance(raw_tags, list):
+        tags = ", ".join(sorted({str(t).strip().lower() for t in raw_tags if str(t).strip()}))
+    else:
+        tags = ", ".join(sorted({t.strip().lower() for t in str(raw_tags or "").split(",") if t.strip()}))
 
     raw_dom = str(body.get("domain") or body.get("website") or "").strip()
     domain = ""
@@ -2101,12 +2106,13 @@ async def create_prospect(request: Request):
         source="manual",
         score=70 if (company_name or title) else 60,
         status="new",
+        tags=tags,
     )
     prospect_id = await state.add_prospect(prospect)
     await state.log_action(
         "prospect_created",
         "dashboard",
-        {"prospect_id": prospect_id, "email": email, "company": prospect.company},
+        {"prospect_id": prospect_id, "email": email, "company": prospect.company, "tags": tags},
     )
     return {
         "success": True,
@@ -2121,8 +2127,58 @@ async def create_prospect(request: Request):
             "email_status": email_status,
             "status": "new",
             "source": "manual",
+            "tags": tags,
         },
     }
+
+
+@app.post("/api/prospects/bulk")
+async def bulk_prospects_action(request: Request):
+    """Apply tag, untag, suppress, or delete across selected prospect IDs."""
+    try:
+        body = await request.json()
+    except Exception:
+        return JSONResponse({"success": False, "message": "Invalid JSON body."}, status_code=400)
+    if not isinstance(body, dict):
+        return JSONResponse({"success": False, "message": "Request body must be an object."}, status_code=400)
+
+    action = str(body.get("action") or "").strip().lower()
+    ids = [str(x).strip() for x in (body.get("ids") or []) if str(x).strip()]
+    if action not in ("tag", "untag", "suppress", "delete"):
+        return JSONResponse({"success": False, "message": "Unsupported bulk action."}, status_code=400)
+    if not ids:
+        return JSONResponse({"success": False, "message": "Select at least one contact first."}, status_code=400)
+
+    state = _state()
+    await state.init_db()
+    count = 0
+
+    if action in ("tag", "untag"):
+        raw_tags = body.get("tags")
+        tag_list = (
+            [str(t).strip().lower() for t in raw_tags if str(t).strip()]
+            if isinstance(raw_tags, list)
+            else [t.strip().lower() for t in str(raw_tags or "").split(",") if t.strip()]
+        )
+        if not tag_list:
+            return JSONResponse({"success": False, "message": "Enter at least one segment tag."}, status_code=400)
+        count = await state.update_prospect_tags(
+            ids,
+            add_tags=tag_list if action == "tag" else (),
+            remove_tags=tag_list if action == "untag" else (),
+        )
+    elif action == "suppress":
+        for pid in ids:
+            p = await state.get_prospect(pid)
+            if p and getattr(p, "email", ""):
+                await state.add_suppression("address", p.email, reason="manual", source="bulk_contacts")
+                await state.suppress_matching_prospects("address", p.email, reason="manual")
+                count += 1
+    elif action == "delete":
+        count = await state.delete_prospects(ids)
+
+    await state.log_action("prospects_bulk", "dashboard", {"action": action, "count": count})
+    return {"success": True, "action": action, "count": count}
 
 
 @app.delete("/api/prospects/{prospect_id}")
@@ -2527,12 +2583,25 @@ async def get_outbox_api():
         # A send cut off mid-way shows up under Didn't send even when Sellbird
         # isn't running.
         await state.fail_stale_sending_outbox()
+        from sellbird.gate import MERGE_TAG_RE
+
+        pending = await _with_context(await state.get_outbox(status="pending_review", limit=100))
+        for item in pending:
+            blob = f"{item.get('subject') or ''}\n{item.get('body') or ''}"
+            item["unrendered_tags"] = MERGE_TAG_RE.findall(blob)
+
+        try:
+            cfg = _load_active_sellbird_config()
+            sender_name = str(getattr(getattr(cfg, "persona", None), "name", "") or "").strip()
+        except Exception:
+            sender_name = ""
+
         return {
             **_compliance_view(),
             "mailbox_ready": _sellbird_can_send(),
+            "sender_name": sender_name,
             "paused": await state.get_setting("sending_paused"),
-            "pending": await _with_context(
-                await state.get_outbox(status="pending_review", limit=100)),
+            "pending": pending,
             # Mail going out right now leads the list.
             "approved": (await state.get_outbox(status="sending", limit=10)
                          + await state.get_outbox(status="approved", limit=50)),
@@ -2850,6 +2919,35 @@ async def outbox_approve_all():
         return JSONResponse({"success": False, "message": str(e)}, status_code=500)
 
 
+@app.post("/api/outbox/bulk")
+async def outbox_bulk_action(request: Request):
+    """Bulk approve or reject selected pending outbox drafts."""
+    try:
+        body = await request.json()
+    except Exception:
+        return JSONResponse({"success": False, "message": "Invalid JSON body."}, status_code=400)
+    if not isinstance(body, dict):
+        return JSONResponse({"success": False, "message": "Request body must be an object."}, status_code=400)
+    action = str(body.get("action") or "").strip().lower()
+    ids = [str(x).strip() for x in (body.get("ids") or []) if str(x).strip()]
+    if action not in ("approve", "reject"):
+        return JSONResponse({"success": False, "message": "Action must be approve or reject."}, status_code=400)
+    if not ids:
+        return JSONResponse({"success": False, "message": "Select at least one email first."}, status_code=400)
+
+    state = _state()
+    await state.init_db()
+    count = 0
+    for item_id in ids:
+        if action == "approve":
+            count += int(await state.approve_outbox(item_id) or 0)
+        else:
+            if await state.reject_outbox_item(item_id):
+                count += 1
+    await state.log_action("outbox_bulk", "dashboard", {"action": action, "count": count})
+    return {"success": True, "action": action, "count": count}
+
+
 @app.post("/api/outbox/{item_id}/approve")
 async def outbox_approve(item_id: str):
     try:
@@ -2862,11 +2960,15 @@ async def outbox_approve(item_id: str):
 
 
 async def _validate_outbox_draft(state, item: dict, subject: str, text: str) -> str | None:
-    """Validate an outbox draft against Sellbird style & pre-send compliance rules."""
+    """Validate an outbox draft against merge-tag leaks, style, & pre-send compliance rules."""
     if not subject.strip() or not text.strip():
         return "Subject and body are both required."
-    from sellbird.gate import pre_send_check
+    from sellbird.gate import MERGE_TAG_RE, pre_send_check
     from sellbird.email_style import style_problems
+
+    leaks = MERGE_TAG_RE.findall(f"{subject}\n{text}")
+    if leaks:
+        return f"Draft still contains unrendered template placeholder(s): {', '.join(dict.fromkeys(leaks))}"
 
     checked = text
     footer = _compliance_view()["footer"]
@@ -3359,7 +3461,340 @@ async def get_campaigns():
                 r["can_mark_sent"] and not sellbird_sends
                 and (r.get("email_status") or "guess") in HAND_SENDABLE_EMAIL
             )
+        ob_rows = await query_db(
+            "SELECT status, COUNT(*) AS n FROM outbox WHERE campaign_id = ? AND kind = 'sequence' GROUP BY status",
+            (row["id"],),
+        )
+        row["outbox_counts"] = {r["status"]: int(r["n"] or 0) for r in ob_rows}
     return rows
+
+
+def _normalize_sequence_steps(raw_steps) -> list:
+    from sellbird.models.campaign import EmailStep
+    if not isinstance(raw_steps, list) or not raw_steps:
+        raise ValueError("At least one email step is required.")
+    out = []
+    for idx, s in enumerate(raw_steps[:10], start=1):
+        if not isinstance(s, dict):
+            continue
+        subj = str(s.get("subject") or "").strip()
+        body = str(s.get("body") or "").strip()
+        if not subj or not body:
+            raise ValueError(f"Step {idx} requires both a subject and body.")
+        try:
+            delay = max(0, min(60, int(s.get("delay_days") or (0 if idx == 1 else 3))))
+        except (TypeError, ValueError):
+            delay = 0 if idx == 1 else 3
+        out.append(EmailStep(step=idx, subject=subj, body=body, delay_days=0 if idx == 1 else delay))
+    if not out:
+        raise ValueError("At least one valid email step is required.")
+    return out
+
+
+@app.post("/api/campaigns/draft-steps")
+async def draft_campaign_steps(request: Request):
+    """Use the active AI Brain to draft a 3-step outreach sequence template for the Campaign Builder."""
+    try:
+        body = await request.json()
+    except Exception:
+        body = {}
+    body = body if isinstance(body, dict) else {}
+    name = str(body.get("name") or "").strip()[:120]
+    target_tags = str(body.get("target_tags") or "").strip()[:200]
+    goal = str(body.get("goal") or "").strip()[:300]
+
+    runtime, err = await _prepare_agentic_runtime()
+    if err is not None:
+        return err
+    brain, _, config, _env = runtime
+    try:
+        from sellbird.untrusted import UNTRUSTED_RULE, fence
+        p = getattr(config, "product", None)
+        offer_entry = str(getattr(getattr(p, "offer", None), "entry", "") or "").strip()
+        skills = brain.load_skills_for_agent("writer")
+        prompt = (
+            f"Write a crisp 3-step B2B cold email sequence template for Sellbird.\n"
+            f"{UNTRUSTED_RULE}\n"
+            f"Campaign Name: {fence(name or 'Outbound Sequence', 'campaign')}\n"
+            f"Target Audience/Tags: {fence(target_tags or ', '.join(getattr(getattr(config, 'icp', None), 'industries', []) or []), 'target')}\n"
+            f"Product: {getattr(p, 'name', '')} — {getattr(p, 'description', '')}\n"
+            f"Offer CTA: {offer_entry or 'Ask an easy question to start a conversation'}\n"
+            + (f"Operator goal/note: {fence(goal, 'goal')}\n" if goal else "")
+            + "\nRules:\n"
+            "- Step 1 (delay_days: 0): concise 35-55 words, lowercase 2-5 word subject, clear observation + offer, may use {{first_name}} and {{company}}.\n"
+            "- Step 2 (delay_days: 3): proof point / value follow-up under 45 words.\n"
+            "- Step 3 (delay_days: 4): polite breakup under 30 words.\n"
+            "- No sign-off names (Sellbird appends sender name) and no opt-out footer.\n"
+            + (f"\nWriter context:\n{skills[:1800]}\n" if skills else "")
+            + '\nReturn strictly a JSON array: [{"step": 1, "delay_days": 0, "subject": "...", "body": "..."}, ...]'
+        )
+        raw = await brain.think_json(prompt, session_id="campaign-builder", agent="writer", task="draft_campaign_steps")
+        if isinstance(raw, dict):
+            raw = raw.get("steps") or raw.get("sequence") or next((v for v in raw.values() if isinstance(v, list)), [])
+        steps = _normalize_sequence_steps(raw)
+        return {"success": True, "sequence": [s.model_dump() for s in steps]}
+    except Exception as exc:
+        return JSONResponse({"success": False, "message": f"AI sequence draft failed: {exc}"}, status_code=500)
+    finally:
+        await _close_brain(brain)
+
+
+@app.post("/api/campaigns")
+async def create_campaign_api(request: Request):
+    """Create a custom multi-step campaign from the dashboard."""
+    try:
+        body = await request.json()
+    except Exception:
+        return JSONResponse({"success": False, "message": "Invalid JSON body."}, status_code=400)
+    if not isinstance(body, dict):
+        return JSONResponse({"success": False, "message": "Request body must be an object."}, status_code=400)
+
+    from sellbird.models.campaign import Campaign
+
+    name = str(body.get("name") or "").strip()[:140]
+    if not name:
+        return JSONResponse({"success": False, "message": "Campaign name is required."}, status_code=400)
+    try:
+        sequence = _normalize_sequence_steps(body.get("sequence"))
+    except ValueError as exc:
+        return JSONResponse({"success": False, "message": str(exc)}, status_code=400)
+
+    raw_tags = str(body.get("target_tags") or "").strip()
+    target_tags = ", ".join(sorted({t.strip().lower() for t in raw_tags.split(",") if t.strip()}))
+    framework = str(body.get("framework") or "").strip()[:80]
+
+    state = _state()
+    await state.init_db()
+    camp = Campaign(
+        id="",
+        name=name,
+        channel="email",
+        sequence=sequence,
+        status="draft",
+        prospect_ids=[],
+        framework=framework,
+        target_tags=target_tags,
+    )
+    cid = await state.add_campaign(camp)
+    await state.log_action("campaign_created", "dashboard", {"campaign_id": cid, "name": name, "steps": len(sequence)})
+    return {"success": True, "id": cid}
+
+
+@app.patch("/api/campaigns/{campaign_id}")
+async def update_campaign_api(campaign_id: str, request: Request):
+    """Update a campaign's name, sequence steps, target_tags, or status."""
+    try:
+        body = await request.json()
+    except Exception:
+        return JSONResponse({"success": False, "message": "Invalid JSON body."}, status_code=400)
+    if not isinstance(body, dict):
+        return JSONResponse({"success": False, "message": "Request body must be an object."}, status_code=400)
+
+    state = _state()
+    await state.init_db()
+    camp = await state.get_campaign(campaign_id)
+    if not camp:
+        return JSONResponse({"success": False, "message": "Campaign not found."}, status_code=404)
+
+    updates: dict = {}
+    if "name" in body:
+        n = str(body.get("name") or "").strip()[:140]
+        if not n:
+            return JSONResponse({"success": False, "message": "Campaign name cannot be empty."}, status_code=400)
+        updates["name"] = n
+    if "target_tags" in body:
+        rt = str(body.get("target_tags") or "").strip()
+        updates["target_tags"] = ", ".join(sorted({t.strip().lower() for t in rt.split(",") if t.strip()}))
+    if "sequence" in body:
+        try:
+            seq = _normalize_sequence_steps(body.get("sequence"))
+        except ValueError as exc:
+            return JSONResponse({"success": False, "message": str(exc)}, status_code=400)
+        updates["sequence_json"] = json.dumps([s.model_dump() for s in seq])
+    if "status" in body:
+        st = str(body.get("status") or "").strip().lower()
+        if st not in ("draft", "active", "paused", "completed"):
+            return JSONResponse({"success": False, "message": "Invalid campaign status."}, status_code=400)
+        updates["status"] = st
+
+    if updates:
+        await state.update_campaign(campaign_id, **updates)
+        await state.log_action("campaign_updated", "dashboard", {"campaign_id": campaign_id, "fields": sorted(updates)})
+    return {"success": True, "id": campaign_id}
+
+
+@app.post("/api/campaigns/{campaign_id}/status")
+async def set_campaign_status_api(campaign_id: str, request: Request):
+    """Toggle a campaign between active, paused, completed, or draft."""
+    try:
+        body = await request.json()
+    except Exception:
+        body = {}
+    status = str((body or {}).get("status") or "").strip().lower()
+    if status not in ("draft", "active", "paused", "completed"):
+        return JSONResponse({"success": False, "message": "status must be draft, active, paused, or completed."}, status_code=400)
+    state = _state()
+    await state.init_db()
+    camp = await state.get_campaign(campaign_id)
+    if not camp:
+        return JSONResponse({"success": False, "message": "Campaign not found."}, status_code=404)
+    await state.update_campaign(campaign_id, status=status)
+    await state.log_action("campaign_status", "dashboard", {"campaign_id": campaign_id, "status": status})
+    return {"success": True, "id": campaign_id, "status": status}
+
+
+@app.post("/api/campaigns/{campaign_id}/clone")
+async def clone_campaign_api(campaign_id: str):
+    """Clone an existing campaign sequence as a fresh draft."""
+    state = _state()
+    await state.init_db()
+    src = await state.get_campaign(campaign_id)
+    if not src:
+        return JSONResponse({"success": False, "message": "Campaign not found."}, status_code=404)
+    from sellbird.models.campaign import Campaign
+    seq = Campaign.sequence_from_json(src.get("sequence_json"))
+    clone = Campaign(
+        id="",
+        name=f"{src.get('name') or 'Campaign'} (Copy)"[:140],
+        channel=src.get("channel") or "email",
+        sequence=seq,
+        status="draft",
+        prospect_ids=[],
+        framework=src.get("framework") or "",
+        target_tags=src.get("target_tags") or "",
+    )
+    new_id = await state.add_campaign(clone)
+    await state.log_action("campaign_cloned", "dashboard", {"source_id": campaign_id, "new_id": new_id})
+    return {"success": True, "id": new_id}
+
+
+@app.delete("/api/campaigns/{campaign_id}")
+async def delete_campaign_api(campaign_id: str):
+    """Delete a campaign and cancel its queued pending/approved sequence emails."""
+    state = _state()
+    await state.init_db()
+    deleted = await state.delete_campaign(campaign_id)
+    if not deleted:
+        return JSONResponse({"success": False, "message": "Campaign not found."}, status_code=404)
+    await state.log_action("campaign_deleted", "dashboard", {"campaign_id": campaign_id})
+    return {"success": True, "id": campaign_id}
+
+
+@app.post("/api/campaigns/{campaign_id}/launch")
+async def launch_campaign_api(campaign_id: str, request: Request):
+    """Stage personalized sequence emails into Outbox for matching contacts."""
+    try:
+        body = await request.json()
+    except Exception:
+        body = {}
+    body = body if isinstance(body, dict) else {}
+
+    state = _state()
+    await state.init_db()
+    camp = await state.get_campaign(campaign_id)
+    if not camp:
+        return JSONResponse({"success": False, "message": "Campaign not found."}, status_code=404)
+
+    from datetime import timedelta, timezone
+    from sellbird.agents.writer import _fill_personal_merge_leaks
+    from sellbird.email_style import tidy
+    from sellbird.gate import MERGE_TAG_RE, do_not_contact_match
+    from sellbird.models.campaign import Campaign
+
+    sequence = Campaign.sequence_from_json(camp.get("sequence_json"))
+    if not sequence:
+        return JSONResponse({"success": False, "message": "Campaign has no email steps to launch."}, status_code=400)
+
+    explicit_ids = [str(x).strip() for x in (body.get("prospect_ids") or []) if str(x).strip()]
+    target_tags_raw = str(body.get("target_tags") if "target_tags" in body else (camp.get("target_tags") or "")).strip()
+    wanted_tags = {t.strip().lower() for t in target_tags_raw.split(",") if t.strip()}
+    include_guess = bool(body.get("include_unverified", False))
+    allowed_email_statuses = ("verified", "risky", "guess") if include_guess else ("verified", "risky")
+
+    if explicit_ids:
+        prospect_objs = [await state.get_prospect(pid) for pid in explicit_ids]
+        candidates = [p for p in prospect_objs if p is not None]
+    else:
+        ph = ",".join("?" for _ in allowed_email_statuses)
+        rows = await query_db(
+            f"SELECT id FROM prospects WHERE email != '' "
+            f"AND status IN ('new', 'queued') AND COALESCE(email_status, 'guess') IN ({ph}) "
+            f"ORDER BY score DESC, created_at DESC LIMIT 200",
+            tuple(allowed_email_statuses),
+        )
+        candidates = [p for p in [await state.get_prospect(r["id"]) for r in rows] if p is not None]
+
+    if wanted_tags:
+        candidates = [
+            p for p in candidates
+            if wanted_tags & {t.strip().lower() for t in (getattr(p, "tags", "") or "").split(",") if t.strip()}
+        ]
+
+    dnc = _live_dnc_entries()
+    suppressed = await state.suppressed_among([p.email for p in candidates if p.email])
+    existing_pids = set(camp.get("prospect_ids") or [])
+    queued_prospects = 0
+    queued_emails = 0
+    skipped = 0
+    now = datetime.now(timezone.utc).replace(tzinfo=None)
+
+    for prospect in candidates:
+        email = (prospect.email or "").strip().lower()
+        if not email or prospect.status not in ("new", "queued") or email in suppressed or do_not_contact_match(email, dnc):
+            skipped += 1
+            continue
+        if (prospect.email_status or "guess").lower() not in allowed_email_statuses:
+            skipped += 1
+            continue
+
+        cum_days = 0
+        staged_for_person = 0
+        for step_obj in sequence:
+            cum_days += max(0, int(step_obj.delay_days or 0))
+            subj = _fill_personal_merge_leaks(step_obj.subject, prospect).strip()
+            msg_body = tidy(_fill_personal_merge_leaks(step_obj.body, prospect))
+            if MERGE_TAG_RE.search(f"{subj}\n{msg_body}"):
+                continue
+            oid = await state.add_outbox_item(
+                prospect_id=prospect.id,
+                campaign_id=campaign_id,
+                to_email=email,
+                subject=subj,
+                body=msg_body,
+                send_at=(now + timedelta(days=cum_days)).isoformat(),
+                status="pending_review",
+                step=int(step_obj.step),
+                kind="sequence",
+            )
+            if oid:
+                staged_for_person += 1
+                queued_emails += 1
+
+        if staged_for_person:
+            queued_prospects += 1
+            existing_pids.add(prospect.id)
+            await state.queue_prospect_if_unsent(prospect.id)
+        else:
+            skipped += 1
+
+    await state.update_campaign(
+        campaign_id,
+        status="active",
+        prospect_ids_json=json.dumps(sorted(existing_pids)),
+        **({"target_tags": ", ".join(sorted(wanted_tags))} if target_tags_raw or "target_tags" in body else {}),
+    )
+    await state.log_action(
+        "campaign_launched",
+        "dashboard",
+        {"campaign_id": campaign_id, "queued_prospects": queued_prospects, "queued_emails": queued_emails, "skipped": skipped},
+    )
+    return {
+        "success": True,
+        "id": campaign_id,
+        "queued_prospects": queued_prospects,
+        "queued_emails": queued_emails,
+        "skipped": skipped,
+    }
 
 
 @app.get("/api/frameworks")
@@ -3956,6 +4391,110 @@ async def set_conversation_status(convo_id: str, request: Request):
     await state.log_action("conversation_status", "dashboard",
                            {"conversation_id": convo_id, "from": rows[0]["status"], "to": status})
     return {"success": True, "status": status}
+
+
+@app.post("/api/conversations/{convo_id}/reply")
+async def reply_to_conversation_api(convo_id: str, request: Request):
+    """Queue a custom reply or AI-generated reply draft directly from Conversations into Outbox."""
+    try:
+        body = await request.json()
+    except Exception:
+        return JSONResponse({"success": False, "message": "Invalid JSON body."}, status_code=400)
+    if not isinstance(body, dict):
+        return JSONResponse({"success": False, "message": "Request body must be an object."}, status_code=400)
+
+    mode = str(body.get("mode") or "queue").strip().lower()
+    if mode not in ("queue", "ai_draft"):
+        return JSONResponse({"success": False, "message": "mode must be queue or ai_draft."}, status_code=400)
+
+    rows = await query_db("SELECT * FROM conversations WHERE id = ?", (convo_id,))
+    if not rows:
+        return JSONResponse({"success": False, "message": "Conversation not found."}, status_code=404)
+    convo = rows[0]
+
+    state = _state()
+    await state.init_db()
+    prospect = await state.get_prospect(convo.get("prospect_id") or "")
+    if not prospect or not prospect.email:
+        return JSONResponse({"success": False, "message": "Prospect email is missing."}, status_code=400)
+    if prospect.status == "opted_out" or await state.is_suppressed(prospect.email):
+        return JSONResponse({"success": False, "message": "Prospect is opted out / suppressed."}, status_code=409)
+
+    sent_rows = await query_db(
+        "SELECT subject, thread_ref, message_id FROM outbox "
+        "WHERE prospect_id = ? AND COALESCE(subject, '') != '' "
+        "ORDER BY created_at DESC LIMIT 1",
+        (prospect.id,),
+    )
+    base_subj = str((sent_rows[0].get("subject") if sent_rows else "") or "following up").strip()
+    reply_subj = base_subj if base_subj.lower().startswith("re:") else f"Re: {base_subj}"
+    thread_ref = str((sent_rows[0].get("thread_ref") or sent_rows[0].get("message_id")) if sent_rows else "")
+
+    reply_text = str(body.get("body") or "").strip()
+    if mode == "ai_draft":
+        runtime, err = await _prepare_agentic_runtime()
+        if err is not None:
+            return err
+        brain, _, config, _env = runtime
+        try:
+            from sellbird.email_style import tidy
+            from sellbird.untrusted import UNTRUSTED_RULE, fence
+            thread_msgs = json.loads(convo.get("thread_json") or "[]")
+            thread_txt = "\n".join(
+                f"{m.get('sender', 'unknown')}: {m.get('content', '')}" for m in thread_msgs[-6:]
+            )
+            offer_cfg = getattr(getattr(config, "product", None), "offer", None)
+            booking_url = str(getattr(offer_cfg, "booking_url", "") or "").strip()
+            instruction = str(body.get("instruction") or "").strip()[:300]
+            prompt = (
+                f"Write a helpful, concise B2B email reply for {prospect.first_name or prospect.email} ({prospect.company}).\n"
+                f"{UNTRUSTED_RULE}\n"
+                f"Thread:\n{fence(thread_txt or 'Customer replied.', 'thread')}\n\n"
+                f"Product: {getattr(config.product, 'name', '')} — {getattr(config.product, 'description', '')}\n"
+                + (f"Booking link (only include if relevant to scheduling): {booking_url}\n" if booking_url else "")
+                + (f"Operator instruction: {fence(instruction, 'instruction')}\n" if instruction else "")
+                + "\nRules: 2-4 plain sentences, no em-dashes, no sign-off name (Sellbird adds it).\n"
+                'Return strictly JSON: {"body": "..."}'
+            )
+            raw = await brain.think_json(prompt, session_id=f"convo-{convo_id}", agent="handler", task="draft_custom_reply")
+            reply_text = tidy(str((raw or {}).get("body") or "").strip()) if isinstance(raw, dict) else ""
+        finally:
+            await _close_brain(brain)
+
+    if not reply_text:
+        return JSONResponse({"success": False, "message": "Reply body is required."}, status_code=400)
+
+    stub_item = {"kind": "reply", "prospect_id": prospect.id, "subject": reply_subj}
+    err_msg = await _validate_outbox_draft(state, stub_item, reply_subj, reply_text)
+    if err_msg:
+        return JSONResponse({"success": False, "message": err_msg}, status_code=400)
+
+    # Supersede any stale pending reply draft for this conversation before staging the new one.
+    stale_rows = await query_db(
+        "SELECT id FROM outbox WHERE conversation_id = ? AND kind = 'reply' AND status = 'pending_review'",
+        (convo_id,),
+    )
+    for sr in stale_rows:
+        await state.reject_outbox_item(sr["id"])
+
+    from datetime import timezone
+    item_id = await state.add_outbox_item(
+        prospect_id=prospect.id,
+        campaign_id=convo.get("campaign_id") or "",
+        conversation_id=convo_id,
+        to_email=prospect.email,
+        subject=reply_subj,
+        body=reply_text,
+        send_at=datetime.now(timezone.utc).replace(tzinfo=None).isoformat(),
+        status="pending_review",
+        kind="reply",
+        step=0,
+        thread_ref=thread_ref,
+        in_reply_to=thread_ref,
+        mailbox_id=convo.get("mailbox_id") or "",
+    )
+    await state.log_action("conversation_reply_drafted", "dashboard", {"conversation_id": convo_id, "outbox_id": item_id, "mode": mode})
+    return {"success": True, "outbox_id": item_id, "subject": reply_subj, "body": reply_text}
 
 
 def _calendar_client():
