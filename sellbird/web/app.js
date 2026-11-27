@@ -418,6 +418,32 @@ function toggleVisibility(inputId) {
 
 // ── Tabs ──
 
+const TAB_TITLES = {
+  today: 'Today Analytics', company: 'Your Company & Offer', outbox: 'Outbox Queue',
+  inboxes: 'Sender Inboxes', conversations: 'Unibox Replies', signals: 'Lead Signals',
+  discover: 'Lead Finder', companies: 'Companies', prospects: 'Contacts',
+  campaigns: 'Campaign Studio', enrichment: 'AI Enrichment', brain: 'AI Models',
+  activity: 'Activity Log', usage: 'Cost & Usage', controls: 'Agent Loop',
+  settings: 'Settings', help: 'Help & Docs',
+};
+
+function syncTopbar(id) {
+  const crumb = document.getElementById('topbar-crumb');
+  if (crumb) crumb.textContent = own(TAB_TITLES, id) || id;
+}
+
+function topbarQuickSearch(q) {
+  const query = (q || '').trim();
+  goTab('prospects');
+  setTimeout(() => {
+    const inp = document.querySelector('#prospects input[type="search"], #prospects .search input');
+    if (inp) {
+      inp.value = query;
+      inp.dispatchEvent(new Event('input', { bubbles: true }));
+    }
+  }, 120);
+}
+
 function showTab(id, btn, skipLoad) {
   const apply = () => {
     currentTab = id;
@@ -429,6 +455,7 @@ function showTab(id, btn, skipLoad) {
     const activeBtn = btn || Array.from(document.querySelectorAll('nav button'))
       .find(b => (b.getAttribute('onclick') || '').includes("'" + id + "'"));
     if (activeBtn) activeBtn.classList.add('active');
+    syncTopbar(id);
     if (!skipLoad && typeof window.scrollTo === 'function') window.scrollTo(0, 0);
   };
   const reduced = window.matchMedia && window.matchMedia('(prefers-reduced-motion: reduce)').matches;
@@ -833,23 +860,24 @@ async function dismissRenameNotice() {
 
 async function loadTodayResendCard() {
   const badgeEl = document.getElementById('dash-resend-badge');
+  const topPill = document.getElementById('topbar-mailer-pill');
   const keyEl = document.getElementById('dash-resend-key');
   const fromEl = document.getElementById('dash-resend-from');
-  if (!badgeEl) return;
+  if (!badgeEl && !topPill) return;
   try {
     const data = await api('/api/settings');
     if (!data) return;
     const isSmtp = data.provider === 'smtp';
     const hasResend = isSmtp && (data.smtp_host || '').toLowerCase().includes('resend.com') && data.smtp_password_set;
     if (hasResend) {
-      badgeEl.className = 'badge t-good';
-      badgeEl.textContent = 'Resend Ready (' + (data.smtp_from || 'verified domain') + ')';
+      if (badgeEl) { badgeEl.className = 'badge t-good'; badgeEl.textContent = 'Resend Ready (' + (data.smtp_from || 'verified domain') + ')'; }
+      if (topPill) { topPill.className = 'badge t-good'; topPill.textContent = 'Mailer: Resend SMTP'; }
     } else if (isSmtp && data.smtp_password_set) {
-      badgeEl.className = 'badge t-good';
-      badgeEl.textContent = 'SMTP Active (' + (data.smtp_host || 'configured') + ')';
+      if (badgeEl) { badgeEl.className = 'badge t-good'; badgeEl.textContent = 'SMTP Active (' + (data.smtp_host || 'configured') + ')'; }
+      if (topPill) { topPill.className = 'badge t-good'; topPill.textContent = 'Mailer: SMTP Active'; }
     } else {
-      badgeEl.className = 'badge t-waiting';
-      badgeEl.textContent = 'Active: ' + (data.provider || 'gmail') + ' · Needs Setup';
+      if (badgeEl) { badgeEl.className = 'badge t-waiting'; badgeEl.textContent = 'Active: ' + (data.provider || 'gmail') + ' · Needs Setup'; }
+      if (topPill) { topPill.className = 'badge t-waiting'; topPill.textContent = 'Mailer: ' + (data.provider || 'gmail') + ' (Setup)'; }
     }
     if (fromEl && !fromEl.value) {
       fromEl.value = data.smtp_from || 'onboarding@resend.dev';

@@ -538,6 +538,10 @@ vm.runInContext(code, context);
   if (!getEl('dash-resend-result').innerHTML.includes('email-tag')) {
     throw new Error('connectResendFromDashboard did not render result badge');
   }
+  context.syncTopbar('discover');
+  if (getEl('topbar-crumb').textContent !== 'Lead Finder') {
+    throw new Error('syncTopbar did not update #topbar-crumb cleanly');
+  }
 
   console.log('VM_ADV_SUITE_OK');
   process.exit(0);
