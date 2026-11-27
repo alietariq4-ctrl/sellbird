@@ -7,7 +7,7 @@
 <title>VeloReach</title>
 <!-- First, so the token leaves the address bar before anything else runs. -->
 <script src="/static/auth.js"></script>
-<link rel="stylesheet" href="/static/app.css">
+<link rel="stylesheet" href="/static/app.css?v=20261127d">
 <link rel="icon" href="/static/sellbird-mark.svg" type="image/svg+xml">
 </head>
 <body>
@@ -206,8 +206,8 @@
   </div>
   <div class="feature-guide">
     <span><b>How Signals work:</b></span>
-    <span><b>1. Confirm signals</b> below so Discover can score leads</span>
-    <span>&middot; <b>2. Cohort Builder</b> tests filters against your live company database</span>
+    <span class="fg-note">1. Confirm signals below to qualify leads</span>
+    <span class="fg-note">2. Cohort Builder filters your company database</span>
   </div>
   <div id="signals-summary"></div>
   <div id="signals-groups"></div>
@@ -230,9 +230,9 @@
   </div>
   <div class="feature-guide">
     <span><b>How to find new leads:</b></span>
-    <span><b>1. Pick a source</b> (free keyless sources cost $0)</span>
-    <span>&middot; <b>2. Enter business type &amp; city</b></span>
-    <span>&middot; <b>3. Click Find New Leads</b> (websites &amp; emails are extracted automatically)</span>
+    <span class="fg-note">1. Pick a source ($0 free keyless ready)</span>
+    <span class="fg-note">2. Enter business type &amp; city</span>
+    <span class="fg-note">3. Click Find New Leads</span>
   </div>
   <div id="discover-profile"></div>
 
@@ -264,7 +264,7 @@
     <div class="form-row" style="margin-bottom:4px">
       <div class="form-group" style="flex:1.4">
         <label class="form-label" for="disc-query">What businesses / leads to find</label>
-        <input class="form-input" id="disc-query" placeholder="e.g. dentist, cosmetic dental clinic, hvac (blank = Your company ICP)" autocomplete="off">
+        <input class="form-input" id="disc-query" placeholder="e.g. dentist, hvac, saas (blank = ICP)" autocomplete="off">
       </div>
       <div class="form-group" style="flex:1.6">
         <label class="form-label" for="disc-cities">Cities / Locations</label>
@@ -315,9 +315,9 @@
     </div></div>
   <div class="feature-guide">
     <span><b>Company Pipeline:</b></span>
-    <span>Click any company row to inspect signals &amp; contacts</span>
-    <span>&middot; Click <b>Deep Research (Top 5)</b> for live AI buying-trigger briefs</span>
-    <span>&middot; Export register CSV anytime</span>
+    <span class="fg-note">Click any row for signals &amp; contacts</span>
+    <span class="fg-note">Deep Research (Top 5) fetches AI buying triggers</span>
+    <span class="fg-note">Export register CSV anytime</span>
   </div>
   <div id="companies-list"></div>
 </div>
@@ -336,9 +336,9 @@
   </div>
   <div class="feature-guide">
     <span><b>What you can do here:</b></span>
-    <span>Click any <b>name or Edit</b> to update fields &amp; view email history</span>
-    <span>&middot; Use <b>Checkboxes</b> for bulk Tag / Suppress / Delete</span>
-    <span>&middot; Filter by <b>Tags</b> to match Campaign targets</span>
+    <span class="fg-note">Click any name or Edit to view history</span>
+    <span class="fg-note">Check rows for bulk Tag / Suppress / Delete</span>
+    <span class="fg-note">Filter by Tags for Campaigns</span>
   </div>
   <div id="suppressions-panel" style="display:none;margin-bottom:14px"></div>
   <div id="prospects-table"></div>
@@ -356,9 +356,9 @@
   </div>
   <div class="feature-guide">
     <span><b>Campaign tools:</b></span>
-    <span><b>+ New Campaign</b> supports <b>AI 3-step drafts</b> &amp; <b>50/50 A/B Subject tests</b></span>
-    <span>&middot; <b>Launch to Outbox</b> stages personalized emails safely</span>
-    <span>&middot; <b>Analytics</b> compares Variant A vs B win rates</span>
+    <span class="fg-note">+ New Campaign drafts AI A/B steps</span>
+    <span class="fg-note">Test Email previews safely via Resend</span>
+    <span class="fg-note">Launch stages emails to Outbox</span>
   </div>
   <div id="campaigns-funnel"></div>
   <div id="frameworks-card"></div>
@@ -377,9 +377,9 @@
   </div>
   <div class="feature-guide">
     <span><b>Safety &amp; Bulk Review:</b></span>
-    <span><b>Test Preview</b> shows exact HTML, sign-off &amp; footer</span>
-    <span>&middot; Auto-blocks unrendered <code>{{tag}}</code> leaks</span>
-    <span>&middot; Check multiple rows or click <b>Select all</b> for bulk Approve / Reject</span>
+    <span class="fg-note">Test Preview renders HTML &amp; footer</span>
+    <span class="fg-note">Auto-blocks unrendered {{tag}} leaks</span>
+    <span class="fg-note">Select rows for bulk Approve / Reject</span>
   </div>
   <div id="outbox-banner"></div>
   <div id="outbox-desk"></div>
@@ -391,8 +391,8 @@
   <div class="section-head"><div><h2>Conversations</h2><p>Track prospect replies, draft AI/manual responses directly to Outbox, and book meetings.</p></div></div>
   <div class="feature-guide">
     <span><b>Reply Handling:</b></span>
-    <span>Click <b>Reply</b> on any thread to write manually, generate an <b>AI Draft Reply</b>, or insert a saved Template</span>
-    <span>&middot; Click <b>Book Meeting</b> to pick live calendar slots</span>
+    <span class="fg-note">Reply writes manually, via AI, or Template</span>
+    <span class="fg-note">Book Meeting inserts live calendar slots</span>
   </div>
   <div id="conversations-list"></div>
 </div>
@@ -408,8 +408,8 @@
   </div>
   <div class="feature-guide">
     <span><b>Sender Setup:</b></span>
-    <span>Connect Gmail / M365 OAuth inboxes here, <b>or</b> activate <b>Resend SMTP</b> in Settings for fast test sends</span>
-    <span>&middot; Warmup &amp; daily caps protect sender reputation</span>
+    <span class="fg-note">Connect Gmail / M365 OAuth here, or activate Resend SMTP in Settings</span>
+    <span class="fg-note">Daily caps rotate sends safely</span>
   </div>
   <div id="inboxes-list"></div>
 </div>
@@ -809,9 +809,9 @@
   </div>
   <div class="feature-guide">
     <span><b>How Enrichment works:</b></span>
-    <span><b>1. + Add AI Column</b> (define a custom prompt)</span>
-    <span>&middot; <b>2. Run Batch Enrichment</b> to fill every company row</span>
-    <span>&middot; <b>3. Export CSV</b> with citations</span>
+    <span class="fg-note">1. + Add AI Column</span>
+    <span class="fg-note">2. Run Batch Enrichment</span>
+    <span class="fg-note">3. Export CSV with citations</span>
   </div>
 
   <div class="card">
@@ -868,12 +868,13 @@
 
   <div class="feature-guide" id="settings-jump">
     <span><b>Quick Jump:</b></span>
-    <button type="button" class="fg-pill" onclick="jumpSettings('sending-mode-card')">1. Email &amp; Resend SMTP</button>
+    <button type="button" class="fg-pill" onclick="jumpSettings('sending-mode-card')">1. Sending &amp; DNS</button>
     <button type="button" class="fg-pill" onclick="jumpSettings('compliance-card')">2. Limits &amp; Warmup</button>
-    <button type="button" class="fg-pill" onclick="jumpSettings('settings-verifiers')">3. Verifiers</button>
-    <button type="button" class="fg-pill" onclick="jumpSettings('settings-ai-providers')">4. AI Models</button>
-    <button type="button" class="fg-pill" onclick="jumpSettings('settings-search-crm')">5. Search &amp; CRM</button>
-    <button type="button" class="fg-pill" onclick="jumpSettings('competitor-watch-card')">6. Competitor Watch</button>
+    <button type="button" class="fg-pill" onclick="jumpSettings('settings-email-providers')">3. Email &amp; Resend SMTP</button>
+    <button type="button" class="fg-pill" onclick="jumpSettings('settings-verifiers')">4. Verifiers</button>
+    <button type="button" class="fg-pill" onclick="jumpSettings('settings-ai-providers')">5. AI Models</button>
+    <button type="button" class="fg-pill" onclick="jumpSettings('settings-search-crm')">6. Search &amp; CRM</button>
+    <button type="button" class="fg-pill" onclick="jumpSettings('competitor-watch-card')">7. Competitor Watch</button>
   </div>
 
   <div class="subhead">Sending Mode &amp; DNS Check</div>
@@ -968,14 +969,14 @@
               <input type="text" class="form-input" id="comp-qh-tz" placeholder="America/New_York" autocomplete="off"></div>
           </div>
         </div>
-        <div>
+        <div style="margin-top:12px;">
           <button class="btn btn-primary btn-sm" id="comp-save-btn" onclick="saveComplianceSettings()">Save Compliance &amp; Schedule</button>
         </div>
       </div>
     </div>
   </div>
 
-  <div class="subhead" style="display:flex;align-items:center;justify-content:space-between;gap:10px;flex-wrap:wrap">
+  <div class="subhead" id="settings-email-providers" style="display:flex;align-items:center;justify-content:space-between;gap:10px;flex-wrap:wrap">
     <span>Email Provider <span class="hint">Active: <b id="active-provider">…</b></span></span>
     <span class="chip-row" aria-label="Switch active email provider">
       <button type="button" class="chip" id="ep-gmail" onclick="switchEmailProvider('gmail')">Use Gmail</button>
@@ -1088,9 +1089,11 @@
           <div class="with-btn"><input type="password" class="form-input" id="reoon-key" placeholder="600 free/mo — reoon.com/email-verifier" autocomplete="off">
             <button class="btn btn-secondary" onclick="toggleVisibility('reoon-key')">Show</button></div></div>
         <div class="form-group"><label class="form-label" for="zerobounce-key">ZeroBounce API key <span id="zerobounce-status" class="email-tag"></span></label>
-          <input type="password" class="form-input" id="zerobounce-key" placeholder="100 free/mo — best for M365/Workspace catch-alls" autocomplete="off"></div>
+          <div class="with-btn"><input type="password" class="form-input" id="zerobounce-key" placeholder="100 free/mo — best for M365/Workspace catch-alls" autocomplete="off">
+            <button class="btn btn-secondary" onclick="toggleVisibility('zerobounce-key')">Show</button></div></div>
         <div class="form-group"><label class="form-label" for="hunter-key">Hunter API key <span id="hunter-status" class="email-tag"></span></label>
-          <input type="password" class="form-input" id="hunter-key" placeholder="50 free/mo + email-pattern lookup" autocomplete="off"></div>
+          <div class="with-btn"><input type="password" class="form-input" id="hunter-key" placeholder="50 free/mo + email-pattern lookup" autocomplete="off">
+            <button class="btn btn-secondary" onclick="toggleVisibility('hunter-key')">Show</button></div></div>
         <button class="btn btn-primary btn-sm" onclick="saveVerifiers()">Save verification keys</button>
       </div>
     </div>
@@ -1110,7 +1113,8 @@
         </div>
         <div class="form-group">
           <label class="form-label" for="linkedin-password">Password</label>
-          <input type="password" class="form-input" id="linkedin-password" placeholder="Enter password" autocomplete="new-password">
+          <div class="with-btn"><input type="password" class="form-input" id="linkedin-password" placeholder="Enter password" autocomplete="new-password">
+            <button class="btn btn-secondary" onclick="toggleVisibility('linkedin-password')">Show</button></div>
         </div>
         <button class="btn btn-primary btn-sm" onclick="saveLinkedIn()">Save LinkedIn</button>
       </div>
@@ -1127,7 +1131,8 @@
         </div>
         <div class="form-group">
           <label class="form-label" for="cf-api-token">API token</label>
-          <input type="password" class="form-input" id="cf-api-token" placeholder="Your Cloudflare API Token" autocomplete="off">
+          <div class="with-btn"><input type="password" class="form-input" id="cf-api-token" placeholder="Your Cloudflare API Token" autocomplete="off">
+            <button class="btn btn-secondary" onclick="toggleVisibility('cf-api-token')">Show</button></div>
         </div>
         <button class="btn btn-primary btn-sm" onclick="saveCloudflare()">Save Cloudflare</button>
       </div>
@@ -1173,7 +1178,9 @@
           <div class="form-group"><label class="form-label" for="groq-key">Groq API Key <span id="groq-status" class="email-tag"></span></label>
             <input type="password" class="form-input" id="groq-key" placeholder="gsk_..." autocomplete="off"></div>
         </div>
-        <button class="btn btn-primary btn-sm" onclick="saveCloudModelKeys()">Save Model Keys</button>
+        <div style="margin-top:12px;">
+          <button class="btn btn-primary btn-sm" onclick="saveCloudModelKeys()">Save Model Keys</button>
+        </div>
       </div>
     </div>
   </div>
@@ -1251,7 +1258,7 @@
       <div class="fields">
         <div id="cw-watches"></div>
         <div class="cw-add">
-          <input type="text" class="form-input" id="cw-name" placeholder="Name, e.g. Rival pricing" autocomplete="off">
+          <input type="text" class="form-input" id="cw-name" placeholder="e.g. Rival pricing" autocomplete="off">
           <input type="text" class="form-input" id="cw-url" placeholder="https://rival.example/pricing" autocomplete="off">
           <select class="form-input" id="cw-kind" aria-label="What kind of page is this">
             <option value="pricing">pricing</option>
@@ -1395,6 +1402,6 @@
 </main>
 </div>
 
-<script src="/static/app.js"></script>
+<script src="/static/app.js?v=20261127d"></script>
 </body>
 </html>
