@@ -1256,6 +1256,7 @@ class EnvConfig(BaseModel):
     smtp_port: int = 587
     smtp_username: str = ""
     smtp_password: str = ""
+    smtp_from: str = ""
     imap_host: str = ""
     imap_port: int = 993
     imap_username: str = ""
@@ -1504,6 +1505,7 @@ def load_env() -> EnvConfig:
         smtp_port=_parse_env_port("SMTP_PORT", 587),
         smtp_username=os.getenv("SMTP_USERNAME", "").strip(),
         smtp_password=os.getenv("SMTP_PASSWORD", "").strip(),
+        smtp_from=os.getenv("SMTP_FROM", "").strip(),
         imap_host=os.getenv("IMAP_HOST", "").strip(),
         imap_port=_parse_env_port("IMAP_PORT", 993),
         imap_username=os.getenv("IMAP_USERNAME", "").strip(),

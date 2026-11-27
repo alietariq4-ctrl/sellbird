@@ -111,6 +111,7 @@ class SmtpImapProvider(MailProvider):
         if smtp is not None:  # another inbox: its own settings, not the .env's
             self.smtp_host, self.smtp_port = smtp.host, int(smtp.port or 587)
             self.smtp_user, self.smtp_pass = smtp.username, smtp.password
+            self.smtp_from = ""
             self._imap_explicit = bool((smtp.imap_host or "").strip())
             self.imap_host = smtp.imap_host or smtp.host
             self.imap_port = int(smtp.imap_port or 993)
@@ -120,6 +121,7 @@ class SmtpImapProvider(MailProvider):
         self.smtp_port = int(getattr(env, "smtp_port", 587) or 587)
         self.smtp_user = getattr(env, "smtp_username", "")
         self.smtp_pass = getattr(env, "smtp_password", "")
+        self.smtp_from = (getattr(env, "smtp_from", "") or os.getenv("SMTP_FROM", "") or "").strip()
         raw_imap_host = (getattr(env, "imap_host", "") or "").strip()
         self._imap_explicit = bool(raw_imap_host)
         self.imap_host = raw_imap_host or self.smtp_host
@@ -147,7 +149,7 @@ class SmtpImapProvider(MailProvider):
             sig = load_signature(self.config)
         except SignatureError as e:
             return SendResult(ok=False, error=f"signature: {e}"[:300])
-        address = self.identity.address or self.smtp_user
+        address = self.smtp_from or self.identity.address or self.smtp_user
         msg = EmailMessage()
         msg["To"] = to_email
         msg["From"] = formataddr((self.identity.display_name, address))

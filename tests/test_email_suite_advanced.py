@@ -507,8 +507,16 @@ vm.runInContext(code, context);
   if (!getEl('ts-preview').innerHTML.includes('Rendered inbox preview')) throw new Error('Test send modal missing rendered preview');
 
   context.fillResendPreset();
-  if (getEl('smtp-host').value !== 'smtp.resend.com' || getEl('smtp-user').value !== 'resend') {
-    throw new Error('fillResendPreset did not populate Resend SMTP fields');
+  if (getEl('smtp-host').value !== 'smtp.resend.com' || getEl('smtp-user').value !== 'resend' || getEl('smtp-from').value !== 'onboarding@resend.dev') {
+    throw new Error('fillResendPreset did not populate Resend SMTP + onboarding@resend.dev fields');
+  }
+  context.pickTestEmail('delivered@resend.dev');
+  if (getEl('ts-email').value !== 'delivered@resend.dev') {
+    throw new Error('pickTestEmail did not populate #ts-email');
+  }
+  await context.openCampaignTestSend('c1');
+  if (!getEl('ts-preview').innerHTML.includes('Rendered inbox preview')) {
+    throw new Error('openCampaignTestSend did not open preview');
   }
 
   console.log('VM_ADV_SUITE_OK');
@@ -654,4 +662,59 @@ def test_resend_smtp_only_relay_and_provider_switch(adv_env, monkeypatch):
     ok, msg = asyncio.run(prov.test_connection())
     assert ok is True
     assert "outbound relay" in msg.lower()
+
+
+def test_smtp_from_override_and_campaign_test_send(adv_env, monkeypatch):
+    import types
+    import sellbird.integrations.smtp_mail as smtp_mod
+    from sellbird.config import EnvConfig
+    from sellbird.integrations.smtp_mail import MailIdentity, SmtpImapProvider
+
+    client, headers, _ = adv_env
+
+    # Save SMTP_FROM via /api/settings/env and verify /api/settings returns it
+    sres = client.post(
+        "/api/settings/env",
+        headers=headers,
+        json={"SMTP_HOST": "smtp.resend.com", "SMTP_PORT": "587", "SMTP_USERNAME": "resend", "SMTP_FROM": "onboarding@resend.dev"},
+    )
+    assert sres.status_code == 200
+    assert client.get("/api/settings", headers=headers).json()["smtp_from"] == "onboarding@resend.dev"
+
+    # Verify SmtpImapProvider uses EnvConfig.smtp_from as the From address
+    sent_msgs = []
+
+    async def _fake_send(msg, **kwargs):
+        sent_msgs.append(msg)
+
+    monkeypatch.setattr(smtp_mod, "aiosmtplib", types.SimpleNamespace(send=_fake_send))
+    env_cfg = EnvConfig(smtp_host="smtp.resend.com", smtp_port=587, smtp_username="resend", smtp_password="re_dummy", smtp_from="onboarding@resend.dev")
+    prov = SmtpImapProvider(None, env_cfg, identity=MailIdentity(display_name="Ali", address="ali@harveysaas.io"))
+    monkeypatch.setattr(smtp_mod, "load_signature", lambda cfg: None)
+    res = asyncio.run(prov.send_email("delivered@resend.dev", "Test", "Hello world"))
+    assert res.ok is True
+    assert "onboarding@resend.dev" in sent_msgs[0]["From"]
+
+    # Create campaign and preview via /api/outbox/test-send with campaign_id
+    cres = client.post(
+        "/api/campaigns",
+        headers=headers,
+        json={
+            "name": "Resend Test Campaign",
+            "sequence": [{"step": 1, "delay_days": 0, "subject": "Hello {{company}}", "body": "Hi {{first_name}}, test for {{company}}."}],
+        },
+    )
+    assert cres.status_code == 200
+    cid = cres.json()["id"]
+    prev = client.post(
+        "/api/outbox/test-send",
+        headers=headers,
+        json={"campaign_id": cid, "to_email": "delivered@resend.dev"},
+    )
+    assert prev.status_code == 200, prev.text
+    pdata = prev.json()
+    assert pdata["success"] is True
+    assert pdata["from_email"] == "onboarding@resend.dev"
+    assert "Hello " in pdata["subject"] and "{{" not in pdata["preview"]["text"]
+
 

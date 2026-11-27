@@ -661,13 +661,23 @@
 
 <dialog id="test-send-dialog" class="modal modal-wide" aria-labelledby="test-send-title">
   <div class="modal-head">
-    <h3 id="test-send-title">Test Send &amp; Rendered Inbox Preview</h3>
+    <h3 id="test-send-title">Email Marketing Test Lab &amp; Preview</h3>
     <button class="btn btn-ghost" onclick="closeTestSendModal()"><svg class="icon"><use href="#i-close"/></svg></button>
   </div>
   <div class="modal-body">
+    <div class="feature-guide" style="margin-bottom:12px;">
+      <span><b>Safe Test Mode:</b></span>
+      <span>Sends only 1 single test email to the target address below (live prospects in Contacts &amp; Outbox are never emailed).</span>
+    </div>
     <div class="form-row">
-      <div class="form-group"><label class="form-label" for="ts-email">Test recipient email (blank = persona email)</label>
-        <input type="email" class="form-input" id="ts-email" placeholder="you@yourdomain.com" autocomplete="off"></div>
+      <div class="form-group"><label class="form-label" for="ts-email">Test recipient email (or click a Resend test address below)</label>
+        <input type="email" class="form-input" id="ts-email" placeholder="you@yourdomain.com or delivered@resend.dev" autocomplete="off">
+        <div class="quick-chips" style="margin-top:6px;">
+          <button type="button" class="chip-btn" onclick="pickTestEmail('delivered@resend.dev')">delivered@resend.dev (Pass)</button>
+          <button type="button" class="chip-btn" onclick="pickTestEmail('bounced@resend.dev')">bounced@resend.dev (Bounce)</button>
+          <button type="button" class="chip-btn" onclick="pickTestEmail('complained@resend.dev')">complained@resend.dev (Spam)</button>
+        </div>
+      </div>
       <div class="form-group" style="display:flex;align-items:flex-end">
         <button type="button" class="btn btn-primary btn-sm" id="ts-run-btn" onclick="runTestSendPreview(this)">Send Test / Render Preview</button>
       </div>
@@ -967,6 +977,8 @@
         <div class="form-group"><label class="form-label" for="smtp-pass">Password / API key</label>
           <div class="with-btn"><input type="password" class="form-input" id="smtp-pass" placeholder="Password or Resend API key (re_...)" autocomplete="off">
             <button class="btn btn-secondary" onclick="toggleVisibility('smtp-pass')">Show</button></div></div>
+        <div class="form-group"><label class="form-label" for="smtp-from">From address override <span class="hint muted">(e.g. onboarding@resend.dev for test mode)</span></label>
+          <input type="email" class="form-input" id="smtp-from" placeholder="Leave blank to use Your Company email, or onboarding@resend.dev" autocomplete="off"></div>
         <details class="more-fields">
           <summary>Reading replies from a different IMAP server or login</summary>
           <div class="form-row">

@@ -1462,6 +1462,8 @@ async function loadSettings() {
   document.getElementById('smtp-host').value = data.smtp_host || '';
   document.getElementById('smtp-port').value = data.smtp_port || '';
   document.getElementById('smtp-user').value = data.smtp_username || '';
+  const smtpFromEl = document.getElementById('smtp-from');
+  if (smtpFromEl) smtpFromEl.value = data.smtp_from || '';
   document.getElementById('imap-host').value = data.imap_host || '';
   document.getElementById('imap-port').value = data.imap_port || '';
   document.getElementById('imap-user').value = data.imap_username || '';
@@ -1737,17 +1739,19 @@ function fillResendPreset() {
   const hostEl = document.getElementById('smtp-host');
   const portEl = document.getElementById('smtp-port');
   const userEl = document.getElementById('smtp-user');
+  const fromEl = document.getElementById('smtp-from');
   const passEl = document.getElementById('smtp-pass');
   const imapHostEl = document.getElementById('imap-host');
   if (hostEl) hostEl.value = 'smtp.resend.com';
   if (portEl) portEl.value = '587';
   if (userEl) userEl.value = 'resend';
+  if (fromEl && !fromEl.value) fromEl.value = 'onboarding@resend.dev';
   if (imapHostEl) imapHostEl.value = '';
   if (passEl) {
     passEl.placeholder = 'Paste Resend API key (re_...)';
     passEl.focus();
   }
-  showToast('Resend SMTP preset loaded. Paste your re_... API key, then click Save & Activate SMTP.', 'info');
+  showToast('Resend Sandbox SMTP preset loaded (From: onboarding@resend.dev). Paste your re_... API key, then click Save & Activate SMTP.', 'info');
 }
 
 async function saveSmtp(activateProvider) {
@@ -1755,6 +1759,7 @@ async function saveSmtp(activateProvider) {
     SMTP_HOST: document.getElementById('smtp-host').value.trim(),
     SMTP_PORT: document.getElementById('smtp-port').value.trim(),
     SMTP_USERNAME: document.getElementById('smtp-user').value.trim(),
+    SMTP_FROM: (document.getElementById('smtp-from')?.value || '').trim(),
   };
   const pass = document.getElementById('smtp-pass').value;
   if (pass) payload.SMTP_PASSWORD = pass;
@@ -2888,13 +2893,32 @@ async function outboxBulk(action, btn) {
 }
 
 let _testSendItemId = null;
+let _testSendCampaignId = null;
+
 function openTestSendModal(itemId) {
   _testSendItemId = itemId || null;
+  _testSendCampaignId = null;
   const p = document.getElementById('ts-preview');
   if (p) p.innerHTML = '<div class="hint muted">Rendering preview…</div>';
   const d = document.getElementById('test-send-dialog');
   if (d && d.showModal) d.showModal();
   return runTestSendPreview();
+}
+function openCampaignTestSend(campaignId) {
+  _testSendItemId = null;
+  _testSendCampaignId = campaignId || null;
+  const p = document.getElementById('ts-preview');
+  if (p) p.innerHTML = '<div class="hint muted">Rendering campaign preview…</div>';
+  const d = document.getElementById('test-send-dialog');
+  if (d && d.showModal) d.showModal();
+  return runTestSendPreview();
+}
+function pickTestEmail(addr) {
+  const el = document.getElementById('ts-email');
+  if (el) {
+    el.value = addr;
+    el.focus();
+  }
 }
 function closeTestSendModal() {
   const d = document.getElementById('test-send-dialog');
@@ -2914,18 +2938,28 @@ async function runTestSendPreview(btn) {
     const res = await api('/api/outbox/test-send', {
       method: 'POST',
       headers: {'Content-Type': 'application/json'},
-      body: JSON.stringify({item_id: _testSendItemId, to_email}),
+      body: JSON.stringify({
+        item_id: _testSendItemId,
+        campaign_id: _testSendCampaignId,
+        to_email,
+      }),
     });
     if (res && res.success && prevEl) {
       const pr = res.preview || {};
+      const fromAddr = pr.from || res.from_email || '';
+      const provName = res.provider_name || '';
       prevEl.innerHTML =
         '<div class="banner ' + (res.sent ? 'good' : '') + '" style="margin:8px 0">' +
           icon(res.sent ? 'check' : 'mail') +
           '<div><b>' + (res.sent ? 'Sent test email' : 'Rendered inbox preview') + '</b>' +
           '<p>' + escHtml(res.message || '') + '</p></div></div>' +
         '<div class="ts-frame">' +
-          '<div class="ts-frame-bar"><b>To:</b> ' + escHtml(pr.to || res.to_email || '') +
-            ' &middot; <b>Subject:</b> ' + escHtml(pr.subject || res.subject || '') + '</div>' +
+          '<div class="ts-frame-bar">' +
+            (fromAddr ? '<b>From:</b> ' + escHtml(fromAddr) + ' &middot; ' : '') +
+            '<b>To:</b> ' + escHtml(pr.to || res.to_email || '') +
+            (provName ? ' &middot; <b>Via:</b> ' + escHtml(provName) : '') +
+            '<br><b>Subject:</b> ' + escHtml(pr.subject || res.subject || '') +
+          '</div>' +
           '<div class="ts-frame-body">' + (pr.html || '<pre>' + escHtml(pr.text || '') + '</pre>') + '</div>' +
         '</div>';
     } else if (prevEl) {
@@ -4767,6 +4801,7 @@ function renderCampaignsList() {
         (c.framework ? '<span class="mini" title="Copywriting framework this campaign tests">' + escHtml(c.framework) + '</span>' : '') +
         '<div class="campaign-actions">' +
           '<button class="btn btn-primary btn-sm" onclick="launchCampaignById(' + jsq(c.id) + ', this)">Launch to Outbox</button>' +
+          '<button class="btn btn-secondary btn-sm" onclick="openCampaignTestSend(' + jsq(c.id) + ')">Test Email</button>' +
           '<button class="btn btn-secondary btn-sm" onclick="toggleCampaignStatus(' + jsq(c.id) + ',' + jsq(nextStatus) + ', this)">' + statusLabel + '</button>' +
           '<button class="btn btn-ghost btn-sm" onclick="toggleCampaignAnalytics(' + jsq(c.id) + ')">Analytics</button>' +
           '<button class="btn btn-ghost btn-sm" onclick="openCampaignBuilderModal(' + jsq(c.id) + ')">Edit</button>' +

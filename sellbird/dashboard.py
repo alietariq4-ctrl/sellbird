@@ -482,7 +482,7 @@ ALLOWED_ENV_KEYS = (
     "INSTANTLY_API_KEY", "LINKEDIN_EMAIL", "LINKEDIN_PASSWORD",
     "CLOUDFLARE_ACCOUNT_ID", "CLOUDFLARE_API_TOKEN",
     "GMAIL_CLIENT_ID", "GMAIL_CLIENT_SECRET",
-    "SMTP_HOST", "SMTP_PORT", "SMTP_USERNAME", "SMTP_PASSWORD",
+    "SMTP_HOST", "SMTP_PORT", "SMTP_USERNAME", "SMTP_PASSWORD", "SMTP_FROM",
     "IMAP_HOST", "IMAP_PORT", "IMAP_USERNAME", "IMAP_PASSWORD",
     "M365_CLIENT_ID", "M365_TENANT_ID",
     "REOON_API_KEY", "ZEROBOUNCE_API_KEY", "HUNTER_API_KEY",
@@ -543,6 +543,7 @@ async def get_settings():
         "smtp_port": env_vars.get("SMTP_PORT", ""),
         "smtp_username": env_vars.get("SMTP_USERNAME", ""),
         "smtp_password_set": is_set("SMTP_PASSWORD"),
+        "smtp_from": env_vars.get("SMTP_FROM", ""),
         "imap_host": env_vars.get("IMAP_HOST", ""),
         "imap_port": env_vars.get("IMAP_PORT", ""),
         "imap_username": env_vars.get("IMAP_USERNAME", ""),
@@ -3280,6 +3281,7 @@ async def outbox_test_send(request: Request):
     subject = str(body.get("subject") or "").strip()
     msg_body = str(body.get("body") or "").strip()
     item_id = str(body.get("item_id") or "").strip()
+    campaign_id = str(body.get("campaign_id") or "").strip()
     kind = "sequence"
     if item_id:
         item = await state.get_outbox_item(item_id)
@@ -3288,6 +3290,17 @@ async def outbox_test_send(request: Request):
         subject = subject or str(item.get("subject") or "")
         msg_body = msg_body or str(item.get("body") or "")
         kind = str(item.get("kind") or "sequence")
+    elif campaign_id and (not subject or not msg_body):
+        camp = await state.get_campaign(campaign_id)
+        if not camp:
+            return JSONResponse({"success": False, "message": "Campaign not found."}, status_code=404)
+        seq = camp.get("sequence") or []
+        first_step = seq[0] if seq and isinstance(seq[0], dict) else {}
+        raw_sub = str(first_step.get("subject") or f"Quick idea for {getattr(cfg.persona, 'company', 'your team')}")
+        raw_body = str(first_step.get("body") or "Hi {{first_name}},\n\nTesting our campaign outreach template for {{company}}.")
+        demo_company = getattr(getattr(cfg, "persona", None), "company", "") or "Acme Dental"
+        subject = subject or raw_sub.replace("{{first_name}}", "Alex").replace("{{company}}", demo_company)
+        msg_body = msg_body or raw_body.replace("{{first_name}}", "Alex").replace("{{company}}", demo_company)
 
     if not subject or not msg_body:
         return JSONResponse({"success": False, "message": "Subject and body are required for test preview."}, status_code=400)
@@ -3319,6 +3332,16 @@ async def outbox_test_send(request: Request):
     )
 
     provider = get_mail_provider(cfg, env)
+    from_addr = (
+        getattr(provider, "smtp_from", "")
+        or getattr(env, "smtp_from", "")
+        or getattr(getattr(cfg, "persona", None), "email", "")
+        or _send_as()
+        or "onboarding@resend.dev"
+    )
+    provider_label = getattr(provider, "name", "dry_run") if provider else "unconfigured"
+    if getattr(provider, "smtp_host", ""):
+        provider_label = f"{provider_label} ({provider.smtp_host})"
     can_dispatch = bool(to_email and "@" in to_email and provider and provider.is_configured())
     if can_dispatch:
         try:
@@ -3329,39 +3352,47 @@ async def outbox_test_send(request: Request):
                     "success": True,
                     "sent": True,
                     "dry_run": False,
+                    "provider_name": provider_label,
+                    "from_email": from_addr,
                     "to_email": to_email,
                     "subject": f"[Test] {subject}",
-                    "message": f"Test email sent to {to_email} via {provider.name}.",
-                    "preview": {"to": to_email, "subject": f"[Test] {subject}", "text": full_text, "html": html_preview},
+                    "message": f"Test email sent from {from_addr} to {to_email} via {provider_label}.",
+                    "preview": {"from": from_addr, "to": to_email, "subject": f"[Test] {subject}", "text": full_text, "html": html_preview},
                 }
             return {
                 "success": True,
                 "sent": False,
                 "dry_run": True,
+                "provider_name": provider_label,
+                "from_email": from_addr,
                 "to_email": to_email,
                 "subject": subject,
                 "message": f"Live send returned '{res.error}' — rendered preview ready below.",
-                "preview": {"to": to_email, "subject": subject, "text": full_text, "html": html_preview},
+                "preview": {"from": from_addr, "to": to_email, "subject": subject, "text": full_text, "html": html_preview},
             }
         except Exception as exc:
             return {
                 "success": True,
                 "sent": False,
                 "dry_run": True,
+                "provider_name": provider_label,
+                "from_email": from_addr,
                 "to_email": to_email,
                 "subject": subject,
                 "message": f"Live send failed ({exc}) — rendered preview ready below.",
-                "preview": {"to": to_email, "subject": subject, "text": full_text, "html": html_preview},
+                "preview": {"from": from_addr, "to": to_email, "subject": subject, "text": full_text, "html": html_preview},
             }
 
     return {
         "success": True,
         "sent": False,
         "dry_run": True,
+        "provider_name": provider_label,
+        "from_email": from_addr,
         "to_email": to_email or "(set persona.email in Your company)",
         "subject": subject,
         "message": "No live mailbox connected yet — rendered preview ready below.",
-        "preview": {"to": to_email or "(preview)", "subject": subject, "text": full_text, "html": html_preview},
+        "preview": {"from": from_addr, "to": to_email or "(preview)", "subject": subject, "text": full_text, "html": html_preview},
     }
 
 
