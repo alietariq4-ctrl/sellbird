@@ -335,6 +335,33 @@ def test_warmup_settings_and_test_send_preview(adv_env, monkeypatch):
     assert live_res.json()["dry_run"] is False
 
 
+def test_company_setup_from_brief_api(adv_env, monkeypatch):
+    client, headers, _ = adv_env
+    # Force deterministic fallback path offline
+    async def _no_runtime():
+        return None, None
+    monkeypatch.setattr(dash, "_prepare_agentic_runtime", lambda: _no_runtime())
+
+    res = client.post(
+        "/api/company/setup-from-brief",
+        headers=headers,
+        json={
+            "brief": "We sell DentalFlow AI ($149/mo) for dentists and clinics in Austin, TX and Denver, CO."
+        },
+    )
+    assert res.status_code == 200, res.text
+    data = res.json()
+    assert data["success"] is True
+    assert data["product"]["pricing"] == "$149/mo"
+    assert "dentist" in data["icp"]["industries"]
+    assert "Austin, TX" in data["icp"]["geography"]
+    assert "Denver, CO" in data["icp"]["geography"]
+
+    cfg_after = client.get("/api/company", headers=headers).json()
+    assert cfg_after["product"]["pricing"] == "$149/mo"
+    assert "dentist" in cfg_after["icp"]["industries"]
+
+
 def test_advanced_suite_frontend_contracts_and_node_vm():
     html_text = (WEB_DIR / "index.html").read_text(encoding="utf-8")
     for marker in (
@@ -445,6 +472,9 @@ vm.runInContext(code, context);
   if (!getEl('today-workflow-guide').innerHTML.includes('5 co') || !getEl('today-workflow-guide').innerHTML.includes('2 waiting')) {
     throw new Error('Workflow progress guide did not update counts');
   }
+
+  context.loadSampleImportCsv();
+  if (!getEl('import-csv-text').value.includes('acmesaas.io')) throw new Error('Sample CSV helper did not populate textarea');
 
   await context.openTestSendModal('o1');
   if (!getEl('ts-preview').innerHTML.includes('Rendered inbox preview')) throw new Error('Test send modal missing rendered preview');

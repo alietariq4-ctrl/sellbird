@@ -3209,16 +3209,30 @@ function closeAddContactModal() {
   d.addEventListener('click', e => { if (e.target === d) closeAddContactModal(); });
 })();
 
+const FREEMAIL_DOMAINS = new Set(['gmail.com', 'yahoo.com', 'outlook.com', 'hotmail.com', 'icloud.com', 'aol.com', 'proton.me', 'protonmail.com']);
+
+function loadSampleImportCsv() {
+  const el = document.getElementById('import-csv-text');
+  if (!el) return;
+  el.value = 'first_name,last_name,email,title,company,domain\nJane,Doe,jane@acmesaas.io,VP Sales,Acme SaaS,acmesaas.io\nAli,Khan,ali@brightdental.com,Practice Owner,Bright Dental,brightdental.com';
+  el.focus();
+}
+
 async function submitAddContact(btn) {
   const email = (document.getElementById('ac-email')?.value || '').trim();
   if (!email) { showToast('Work email is required.', 'error'); return; }
+  let domain = (document.getElementById('ac-domain')?.value || '').trim();
+  if (!domain && email.includes('@')) {
+    const dom = email.split('@').pop().toLowerCase();
+    if (dom && !FREEMAIL_DOMAINS.has(dom)) domain = dom;
+  }
   const payload = {
     first_name: (document.getElementById('ac-first')?.value || '').trim(),
     last_name: (document.getElementById('ac-last')?.value || '').trim(),
     email,
     title: (document.getElementById('ac-title')?.value || '').trim(),
     company: (document.getElementById('ac-company')?.value || '').trim(),
-    domain: (document.getElementById('ac-domain')?.value || '').trim(),
+    domain,
     email_status: (document.getElementById('ac-status')?.value || 'verified').trim(),
     phone: (document.getElementById('ac-phone')?.value || '').trim(),
     tags: (document.getElementById('ac-tags')?.value || '').trim(),
@@ -5679,6 +5693,20 @@ async function loadCompany() {
     </div>
   </section>
 
+  <section class="card company-card" aria-labelledby="co-brief-h">
+    <div class="company-card-head">
+      <h3 id="co-brief-h">Quick Setup: Describe What You Want &amp; Who You Need</h3>
+      <span class="hint">Type in plain English or Roman Urdu — Sellbird fills your Product, Offer, Target Audience &amp; Cities</span>
+    </div>
+    <div class="form-group" style="margin-bottom:8px">
+      <textarea class="form-input" id="co-brief-input" rows="2" placeholder="Example: Main apni AI appointment SaaS ($99/mo) dentists aur salons ko Austin, TX aur Denver, CO mein pitch karna chahta hoon. Free 15-min demo offer hai."></textarea>
+    </div>
+    <div class="offer-actions">
+      <button class="btn btn-primary btn-sm" id="co-brief-btn" onclick="setupCompanyFromBrief(this)">Auto-Fill &amp; Save Setup</button>
+      <span class="hint">Feeds directly into <b>Discover</b>, <b>Campaigns</b> &amp; <b>Outbox</b></span>
+    </div>
+  </section>
+
   <section class="card company-card" aria-labelledby="co-train-h">
     <div class="company-card-head">
       <h3 id="co-train-h">Train from Website</h3>
@@ -5799,6 +5827,34 @@ async function loadCompany() {
   _offerIdeas = (o.entry_ideas || []).map(x => ({offer: x}));
   renderOfferIdeas();
   navCount('nav-company', o.proposed ? 1 : 0);
+}
+
+async function setupCompanyFromBrief(btn) {
+  const input = document.getElementById('co-brief-input');
+  const brief = ((input && input.value) || '').trim();
+  if (brief.length < 8) {
+    showToast('Write a short sentence describing what you sell and who you want to target.', 'error');
+    if (input && input.focus) input.focus();
+    return;
+  }
+  const orig = btn ? btn.textContent : 'Auto-Fill & Save Setup';
+  if (btn) { btn.disabled = true; btn.textContent = 'Building setup…'; }
+  try {
+    const res = await api('/api/company/setup-from-brief', {
+      method: 'POST',
+      headers: {'Content-Type': 'application/json'},
+      body: JSON.stringify({brief}),
+    });
+    if (res && res.success) {
+      showToast('Setup updated from your description' + (res.used_ai ? ' (AI).' : '.'), 'success');
+      await loadCompany();
+      loadToday();
+    } else {
+      showToast(failMsg(res, 'Could not build setup from description.'), 'error');
+    }
+  } finally {
+    if (btn) { btn.disabled = false; btn.textContent = orig; }
+  }
 }
 
 async function trainCompanyFromUrl() {

@@ -861,6 +861,135 @@ async def save_company_route(request: Request):
     return {"success": True, "message": "Saved. New emails use it from the next draft."}
 
 
+def _fallback_parse_brief(brief: str) -> dict:
+    """Deterministic parser turning a plain-text business goal into Sellbird product, offer, and ICP."""
+    import re as _re
+    low = brief.lower()
+    price_m = _re.search(r"(\$\s?\d+(?:[.,]\d+)?(?:/(?:mo|month|yr|year))?)", brief, _re.IGNORECASE)
+    pricing = price_m.group(1).replace(" ", "") if price_m else "Custom pricing"
+
+    known_trades = [
+        ("dentist", "dentist"), ("dental", "dentist"), ("hvac", "hvac"), ("plumb", "plumber"),
+        ("roof", "roofer"), ("salon", "salon"), ("barber", "barber"), ("gym", "gym"),
+        ("clinic", "clinic"), ("vet", "vet"), ("lawyer", "lawyer"), ("legal", "lawyer"),
+        ("real estate", "real estate"), ("realtor", "real estate"), ("restaurant", "restaurant"),
+        ("auto", "auto repair"), ("saas", "saas"), ("ecommerce", "ecommerce"), ("agency", "marketing agency"),
+    ]
+    industries = []
+    for needle, label in known_trades:
+        if needle in low and label not in industries:
+            industries.append(label)
+    if not industries:
+        industries = ["saas"]
+
+    cities = []
+    for m in _re.finditer(r"\b([A-Z][a-zA-Z]+(?:\s+[A-Z][a-zA-Z]+)?,\s*[A-Z]{2})\b", brief):
+        if m.group(1) not in cities:
+            cities.append(m.group(1))
+    if not cities:
+        for city_kw in ("Austin, TX", "Denver, CO", "New York, NY", "London, UK", "Toronto, Canada", "Lahore", "Karachi", "Dubai"):
+            if city_kw.split(",")[0].lower() in low:
+                cities.append(city_kw)
+
+    first_clause = brief.strip().split(".")[0].strip()
+    prod_name = first_clause[:48] if len(first_clause) <= 48 else (industries[0].title() + " Growth Solution")
+    titles = ["Founder", "Owner", "CEO"] if "saas" in industries else ["Owner", "Practice Manager", "Director"]
+    return {
+        "product": {
+            "name": prod_name,
+            "pricing": pricing,
+            "description": brief.strip()[:400],
+            "key_benefits": [
+                "Automated prospect discovery and personalization",
+                "Consistent follow-ups without manual effort",
+            ],
+        },
+        "offer": {
+            "entry": f"a quick 15-min tailored audit showing how {prod_name} fits your business"[:240],
+        },
+        "icp": {
+            "industries": industries,
+            "titles": titles,
+            "geography": cities or ["Austin, TX"],
+        },
+    }
+
+
+@app.post("/api/company/setup-from-brief")
+async def setup_company_from_brief(request: Request):
+    """Turn a plain-language goal/description into saved Product, Offer, and ICP settings."""
+    from sellbird.offer import save_company
+    from sellbird.untrusted import UNTRUSTED_RULE, fence
+
+    try:
+        body = await request.json()
+    except Exception:
+        body = {}
+    brief = str((body or {}).get("brief") or "").strip()
+    if len(brief) < 8:
+        return JSONResponse(
+            {"success": False, "message": "Describe what you sell and who you want to reach (at least a few words)."},
+            status_code=400,
+        )
+
+    parsed = None
+    used_ai = False
+    runtime, _err = await _prepare_agentic_runtime()
+    if runtime is not None:
+        brain, _st, _cfg, _env = runtime
+        try:
+            prompt = (
+                "Extract structured B2B/local outreach setup from the operator's plain-language goal (English or Roman Urdu).\n"
+                f"{UNTRUSTED_RULE}\n"
+                f"Operator brief:\n{fence(brief[:1200], 'brief')}\n\n"
+                'Return strictly JSON: {"product": {"name": "...", "pricing": "...", "description": "...", '
+                '"key_benefits": ["...", "..."]}, "offer": {"entry": "free low-friction offer under 120 chars"}, '
+                '"icp": {"industries": ["..."], "titles": ["..."], "geography": ["City, ST"]}}'
+            )
+            raw = await brain.think_json(prompt, session_id="company-brief-setup", agent="scout", task="setup_from_brief")
+            if isinstance(raw, dict) and isinstance(raw.get("product"), dict):
+                parsed = raw
+                used_ai = True
+        except Exception:
+            parsed = None
+        finally:
+            await _close_brain(brain)
+
+    if not parsed:
+        parsed = _fallback_parse_brief(brief)
+
+    cfg_path = _offer_config_file()
+    prod = parsed.get("product") or {}
+    offer = parsed.get("offer") or {}
+    icp = parsed.get("icp") or {}
+    prod_fields = {k: v for k, v in {
+        "name": str(prod.get("name") or "").strip()[:120],
+        "pricing": str(prod.get("pricing") or "").strip()[:120],
+        "description": str(prod.get("description") or "").strip()[:500],
+        "key_benefits": [str(x).strip() for x in (prod.get("key_benefits") or []) if str(x).strip()][:6],
+    }.items() if v}
+    icp_fields = {k: v for k, v in {
+        "industries": [str(x).strip().lower() for x in (icp.get("industries") or []) if str(x).strip()][:12],
+        "titles": [str(x).strip() for x in (icp.get("titles") or []) if str(x).strip()][:10],
+        "geography": [str(x).strip() for x in (icp.get("geography") or []) if str(x).strip()][:10],
+    }.items() if v}
+    try:
+        if prod_fields:
+            save_company(cfg_path, "product", prod_fields)
+        if icp_fields:
+            save_company(cfg_path, "icp", icp_fields)
+        entry_val = str(offer.get("entry") or "").strip()[:300]
+        if entry_val:
+            save_company(cfg_path, "offer", {"entry": entry_val})
+    except Exception as exc:
+        return JSONResponse({"success": False, "message": f"Could not save extracted setup: {exc}"}, status_code=400)
+
+    state = _state()
+    await state.init_db()
+    await state.log_action("company_setup_from_brief", "dashboard", {"used_ai": used_ai, "industries": icp_fields.get("industries", [])})
+    return {"success": True, "used_ai": used_ai, "product": prod_fields, "offer": {"entry": str(offer.get("entry") or "").strip()}, "icp": icp_fields}
+
+
 @app.post("/api/offer/propose")
 async def propose_offer(request: Request):
     """Your agent's proposed offer, waiting for you to use or dismiss it on

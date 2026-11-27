@@ -423,7 +423,10 @@
       <input type="file" class="form-input" id="import-csv-file" accept=".csv,text/csv" onchange="handleImportCsvFile(this)">
     </div>
     <div class="form-group">
-      <label class="form-label" for="import-csv-text">Or paste CSV rows</label>
+      <div style="display:flex;align-items:center;justify-content:space-between;gap:8px;margin-bottom:4px">
+        <label class="form-label" for="import-csv-text" style="margin:0">Or paste CSV rows</label>
+        <button type="button" class="btn btn-ghost btn-sm" onclick="loadSampleImportCsv()">Load sample CSV</button>
+      </div>
       <textarea class="form-input" id="import-csv-text" rows="7" placeholder="first_name,last_name,email,title,company,domain&#10;Jane,Doe,jane@acme.com,VP Sales,Acme Corp,acme.com"></textarea>
       <div class="form-hint">Expected columns: <code>first_name</code>, <code>last_name</code> (or <code>full_name</code>), <code>email</code>, <code>title</code> (or <code>role</code>), <code>company</code>, <code>domain</code> (or <code>website</code>), optional <code>linkedin_url</code>, <code>industry</code>, <code>location</code>, <code>email_status</code>. Max 2,000 rows; DNC and suppressed contacts are skipped automatically.</div>
     </div>
