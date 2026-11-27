@@ -518,7 +518,7 @@ function showTabLoading(id) {
 function loadCurrentTab() {
   showTabLoading(currentTab);
   switch (currentTab) {
-    case 'today': loadLiveStatus(); loadRenameNotice(); loadToday(); loadTrend(); loadFunnel(); loadSetupStatus(); loadRuns(); loadTodayActivity(); break;
+    case 'today': loadLiveStatus(); loadRenameNotice(); loadToday(); loadTrend(); loadFunnel(); loadSetupStatus(); loadTodayResendCard(); loadRuns(); loadTodayActivity(); break;
     case 'signals': loadSignals(); break;
     case 'discover': loadDiscoverProviders(); break;
     case 'companies': if (!companyDrill) loadCompanies(); break;
@@ -831,6 +831,105 @@ async function dismissRenameNotice() {
   }
 }
 
+async function loadTodayResendCard() {
+  const badgeEl = document.getElementById('dash-resend-badge');
+  const keyEl = document.getElementById('dash-resend-key');
+  const fromEl = document.getElementById('dash-resend-from');
+  if (!badgeEl) return;
+  try {
+    const data = await api('/api/settings');
+    if (!data) return;
+    const isSmtp = data.provider === 'smtp';
+    const hasResend = isSmtp && (data.smtp_host || '').toLowerCase().includes('resend.com') && data.smtp_password_set;
+    if (hasResend) {
+      badgeEl.className = 'badge t-good';
+      badgeEl.textContent = 'Resend Ready (' + (data.smtp_from || 'verified domain') + ')';
+    } else if (isSmtp && data.smtp_password_set) {
+      badgeEl.className = 'badge t-good';
+      badgeEl.textContent = 'SMTP Active (' + (data.smtp_host || 'configured') + ')';
+    } else {
+      badgeEl.className = 'badge t-waiting';
+      badgeEl.textContent = 'Active: ' + (data.provider || 'gmail') + ' · Needs Setup';
+    }
+    if (fromEl && !fromEl.value) {
+      fromEl.value = data.smtp_from || 'onboarding@resend.dev';
+    }
+    if (keyEl) {
+      keyEl.placeholder = data.smtp_password_set ? 'Saved in .env — enter new key to replace' : 're_... (paste your Resend API key)';
+    }
+  } catch (_) {}
+}
+
+function fillDashboardResendSandbox() {
+  const fromEl = document.getElementById('dash-resend-from');
+  const keyEl = document.getElementById('dash-resend-key');
+  if (fromEl) fromEl.value = 'onboarding@resend.dev';
+  if (keyEl && !keyEl.value) keyEl.focus();
+  showToast('Sandbox sender set to onboarding@resend.dev.', 'info');
+}
+
+async function connectResendFromDashboard(btn) {
+  const keyEl = document.getElementById('dash-resend-key');
+  const fromEl = document.getElementById('dash-resend-from');
+  const resEl = document.getElementById('dash-resend-result');
+  const apiKey = (keyEl?.value || '').trim();
+  const fromAddr = (fromEl?.value || '').trim() || 'onboarding@resend.dev';
+
+  if (btn) btn.disabled = true;
+  if (resEl) resEl.innerHTML = '<span class="muted">Saving Resend SMTP, activating provider &amp; testing connection…</span>';
+  try {
+    const envPayload = {
+      SMTP_HOST: 'smtp.resend.com',
+      SMTP_PORT: '587',
+      SMTP_USERNAME: 'resend',
+      SMTP_FROM: fromAddr,
+    };
+    if (apiKey) envPayload.SMTP_PASSWORD = apiKey;
+
+    const saved = await api('/api/settings/env', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(envPayload),
+    });
+    if (!saved || !saved.success) {
+      const err = failMsg(saved, 'Could not save Resend settings.');
+      if (resEl) resEl.innerHTML = '<span class="email-tag invalid">' + escHtml(err) + '</span>';
+      showToast(err, 'error');
+      return;
+    }
+
+    await api('/api/settings/email-provider', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ provider: 'smtp' }),
+    });
+
+    const testRes = await api('/api/settings/test-smtp', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        smtp_host: 'smtp.resend.com',
+        smtp_port: '587',
+        smtp_username: 'resend',
+        smtp_password: apiKey,
+      }),
+    });
+    const ok = !!(testRes && testRes.success);
+    const msg = (testRes && testRes.message) || (ok ? 'Resend SMTP connected!' : 'Enter a valid Resend API key first.');
+    if (resEl) {
+      resEl.innerHTML = '<span class="email-tag ' + (ok ? 'verified' : 'invalid') + '">' +
+        (ok ? 'Connected' : 'Check Key') + '</span> ' + escHtml(msg);
+    }
+    showToast(msg, ok ? 'success' : 'error');
+    if (ok && keyEl) keyEl.value = '';
+    loadTodayResendCard();
+    loadSetupStatus();
+    if (typeof loadSettings === 'function') loadSettings();
+  } finally {
+    if (btn) btn.disabled = false;
+  }
+}
+
 async function loadSetupStatus() {
   const el = document.getElementById('today-setup');
   if (!el) return;
@@ -838,10 +937,16 @@ async function loadSetupStatus() {
   if (!data || !data.checks) { el.innerHTML = ''; return; }
 
   const pct = data.percent || 0;
-  // Finished setup disappears completely rather than greeting you forever.
-  if (pct === 100) { el.innerHTML = ''; return; }
+  if (pct === 100) {
+    el.innerHTML =
+      '<div class="card setup-card" style="margin-bottom:0;height:100%;display:flex;flex-direction:column;justify-content:center;">' +
+        '<div class="setup-head"><div><h3>System Ready</h3>' +
+        '<p class="muted">All required pipeline &amp; email checks passed.</p></div>' +
+        '<span class="badge t-good">100% Ready</span></div>' +
+      '</div>';
+    return;
+  }
 
-  // The first unfinished required step is the one to do now.
   const next = data.checks.find(c => c.required && !c.done);
   const renderCheck = (c, optional) =>
     '<div class="check-item' + (c === next ? ' current' : '') + '">' +
@@ -855,21 +960,19 @@ async function loadSetupStatus() {
       '</div></div>';
 
   const required = data.checks.filter(c => c.required);
-  const optional = data.checks.filter(c => !c.required);
   const done = required.filter(c => c.done).length;
+  const remaining = data.checks.filter(c => c !== next);
 
   el.innerHTML =
-    '<div class="card setup-card">' +
-      '<div class="setup-head"><div><h3>Finish setting up VeloReach</h3>' +
-        '<p class="muted">VeloReach starts finding prospects and sending once these are done.</p></div>' +
-        '<span class="setup-pct">' + done + ' of ' + required.length + ' done</span></div>' +
-      '<div class="bar thick" style="margin-bottom:8px"><span style="width:' + pct + '%;background:var(--accent)"></span></div>' +
-      required.map(c => renderCheck(c, false)).join('') +
-      (optional.length
-        ? '<details style="margin-top:10px"><summary class="muted" ' +
-          'style="font-size:12px">' + optional.length + ' optional</summary>' +
-          '<div style="margin-top:6px">' +
-          optional.map(c => renderCheck(c, true)).join('') + '</div></details>'
+    '<div class="card setup-card" style="margin-bottom:0;height:100%">' +
+      '<div class="setup-head"><div><h3>Setup Checklist</h3>' +
+        '<p class="muted">Next recommended action highlighted below.</p></div>' +
+        '<span class="setup-pct">' + done + ' / ' + required.length + ' ready</span></div>' +
+      '<div class="bar thick" style="margin-bottom:12px"><span style="width:' + pct + '%;background:var(--accent)"></span></div>' +
+      (next ? renderCheck(next, false) : '') +
+      (remaining.length
+        ? '<details style="margin-top:10px"><summary class="muted" style="font-size:12px">View all ' + data.checks.length + ' checks (' + done + ' complete)</summary>' +
+          '<div style="margin-top:6px">' + remaining.map(c => renderCheck(c, !c.required)).join('') + '</div></details>'
         : '') +
     '</div>';
 }
@@ -5201,6 +5304,15 @@ async function loadInboxes() {
     'Add inbox</button>';
 
   let html = '';
+  if (data.provider !== 'smtp') {
+    html += '<div class="card" style="display:flex;align-items:center;justify-content:space-between;gap:12px;flex-wrap:wrap;border-color:var(--accent-line);">' +
+      '<div><b>Quick Demo / Test Mode: Resend SMTP</b>' +
+      '<div class="muted" style="font-size:12.5px;margin-top:2px;">Want to test email delivery right now without Google/M365 OAuth? Configure Resend in 1 click on Today or Settings.</div></div>' +
+      '<div style="display:flex;gap:8px;flex-wrap:wrap;">' +
+        '<button type="button" class="btn btn-primary btn-sm" onclick="goTab(\'today\')">Configure Resend on Today</button>' +
+        '<button type="button" class="btn btn-secondary btn-sm" onclick="goTab(\'settings\');setTimeout(() => jumpSettings(\'settings-email-providers\'), 120)">Open Settings</button>' +
+      '</div></div>';
+  }
   if (data.sending_paused) {
     html += '<div class="notice wait"><b>All sending is paused:</b> ' + escHtml(data.sending_paused) +
       '. Resume it on the Outbox tab.</div>';

@@ -529,6 +529,15 @@ vm.runInContext(code, context);
   if (!getEl('disc-filter-free').classList.contains('on')) {
     throw new Error('setDiscoverFilter(free) did not toggle active filter state');
   }
+  context.fillDashboardResendSandbox();
+  if (getEl('dash-resend-from').value !== 'onboarding@resend.dev') {
+    throw new Error('fillDashboardResendSandbox did not populate onboarding@resend.dev');
+  }
+  getEl('dash-resend-key').value = 're_dummy_test';
+  await context.connectResendFromDashboard();
+  if (!getEl('dash-resend-result').innerHTML.includes('email-tag')) {
+    throw new Error('connectResendFromDashboard did not render result badge');
+  }
 
   console.log('VM_ADV_SUITE_OK');
   process.exit(0);

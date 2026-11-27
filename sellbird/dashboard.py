@@ -367,19 +367,17 @@ async def get_setup_status():
 
     if provider == "gmail":
         provider_done = _has("GMAIL_CLIENT_ID", "GMAIL_CLIENT_SECRET") and Path(gmail_tok).is_file()
-        provider_help = ("Add your Google OAuth client ID and secret in Settings, then sign "
-                         "in on the Inboxes tab (or run 'sellbird gmail auth').")
+        provider_help = ("Connect Resend SMTP in 1 click on Today, or add Google OAuth credentials in Settings.")
     elif provider == "microsoft":
         provider_done = _has("M365_CLIENT_ID") and Path(m365_tok).is_file()
-        provider_help = ("Add your Microsoft 365 client and tenant IDs in Settings, then sign "
-                         "in on the Inboxes tab (or run 'sellbird microsoft auth').")
+        provider_help = ("Connect Microsoft 365 OAuth in Settings + Inboxes, or switch to Resend SMTP.")
     elif provider == "smtp":
         provider_done = _has("SMTP_HOST", "SMTP_USERNAME", "SMTP_PASSWORD")
-        provider_help = "Enter your SMTP host, username, and password in Settings."
+        provider_help = "Paste your Resend API key (re_...) in the Resend card on Today or Settings."
     else:
         instantly_key = (env_vars.get("INSTANTLY_API_KEY", "") or os.getenv("INSTANTLY_API_KEY", "")).strip()
         provider_done = bool(instantly_key) and instantly_key != "your_instantly_api_key_here"
-        provider_help = "Enter your Instantly API key in Settings."
+        provider_help = "Enter your Instantly API key in Settings (or switch to Resend SMTP)."
     checks.append({
         "id": "email_provider", "label": f"Email provider configured ({provider})",
         "done": provider_done,
@@ -409,10 +407,10 @@ async def get_setup_status():
         except Exception:
             pass
     checks.append({
-        "id": "config", "label": f"Sellbird configured ({config_path.name})",
+        "id": "config", "label": f"Company & offer configured ({config_path.name})",
         "done": config_valid,
         "required": True,
-        "help": "Train Sellbird on your product. Use the trainer or set up manually through Claude.",
+        "help": "Set your company & offer in the Your Company tab using a plain-language brief or website URL.",
     })
 
     # 6. Product trained
@@ -421,7 +419,7 @@ async def get_setup_status():
         "id": "product_trained", "label": "Product knowledge trained",
         "done": product_trained,
         "required": True,
-        "help": "Run: sellbird train https://yourwebsite.com (or set up through Claude).",
+        "help": "Open Your Company → Train from Website or Setup with Brief to generate product knowledge.",
     })
 
     # 7. LinkedIn (optional)

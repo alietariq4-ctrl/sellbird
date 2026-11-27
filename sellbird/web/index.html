@@ -7,7 +7,7 @@
 <title>VeloReach</title>
 <!-- First, so the token leaves the address bar before anything else runs. -->
 <script src="/static/auth.js"></script>
-<link rel="stylesheet" href="/static/app.css?v=20261127e">
+<link rel="stylesheet" href="/static/app.css?v=20261127f">
 <link rel="icon" href="/static/sellbird-mark.svg" type="image/svg+xml">
 </head>
 <body>
@@ -155,10 +155,42 @@
     <button type="button" class="fg-pill" onclick="goTab('outbox')"><span class="step-n">5</span>Preview &amp; Approve Outbox</button>
   </div>
 
-  <div id="today-renamed"></div>
-  <div id="today-setup"></div>
-
   <div id="today-kpis"></div>
+  <div id="today-renamed"></div>
+
+  <div class="launchpad-grid" id="today-launchpad">
+    <div class="launchpad-card" id="today-resend-card">
+      <div class="launchpad-head">
+        <div>
+          <h3>Resend Email Quick Configure</h3>
+          <p>Connect Resend right here on your dashboard for live email testing &amp; demos (no hunting in Settings).</p>
+        </div>
+        <span class="badge t-waiting" id="dash-resend-badge">Checking…</span>
+      </div>
+      <div class="form-row" style="margin-bottom:4px;">
+        <div class="form-group" style="margin-bottom:0;flex:1.25;">
+          <label class="form-label" for="dash-resend-key">Resend API Key <span class="hint muted">(saved locally to .env)</span></label>
+          <div class="with-btn">
+            <input type="password" class="form-input" id="dash-resend-key" placeholder="re_... (paste your Resend key)" autocomplete="off">
+            <button type="button" class="btn btn-secondary" onclick="toggleVisibility('dash-resend-key')">Show</button>
+          </div>
+        </div>
+        <div class="form-group" style="margin-bottom:0;flex:1;">
+          <label class="form-label" for="dash-resend-from">From Address <span class="hint muted">(Sandbox or verified)</span></label>
+          <input type="email" class="form-input" id="dash-resend-from" placeholder="onboarding@resend.dev" autocomplete="off">
+        </div>
+      </div>
+      <div style="display:flex;align-items:center;gap:8px;flex-wrap:wrap;">
+        <button type="button" class="btn btn-primary btn-sm" id="dash-resend-save-btn" onclick="connectResendFromDashboard(this)">Save, Activate &amp; Test Resend</button>
+        <button type="button" class="btn btn-secondary btn-sm" onclick="fillDashboardResendSandbox()">Use Sandbox (onboarding@resend.dev)</button>
+        <button type="button" class="btn btn-ghost btn-sm" onclick="openTestSendModal()">Send Test Email</button>
+      </div>
+      <div id="dash-resend-result" style="font-size:12px;"></div>
+    </div>
+
+    <div id="today-setup"></div>
+  </div>
+
   <div id="today-agentic"></div>
 
   <div class="grid-main">
@@ -868,23 +900,124 @@
 
   <div class="feature-guide" id="settings-jump">
     <span><b>Quick Jump:</b></span>
-    <button type="button" class="fg-pill" onclick="jumpSettings('sending-mode-card')">1. Sending &amp; DNS</button>
-    <button type="button" class="fg-pill" onclick="jumpSettings('compliance-card')">2. Limits &amp; Warmup</button>
-    <button type="button" class="fg-pill" onclick="jumpSettings('settings-email-providers')">3. Email &amp; Resend SMTP</button>
+    <button type="button" class="fg-pill" onclick="jumpSettings('settings-email-providers')">1. Email &amp; Resend SMTP</button>
+    <button type="button" class="fg-pill" onclick="jumpSettings('sending-mode-card')">2. Sending Mode &amp; DNS</button>
+    <button type="button" class="fg-pill" onclick="jumpSettings('compliance-card')">3. Limits &amp; Warmup</button>
     <button type="button" class="fg-pill" onclick="jumpSettings('settings-verifiers')">4. Verifiers</button>
     <button type="button" class="fg-pill" onclick="jumpSettings('settings-ai-providers')">5. AI Models</button>
     <button type="button" class="fg-pill" onclick="jumpSettings('settings-search-crm')">6. Search &amp; CRM</button>
     <button type="button" class="fg-pill" onclick="jumpSettings('competitor-watch-card')">7. Competitor Watch</button>
   </div>
 
-  <div class="subhead">Sending Mode &amp; DNS Check</div>
+  <div class="subhead" id="settings-email-providers" style="display:flex;align-items:center;justify-content:space-between;gap:10px;flex-wrap:wrap">
+    <span>Email Provider <span class="hint">Active: <b id="active-provider">…</b></span></span>
+    <span class="chip-row" aria-label="Switch active email provider">
+      <button type="button" class="chip" id="ep-gmail" onclick="switchEmailProvider('gmail')">Use Gmail</button>
+      <button type="button" class="chip" id="ep-smtp" onclick="switchEmailProvider('smtp')">Use SMTP / Resend</button>
+      <button type="button" class="chip" id="ep-microsoft" onclick="switchEmailProvider('microsoft')">Use M365</button>
+      <button type="button" class="chip" id="ep-instantly" onclick="switchEmailProvider('instantly')">Use Instantly</button>
+    </span>
+  </div>
+  <div class="card">
+    <div class="settings-row">
+      <div>
+        <h3>SMTP + IMAP mailbox <span class="tag accent">Resend SMTP Ready</span></h3>
+        <p class="desc">Use <strong>Resend</strong> (3,000 free/mo, ideal for live tests &amp; demos) or any real SMTP+IMAP mailbox (AgentMail, Fastmail, Google Workspace app password). Note: Resend is outbound SMTP only.</p>
+        <div style="margin-top:8px;">
+          <button type="button" class="btn btn-secondary btn-sm" onclick="fillResendPreset()">Use Resend SMTP Preset (smtp.resend.com)</button>
+        </div>
+      </div>
+      <div class="fields">
+        <div class="form-row">
+          <div class="form-group"><label class="form-label" for="smtp-host">SMTP host</label>
+            <input type="text" class="form-input" id="smtp-host" placeholder="smtp.example.com" autocomplete="off"></div>
+          <div class="form-group" style="max-width:120px"><label class="form-label" for="smtp-port">Port</label>
+            <input type="text" class="form-input" id="smtp-port" placeholder="587" autocomplete="off"></div>
+        </div>
+        <div class="form-group"><label class="form-label" for="smtp-user">Username</label>
+          <input type="text" class="form-input" id="smtp-user" placeholder="you@example.com or resend" autocomplete="off"></div>
+        <div class="form-group"><label class="form-label" for="smtp-pass">Password / API key</label>
+          <div class="with-btn"><input type="password" class="form-input" id="smtp-pass" placeholder="Password or Resend API key (re_...)" autocomplete="off">
+            <button class="btn btn-secondary" onclick="toggleVisibility('smtp-pass')">Show</button></div></div>
+        <div class="form-group"><label class="form-label" for="smtp-from">From address override <span class="hint muted">(e.g. onboarding@resend.dev for test mode)</span></label>
+          <input type="email" class="form-input" id="smtp-from" placeholder="Leave blank to use Your Company email, or onboarding@resend.dev" autocomplete="off"></div>
+        <details class="more-fields">
+          <summary>Reading replies from a different IMAP server or login</summary>
+          <div class="form-row">
+            <div class="form-group"><label class="form-label" for="imap-host">IMAP host</label>
+              <input type="text" class="form-input" id="imap-host" placeholder="Same as SMTP host (blank for Resend)" autocomplete="off"></div>
+            <div class="form-group" style="max-width:120px"><label class="form-label" for="imap-port">Port</label>
+              <input type="text" class="form-input" id="imap-port" placeholder="993" autocomplete="off"></div>
+          </div>
+          <div class="form-group"><label class="form-label" for="imap-user">IMAP username</label>
+            <input type="text" class="form-input" id="imap-user" placeholder="Same as SMTP username" autocomplete="off"></div>
+          <div class="form-group"><label class="form-label" for="imap-pass">IMAP password</label>
+            <div class="with-btn"><input type="password" class="form-input" id="imap-pass" placeholder="Same as SMTP password" autocomplete="off" oninput="if (this.value) document.getElementById('imap-same-pass').checked = false">
+              <button class="btn btn-secondary" onclick="toggleVisibility('imap-pass')">Show</button></div></div>
+          <label class="check-line"><input type="checkbox" id="imap-same-pass"> Use the SMTP password for IMAP</label>
+        </details>
+        <div style="display:flex;gap:8px;align-items:center;flex-wrap:wrap;margin-top:6px;">
+          <button class="btn btn-primary btn-sm" onclick="saveSmtp(true)">Save &amp; Activate SMTP</button>
+          <button class="btn btn-secondary btn-sm" onclick="saveSmtp(false)">Save Credentials Only</button>
+          <button class="btn btn-secondary btn-sm" id="test-smtp-btn" onclick="testSmtpConnection(this)">Test SMTP / IMAP</button>
+          <span id="smtp-test-result" class="muted" style="font-size:12px;"></span>
+        </div>
+      </div>
+    </div>
+
+    <div class="settings-row">
+      <div>
+        <h3>Gmail / Google Workspace <span id="gmail-status" class="email-tag"></span></h3>
+        <p class="desc">Connect a Google Workspace mailbox using OAuth ("Desktop app" in Google Cloud Console → Gmail API), save credentials, then sign in on the Inboxes tab.</p>
+      </div>
+      <div class="fields">
+        <div class="form-group"><label class="form-label" for="gmail-id">Client ID</label>
+          <input type="text" class="form-input" id="gmail-id" placeholder="xxxx.apps.googleusercontent.com" autocomplete="off"></div>
+        <div class="form-group"><label class="form-label" for="gmail-secret">Client secret</label>
+          <div class="with-btn"><input type="password" class="form-input" id="gmail-secret" placeholder="Enter client secret" autocomplete="off">
+            <button class="btn btn-secondary" onclick="toggleVisibility('gmail-secret')">Show</button></div></div>
+        <button class="btn btn-primary btn-sm" onclick="saveGmail()">Save Gmail</button>
+      </div>
+    </div>
+
+    <div class="settings-row">
+      <div>
+        <h3>Microsoft 365 / Outlook <span id="m365-status" class="email-tag"></span></h3>
+        <p class="desc">Register a "Public client/native" app in <a href="https://entra.microsoft.com" target="_blank" rel="noopener noreferrer">Entra</a> with redirect URI <code>http://localhost:8766</code>, paste IDs, then sign in on the Inboxes tab.</p>
+      </div>
+      <div class="fields">
+        <div class="form-group"><label class="form-label" for="m365-client">Application (client) ID</label>
+          <input type="text" class="form-input" id="m365-client" placeholder="00000000-0000-0000-0000-000000000000" autocomplete="off"></div>
+        <div class="form-group"><label class="form-label" for="m365-tenant">Directory (tenant) ID</label>
+          <input type="text" class="form-input" id="m365-tenant" placeholder="00000000-0000-0000-0000-000000000000" autocomplete="off"></div>
+        <button class="btn btn-primary btn-sm" onclick="saveMicrosoft()">Save Microsoft 365</button>
+      </div>
+    </div>
+
+    <div class="settings-row">
+      <div>
+        <h3>Instantly <span class="tag">Legacy</span></h3>
+        <p class="desc">Get your API key from <a href="https://app.instantly.ai/app/settings/integrations" target="_blank" rel="noopener">Instantly Settings → Integrations</a>.</p>
+      </div>
+      <div class="fields">
+        <div class="form-group"><label class="form-label" for="instantly-key">API key</label>
+          <div class="with-btn"><input type="password" class="form-input" id="instantly-key" placeholder="Enter your Instantly API key" autocomplete="off">
+            <button class="btn btn-secondary" onclick="toggleVisibility('instantly-key')">Show</button>
+            <button class="btn btn-secondary" onclick="testInstantly()">Test</button></div>
+          <div id="instantly-test-result"></div></div>
+        <button class="btn btn-primary btn-sm" onclick="saveInstantly()">Save Instantly</button>
+      </div>
+    </div>
+  </div>
+
+  <div class="subhead">Sending Mode, DNS Check &amp; Warmup Limits</div>
   <div id="sending-mode-card"></div>
 
   <div class="card" id="dns-card">
     <div class="settings-row">
       <div>
         <h3>DNS check</h3>
-        <p class="desc">MX, SPF, DKIM and DMARC for your sending domain — the same checks as <code>sellbird dns-check</code>. Fix any FAIL before cold email; warnings are worth a look too.</p>
+        <p class="desc">Check MX, SPF, DKIM and DMARC records for your sending domain before live cold email.</p>
       </div>
       <div class="fields">
         <div class="form-group"><label class="form-label" for="dns-domain">Domain <span class="optional-tag">blank = your sending domain</span></label>
@@ -972,107 +1105,6 @@
         <div style="margin-top:12px;">
           <button class="btn btn-primary btn-sm" id="comp-save-btn" onclick="saveComplianceSettings()">Save Compliance &amp; Schedule</button>
         </div>
-      </div>
-    </div>
-  </div>
-
-  <div class="subhead" id="settings-email-providers" style="display:flex;align-items:center;justify-content:space-between;gap:10px;flex-wrap:wrap">
-    <span>Email Provider <span class="hint">Active: <b id="active-provider">…</b></span></span>
-    <span class="chip-row" aria-label="Switch active email provider">
-      <button type="button" class="chip" id="ep-gmail" onclick="switchEmailProvider('gmail')">Use Gmail</button>
-      <button type="button" class="chip" id="ep-smtp" onclick="switchEmailProvider('smtp')">Use SMTP / Resend</button>
-      <button type="button" class="chip" id="ep-microsoft" onclick="switchEmailProvider('microsoft')">Use M365</button>
-      <button type="button" class="chip" id="ep-instantly" onclick="switchEmailProvider('instantly')">Use Instantly</button>
-    </span>
-  </div>
-  <div class="card">
-    <div class="settings-row">
-      <div>
-        <h3>Gmail / Google Workspace <span class="tag accent">Recommended</span> <span id="gmail-status" class="email-tag"></span></h3>
-        <p class="desc">Use a mailbox on a dedicated secondary domain. Create an OAuth client (type "Desktop app") in Google Cloud Console → Gmail API, paste the id and secret, save, then sign in on the Inboxes tab (or run <code>sellbird gmail auth</code>).</p>
-      </div>
-      <div class="fields">
-        <div class="form-group"><label class="form-label" for="gmail-id">Client ID</label>
-          <input type="text" class="form-input" id="gmail-id" placeholder="xxxx.apps.googleusercontent.com" autocomplete="off"></div>
-        <div class="form-group"><label class="form-label" for="gmail-secret">Client secret</label>
-          <div class="with-btn"><input type="password" class="form-input" id="gmail-secret" placeholder="Enter client secret" autocomplete="off">
-            <button class="btn btn-secondary" onclick="toggleVisibility('gmail-secret')">Show</button></div></div>
-        <button class="btn btn-primary btn-sm" onclick="saveGmail()">Save Gmail</button>
-      </div>
-    </div>
-
-    <div class="settings-row">
-      <div>
-        <h3>SMTP + IMAP mailbox <span class="tag accent">Works with Resend SMTP</span></h3>
-        <p class="desc">Any real mailbox (AgentMail, Fastmail, Google Workspace app password) OR an outbound SMTP relay like <strong>Resend</strong> (3,000 free/mo, ideal for live demos). Note: Resend has no IMAP inbox for reply polling and forbids bulk unsolicited cold blasts; for scaled cold email with reply tracking use Workspace/M365 or SMTP+IMAP.</p>
-        <div style="margin-top:8px;">
-          <button type="button" class="btn btn-secondary btn-sm" onclick="fillResendPreset()">Use Resend SMTP Preset (smtp.resend.com)</button>
-        </div>
-      </div>
-      <div class="fields">
-        <div class="form-row">
-          <div class="form-group"><label class="form-label" for="smtp-host">SMTP host</label>
-            <input type="text" class="form-input" id="smtp-host" placeholder="smtp.example.com" autocomplete="off"></div>
-          <div class="form-group" style="max-width:120px"><label class="form-label" for="smtp-port">Port</label>
-            <input type="text" class="form-input" id="smtp-port" placeholder="587" autocomplete="off"></div>
-        </div>
-        <div class="form-group"><label class="form-label" for="smtp-user">Username</label>
-          <input type="text" class="form-input" id="smtp-user" placeholder="you@example.com or resend" autocomplete="off"></div>
-        <div class="form-group"><label class="form-label" for="smtp-pass">Password / API key</label>
-          <div class="with-btn"><input type="password" class="form-input" id="smtp-pass" placeholder="Password or Resend API key (re_...)" autocomplete="off">
-            <button class="btn btn-secondary" onclick="toggleVisibility('smtp-pass')">Show</button></div></div>
-        <div class="form-group"><label class="form-label" for="smtp-from">From address override <span class="hint muted">(e.g. onboarding@resend.dev for test mode)</span></label>
-          <input type="email" class="form-input" id="smtp-from" placeholder="Leave blank to use Your Company email, or onboarding@resend.dev" autocomplete="off"></div>
-        <details class="more-fields">
-          <summary>Reading replies from a different IMAP server or login</summary>
-          <div class="form-row">
-            <div class="form-group"><label class="form-label" for="imap-host">IMAP host</label>
-              <input type="text" class="form-input" id="imap-host" placeholder="Same as SMTP host (blank for Resend)" autocomplete="off"></div>
-            <div class="form-group" style="max-width:120px"><label class="form-label" for="imap-port">Port</label>
-              <input type="text" class="form-input" id="imap-port" placeholder="993" autocomplete="off"></div>
-          </div>
-          <div class="form-group"><label class="form-label" for="imap-user">IMAP username</label>
-            <input type="text" class="form-input" id="imap-user" placeholder="Same as SMTP username" autocomplete="off"></div>
-          <div class="form-group"><label class="form-label" for="imap-pass">IMAP password</label>
-            <div class="with-btn"><input type="password" class="form-input" id="imap-pass" placeholder="Same as SMTP password" autocomplete="off" oninput="if (this.value) document.getElementById('imap-same-pass').checked = false">
-              <button class="btn btn-secondary" onclick="toggleVisibility('imap-pass')">Show</button></div></div>
-          <label class="check-line"><input type="checkbox" id="imap-same-pass"> Use the SMTP password for IMAP</label>
-        </details>
-        <div style="display:flex;gap:8px;align-items:center;flex-wrap:wrap;margin-top:6px;">
-          <button class="btn btn-primary btn-sm" onclick="saveSmtp(true)">Save &amp; Activate SMTP</button>
-          <button class="btn btn-secondary btn-sm" onclick="saveSmtp(false)">Save Credentials Only</button>
-          <button class="btn btn-secondary btn-sm" id="test-smtp-btn" onclick="testSmtpConnection(this)">Test SMTP / IMAP</button>
-          <span id="smtp-test-result" class="muted" style="font-size:12px;"></span>
-        </div>
-      </div>
-    </div>
-
-    <div class="settings-row">
-      <div>
-        <h3>Microsoft 365 / Outlook <span id="m365-status" class="email-tag"></span></h3>
-        <p class="desc">Microsoft turned off password sign-in for IMAP, so Outlook mailboxes connect with OAuth. In <a href="https://entra.microsoft.com" target="_blank" rel="noopener noreferrer">Entra</a> → App registrations, register an app for your organization only and add the redirect URI <code>http://localhost:8766</code> as "Public client/native". Paste both IDs here, save, then sign in on the Inboxes tab (or run <code>sellbird microsoft auth</code>). No client secret is needed.</p>
-      </div>
-      <div class="fields">
-        <div class="form-group"><label class="form-label" for="m365-client">Application (client) ID</label>
-          <input type="text" class="form-input" id="m365-client" placeholder="00000000-0000-0000-0000-000000000000" autocomplete="off"></div>
-        <div class="form-group"><label class="form-label" for="m365-tenant">Directory (tenant) ID</label>
-          <input type="text" class="form-input" id="m365-tenant" placeholder="00000000-0000-0000-0000-000000000000" autocomplete="off"></div>
-        <button class="btn btn-primary btn-sm" onclick="saveMicrosoft()">Save Microsoft 365</button>
-      </div>
-    </div>
-
-    <div class="settings-row">
-      <div>
-        <h3>Instantly <span class="tag">Legacy</span></h3>
-        <p class="desc">Get your API key from <a href="https://app.instantly.ai/app/settings/integrations" target="_blank" rel="noopener">Instantly Settings → Integrations</a> (Growth plan or higher for API).</p>
-      </div>
-      <div class="fields">
-        <div class="form-group"><label class="form-label" for="instantly-key">API key</label>
-          <div class="with-btn"><input type="password" class="form-input" id="instantly-key" placeholder="Enter your Instantly API key" autocomplete="off">
-            <button class="btn btn-secondary" onclick="toggleVisibility('instantly-key')">Show</button>
-            <button class="btn btn-secondary" onclick="testInstantly()">Test</button></div>
-          <div id="instantly-test-result"></div></div>
-        <button class="btn btn-primary btn-sm" onclick="saveInstantly()">Save Instantly</button>
       </div>
     </div>
   </div>
@@ -1402,6 +1434,6 @@
 </main>
 </div>
 
-<script src="/static/app.js?v=20261127e"></script>
+<script src="/static/app.js?v=20261127f"></script>
 </body>
 </html>
