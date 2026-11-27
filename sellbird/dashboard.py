@@ -5253,11 +5253,16 @@ def _discovery_queries(body: dict, config):
     if problem:
         raise ValueError(problem)
     cities = [c.strip() for c in (body.get("cities") or []) if c.strip()] or None
+    raw_terms = body.get("terms") or []
+    if not raw_terms and isinstance(body.get("query"), str):
+        raw_terms = [t.strip() for t in body["query"].replace(";", ",").split(",") if t.strip()]
+    terms = [str(t).strip() for t in raw_terms if str(t).strip()] or None
     return build_queries(
         config, cities=cities,
         depth=int(body.get("depth") or 30),
         limit=int(body.get("limit") or 100),
         preset=preset,
+        terms=terms,
     )
 
 

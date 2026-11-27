@@ -362,6 +362,27 @@ def test_company_setup_from_brief_api(adv_env, monkeypatch):
     assert "dentist" in cfg_after["icp"]["industries"]
 
 
+def test_discover_custom_query_override_and_rebrand_contracts(adv_env):
+    client, headers, _ = adv_env
+
+    # Custom query override works cleanly on /api/discover/estimate without editing ICP yaml
+    est = client.post(
+        "/api/discover/estimate",
+        headers=headers,
+        json={"provider": "osm", "query": "plumber", "cities": ["Dallas, TX"]},
+    )
+    assert est.status_code == 200, est.text
+    ej = est.json()
+    assert ej["free"] is True
+    assert "plumber Dallas, TX" in ej["queries"]
+
+    html_text = (WEB_DIR / "index.html").read_text(encoding="utf-8")
+    assert "<title>VeloReach</title>" in html_text
+    assert "veloreach" in html_text
+    assert 'id="disc-query"' in html_text
+    assert "Find New Leads" in html_text
+
+
 def test_advanced_suite_frontend_contracts_and_node_vm():
     html_text = (WEB_DIR / "index.html").read_text(encoding="utf-8")
     for marker in (
@@ -475,6 +496,12 @@ vm.runInContext(code, context);
 
   context.loadSampleImportCsv();
   if (!getEl('import-csv-text').value.includes('acmesaas.io')) throw new Error('Sample CSV helper did not populate textarea');
+
+  context.pickDiscoverChip('plumber');
+  if (!getEl('disc-query').value.includes('plumber')) throw new Error('Discover quick chip failed');
+  getEl('disc-cities').value = 'Dallas, TX';
+  const db = context.discoverBody();
+  if (!db.terms.includes('plumber') || !db.cities.includes('Dallas, TX')) throw new Error('discoverBody missing query terms/cities');
 
   await context.openTestSendModal('o1');
   if (!getEl('ts-preview').innerHTML.includes('Rendered inbox preview')) throw new Error('Test send modal missing rendered preview');

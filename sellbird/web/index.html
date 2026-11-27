@@ -4,7 +4,7 @@
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
 <meta name="referrer" content="same-origin">
-<title>Sellbird</title>
+<title>VeloReach</title>
 <!-- First, so the token leaves the address bar before anything else runs. -->
 <script src="/static/auth.js"></script>
 <link rel="stylesheet" href="/static/app.css">
@@ -74,10 +74,10 @@
 <aside class="sidebar">
   <div class="brand">
     <div class="brand-top">
-      <h1 class="brand-lockup"><a href="https://sellbird.ai" target="_blank" rel="noopener" title="sellbird.ai"><svg viewBox="0 0 1040 640" aria-hidden="true"><path fill="currentColor" d="M83 0C246 47 417 91 562 157C676 209 759 258 744 314C813 257 896 239 954 301L1034 324L944 359C837 473 731 548 563 524C506 516 464 513 427 519L0 631L407 406L224 213L555 300L420 428L663 315L630 281C407 229 264 237 83 0Z"/></svg><span>sellbird</span></a></h1>
+      <h1 class="brand-lockup"><a href="#today" onclick="goTab('today');return false" title="VeloReach"><svg viewBox="0 0 1040 640" aria-hidden="true"><path fill="currentColor" d="M83 0C246 47 417 91 562 157C676 209 759 258 744 314C813 257 896 239 954 301L1034 324L944 359C837 473 731 548 563 524C506 516 464 513 427 519L0 631L407 406L224 213L555 300L420 428L663 315L630 281C407 229 264 237 83 0Z"/></svg><span>veloreach</span></a></h1>
       <button class="oled-toggle" onclick="toggleOledTheme()" title="Toggle OLED Dark Theme" aria-label="Toggle OLED Dark Theme"><svg class="icon oled-icon-moon" aria-hidden="true"><use href="#i-moon"/></svg><svg class="icon oled-icon-sun" aria-hidden="true"><use href="#i-sun"/></svg></button>
     </div>
-    <div class="tagline">Make the first move.</div>
+    <div class="tagline">Autonomous AI Sales &amp; Email Suite.</div>
   </div>
 
   <nav aria-label="Sections">
@@ -186,12 +186,12 @@
 </div>
 
 <!-- Signals: the confirmation gate -->
-<!-- Your company: everything Sellbird writes from (sellbird.offer) -->
+<!-- Your company: everything VeloReach writes from (sellbird.offer) -->
 <div id="company" class="section">
   <div class="section-head">
     <div>
       <h2>Your company</h2>
-      <p>Everything Sellbird writes from: what you sell, who you sell to, the offer every first email ends with, and who it's from. Edit any of it here, or talk it through with your coding agent.</p>
+      <p>Everything VeloReach writes from: what you sell, who you sell to, the offer every first email ends with, and who it's from. Edit any of it here, or talk it through with your coding agent.</p>
     </div>
   </div>
   <div id="company-body" class="company-body"><div class="loading" role="status">Loading…</div></div>
@@ -201,7 +201,7 @@
   <div class="section-head">
     <div>
       <h2>Signals</h2>
-      <p>Sellbird proposes what it knows how to look for. You decide what actually
+      <p>VeloReach proposes what it knows how to look for. You decide what actually
          defines a good prospect &mdash; nothing is collected until you confirm it.</p>
     </div>
   </div>
@@ -223,36 +223,60 @@
   <div class="section-head">
     <div>
       <h2>Discover</h2>
-      <p>Find businesses matching your ICP. Pick a source, see what it will cost,
-         then run it &mdash; nothing is called until you press the button.</p>
+      <p>Find new businesses and leads anywhere. Enter what you are looking for + city, pick a data source, and scrape directly into Companies &amp; Contacts.</p>
     </div>
+  </div>
+  <div class="feature-guide">
+    <span><b>How to find new leads:</b></span>
+    <span>Type a business query (e.g. <code>dentist</code>, <code>hvac</code>, <code>saas</code>) + city (<code>Austin, TX</code>)</span>
+    <span>&middot; Pick a free or paid source</span>
+    <span>&middot; Click <b>Find New Leads</b> (then website emails are extracted automatically)</span>
   </div>
   <div id="discover-profile"></div>
 
-  <div class="subhead">Source</div>
+  <div class="subhead">1. Source</div>
   <div id="discover-providers"></div>
 
-  <div class="subhead">Run</div>
+  <div class="subhead">2. Search Query &amp; Run</div>
   <div class="card">
+    <div style="margin-bottom:12px">
+      <div class="form-label" style="margin-bottom:6px">Quick Business Chips <span class="hint">(click to fill search query)</span></div>
+      <div class="chip-row">
+        <button type="button" class="chip" onclick="pickDiscoverChip('dentist')">dentist</button>
+        <button type="button" class="chip" onclick="pickDiscoverChip('hvac')">hvac</button>
+        <button type="button" class="chip" onclick="pickDiscoverChip('plumber')">plumber</button>
+        <button type="button" class="chip" onclick="pickDiscoverChip('roofer')">roofer</button>
+        <button type="button" class="chip" onclick="pickDiscoverChip('salon')">salon</button>
+        <button type="button" class="chip" onclick="pickDiscoverChip('auto repair')">auto repair</button>
+        <button type="button" class="chip" onclick="pickDiscoverChip('real estate')">real estate</button>
+        <button type="button" class="chip" onclick="pickDiscoverChip('saas')">saas</button>
+        <button type="button" class="chip" onclick="pickDiscoverChip('marketing agency')">marketing agency</button>
+      </div>
+    </div>
     <div class="form-row" style="margin-bottom:4px">
+      <div class="form-group" style="flex:1.4">
+        <label class="form-label" for="disc-query">What businesses / leads to find</label>
+        <input class="form-input" id="disc-query" placeholder="e.g. dentist, cosmetic dental clinic, hvac (blank = Your company ICP)" autocomplete="off">
+      </div>
+      <div class="form-group" style="flex:1.6">
+        <label class="form-label" for="disc-cities">Cities / Locations</label>
+        <input class="form-input" id="disc-cities" placeholder="Austin, TX; Denver, CO (separate cities with ;)" autocomplete="off">
+      </div>
       <div class="form-group">
-        <label class="form-label" for="disc-preset">Look for</label>
-        <select class="form-input" id="disc-preset" title="Startup and hiring searches, run by web search (TinyFish, Serper or DataForSEO SERP). YC startups and Accelerator startups: companies whose own site says Y Combinator or another accelerator (Techstars, Antler, Entrepreneur First and others) backed them; turn on YC_BACKED or ACCELERATOR to tag them. Recently funded: companies announcing their own raise in the last 18 months; turn on FUNDING_ROUND to record the round, amount and date. Hiring for your roles: companies whose own careers pages list one of your hiring_signals roles (or ICP titles); turn on HIRING_ROLE and profiling reads the job board their site links to.">
-          <option value="">Your ICP's industries</option>
+        <label class="form-label" for="disc-preset">Preset mode</label>
+        <select class="form-input" id="disc-preset" title="Optional startup or hiring search presets">
+          <option value="">Exact business query / ICP</option>
           <option value="yc">YC startups</option>
           <option value="accelerator">Accelerator startups</option>
           <option value="funding">Recently funded</option>
           <option value="hiring">Companies hiring for your roles</option>
         </select>
       </div>
-      <div class="form-group" style="flex:2">
-        <label class="form-label" for="disc-cities">Cities</label>
-        <input class="form-input" id="disc-cities" placeholder="From your ICP, or override: Denver, CO; Austin, TX">
-        <div class="form-hint" style="margin-top:4px">Any city name works (auto-geocoded). Free OpenStreetMap supports local niches like <code>dentist</code>, <code>hvac</code>, <code>plumber</code>, <code>roofer</code>, <code>lawyer</code>, <code>clinic</code>, <code>vet</code>, <code>auto repair</code>, <code>salon</code>, <code>gym</code>, <code>real estate</code>, <code>restaurant</code>.</div>
-      </div>
+    </div>
+    <div class="form-row" style="margin-bottom:4px">
       <div class="form-group">
         <label class="form-label" for="disc-limit">Results per query</label>
-        <input class="form-input" id="disc-limit" type="number" value="100" min="1" max="1000">
+        <input class="form-input" id="disc-limit" type="number" value="50" min="1" max="1000">
       </div>
       <div class="form-group">
         <label class="form-label" for="disc-depth">Search depth</label>
@@ -265,9 +289,8 @@
     </div>
     <div id="discover-estimate"></div>
     <div class="btn-group">
-      <button class="btn btn-secondary" onclick="estimateDiscovery()">Estimate cost</button>
-      <button class="btn btn-primary" id="disc-run" onclick="runDiscovery()" disabled>
-        Estimate first</button>
+      <button class="btn btn-primary" id="disc-run" onclick="runDiscovery()">Find New Leads</button>
+      <button class="btn btn-secondary" onclick="estimateDiscovery()">Preview Queries &amp; Cost</button>
       <button class="btn btn-danger" id="disc-stop" onclick="stopDiscovery()" style="display:none">
         Stop</button>
     </div>
@@ -277,7 +300,7 @@
 
 <!-- Companies -->
 <div id="companies" class="section">
-  <div class="section-head"><div><h2>Companies</h2><p>Organizations Sellbird has researched, best fit first. Click a row to see its contacts.</p></div>
+  <div class="section-head"><div><h2>Companies</h2><p>Organizations VeloReach has researched, best fit first. Click a row to see its contacts.</p></div>
     <div class="page-actions">
       <button class="btn btn-primary btn-sm" id="companies-batch-research-btn" onclick="runBatchResearch(this)">Deep Research (Top 5)</button>
       <button class="btn btn-secondary btn-sm" onclick="downloadCsv('/api/export/companies.csv', 'company-register.csv', this)"><svg class="icon" aria-hidden="true"><use href="#i-download"/></svg>Export register</button>
@@ -365,7 +388,7 @@
   <div class="section-head">
     <div>
       <h2>Inboxes</h2>
-      <p>The email addresses Sellbird sends from. Each one sends a limited number of cold emails a day, so more inboxes means more emails out. Replies stay on the inbox that started the thread.</p>
+      <p>The email addresses VeloReach sends from. Each one sends a limited number of cold emails a day, so more inboxes means more emails out. Replies stay on the inbox that started the thread.</p>
     </div>
     <div class="page-actions" id="inboxes-actions"></div>
   </div>
@@ -791,7 +814,7 @@
 
 <!-- Activity -->
 <div id="activity" class="section">
-  <div class="section-head"><div><h2>Activity</h2><p>A running log of every action Sellbird's agents have taken.</p></div></div>
+  <div class="section-head"><div><h2>Activity</h2><p>A running log of every action VeloReach's agents have taken.</p></div></div>
   <div id="activity-list"></div>
 </div>
 
@@ -830,7 +853,7 @@
     <div class="settings-row">
       <div>
         <h3>Compliance &amp; Sending Schedule</h3>
-        <p class="desc">CAN-SPAM footer, daily sending caps, manual approval mode, recipient send windows, and quiet hours stored in your Sellbird config.</p>
+        <p class="desc">CAN-SPAM footer, daily sending caps, manual approval mode, recipient send windows, and quiet hours stored in your VeloReach config.</p>
       </div>
       <div class="fields">
         <div class="form-group">
@@ -1019,7 +1042,7 @@
     <div class="settings-row">
       <div>
         <h3>LinkedIn</h3>
-        <p class="desc">For automated LinkedIn prospecting. Sellbird logs in and searches like a human.</p>
+        <p class="desc">For automated LinkedIn prospecting. VeloReach logs in and searches like a human.</p>
       </div>
       <div class="fields">
         <div class="form-group">
@@ -1163,7 +1186,7 @@
     <div class="settings-row">
       <div>
         <h3>Pages to watch</h3>
-        <p class="desc">Sellbird reads these pages on idle cycles and alerts you when one changes — a rival's pricing page, their careers page. Findings come to you (Telegram/Slack and the log below), never into cold emails. The first check only records a baseline.</p>
+        <p class="desc">VeloReach reads these pages on idle cycles and alerts you when one changes — a rival's pricing page, their careers page. Findings come to you (Telegram/Slack and the log below), never into cold emails. The first check only records a baseline.</p>
         <label class="cw-enabled"><input type="checkbox" id="cw-enabled" onchange="saveCompetitorWatch()"> Watch these pages</label>
       </div>
       <div class="fields">
@@ -1188,7 +1211,7 @@
 
 <!-- Controls -->
 <div id="controls" class="section">
-  <div class="section-head"><div><h2>Controls</h2><p>Start and stop Sellbird's heartbeat loop, and watch what it's doing.</p></div></div>
+  <div class="section-head"><div><h2>Controls</h2><p>Start and stop VeloReach's heartbeat loop, and watch what it's doing.</p></div></div>
   <div class="control-panel">
     <div class="card">
       <h2>Agent</h2>
@@ -1198,48 +1221,48 @@
       </div>
       <div class="status-meta" id="control-meta"></div>
       <div class="btn-group">
-        <button class="btn btn-primary" id="btn-start" onclick="startSellbird()">Start Sellbird</button>
-        <button class="btn btn-danger" id="btn-stop" onclick="stopSellbird()" style="display:none">Stop Sellbird</button>
+        <button class="btn btn-primary" id="btn-start" onclick="startSellbird()">Start VeloReach</button>
+        <button class="btn btn-danger" id="btn-stop" onclick="stopSellbird()" style="display:none">Stop VeloReach</button>
       </div>
     </div>
     <div class="card">
       <h2>Recent logs <button class="btn btn-ghost btn-sm" onclick="loadLogs()" style="margin-left:auto"><svg class="icon" aria-hidden="true"><use href="#i-refresh"/></svg>Refresh</button></h2>
-      <div class="log-viewer" id="log-viewer">No logs yet. Start Sellbird to see activity.</div>
+      <div class="log-viewer" id="log-viewer">No logs yet. Start VeloReach to see activity.</div>
     </div>
   </div>
 </div>
 
 <!-- Help -->
 <div id="help" class="section">
-  <div class="section-head"><div><h2>Help</h2><p>What Sellbird is, how it works, and how to fix the usual problems.</p></div></div>
+  <div class="section-head"><div><h2>Help</h2><p>What VeloReach is, how it works, and how to fix the usual problems.</p></div></div>
 
   <div class="help-section">
-    <h2>What is Sellbird?</h2>
-    <p>Sellbird is an open-source outreach platform. Once set up, Sellbird runs on its own: finds people who match your ideal customer, writes personalized cold emails, sends them through your email platform, reads every reply, handles objections, and works toward booking a meeting. You review everything through this dashboard.</p>
-    <p>Sellbird runs on your Claude Max subscription (or, if you opt in, your ChatGPT plan through Codex), so there are no extra AI costs. Everything stays on your machine in one folder.</p>
+    <h2>What is VeloReach?</h2>
+    <p>VeloReach is an open-source outreach platform. Once set up, VeloReach runs on its own: finds people who match your ideal customer, writes personalized cold emails, sends them through your email platform, reads every reply, handles objections, and works toward booking a meeting. You review everything through this dashboard.</p>
+    <p>VeloReach runs on your Claude Max subscription (or, if you opt in, your ChatGPT plan through Codex), so there are no extra AI costs. Everything stays on your machine in one folder.</p>
   </div>
 
   <div class="help-section">
     <h2>Getting started</h2>
     <p>There are three things to do:</p>
     <pre>1. Go to the Settings tab and connect an email provider (Gmail recommended)
-2. Train Sellbird on your product (through Claude or the command line)
+2. Train VeloReach on your product (through Claude or the command line)
 3. Go to the Controls tab and click Start</pre>
     <p>Today shows exactly what's done and what still needs to happen.</p>
   </div>
 
   <div class="help-section">
     <h2>Where everything lives</h2>
-    <p>Everything Sellbird needs is inside this one project folder. Nothing is stored elsewhere.</p>
+    <p>Everything VeloReach needs is inside this one project folder. Nothing is stored elsewhere.</p>
     <div class="table-card">
     <table class="file-table">
       <tr><td>.env</td><td>Your API keys and credentials (never shared or committed)</td></tr>
       <tr><td>sellbird.yaml</td><td>Your product info, target customers, and behavior settings</td></tr>
-      <tr><td>skills/</td><td>Sales knowledge files. Edit these to change how Sellbird writes and sells.</td></tr>
-      <tr><td>skills/product_knowledge.md</td><td>Everything Sellbird knows about your product (auto-generated from training)</td></tr>
+      <tr><td>skills/</td><td>Sales knowledge files. Edit these to change how VeloReach writes and sells.</td></tr>
+      <tr><td>skills/product_knowledge.md</td><td>Everything VeloReach knows about your product (auto-generated from training)</td></tr>
       <tr><td>prompts/</td><td>Prompt templates for each agent. Advanced customization.</td></tr>
       <tr><td>data/sellbird.db</td><td>Database with all prospects, campaigns, and conversations</td></tr>
-      <tr><td>data/sellbird.log</td><td>Log file showing what Sellbird is doing</td></tr>
+      <tr><td>data/sellbird.log</td><td>Log file showing what VeloReach is doing</td></tr>
     </table>
     </div>
   </div>
@@ -1261,20 +1284,20 @@
     <details>
       <summary>LinkedIn credentials (optional)</summary>
       <div class="faq-body">
-        <p>If you want Sellbird to find prospects on LinkedIn, enter your LinkedIn email and password. Sellbird uses a real browser to search LinkedIn like a human would, with random delays and rate limits to avoid detection.</p>
-        <p>If you skip this, Sellbird will find prospects through Google searches and company website scraping instead.</p>
+        <p>If you want VeloReach to find prospects on LinkedIn, enter your LinkedIn email and password. VeloReach uses a real browser to search LinkedIn like a human would, with random delays and rate limits to avoid detection.</p>
+        <p>If you skip this, VeloReach will find prospects through Google searches and company website scraping instead.</p>
       </div>
     </details>
 
     <details>
       <summary>Cloudflare Browser Rendering (optional)</summary>
       <div class="faq-body">
-        <p>This is only used during product training (when Sellbird crawls your website to learn about your product). It handles JavaScript-heavy websites that a basic crawler can't read.</p>
+        <p>This is only used during product training (when VeloReach crawls your website to learn about your product). It handles JavaScript-heavy websites that a basic crawler can't read.</p>
         <p>1. Sign up at <a href="https://dash.cloudflare.com" target="_blank" rel="noopener">Cloudflare</a> (paid Workers plan, ~$5/month)</p>
         <p>2. Go to Workers &amp; Pages &gt; Browser Rendering</p>
         <p>3. Create an API token with Browser Rendering Edit permissions</p>
         <p>4. Enter your Account ID and API Token in the Settings tab</p>
-        <p>Without this, Sellbird uses a built-in crawler that works fine for most websites but can't render JavaScript.</p>
+        <p>Without this, VeloReach uses a built-in crawler that works fine for most websites but can't render JavaScript.</p>
       </div>
     </details>
   </div>
@@ -1294,17 +1317,17 @@
 
     <details>
       <summary>Claude headless mode fails</summary>
-      <div class="faq-body">Make sure you've run <code>claude login</code> in your terminal and have an active Claude Max subscription. Sellbird uses your existing subscription, not a separate API key.</div>
+      <div class="faq-body">Make sure you've run <code>claude login</code> in your terminal and have an active Claude Max subscription. VeloReach uses your existing subscription, not a separate API key.</div>
     </details>
 
     <details>
       <summary>Codex calls fail</summary>
-      <div class="faq-body">With <code>brain.provider: codex</code>, set <code>brain.model</code> to an available model ID, including Luna, Sol, or Terra (for example <code>gpt-6.1-sol</code>), or leave it blank to select a listed model. Sellbird runs these models without tools; <code>gpt-5.5</code> also remains supported when present in your account's catalog. Run <code>codex login</code> and choose "Sign in with ChatGPT" (API-key logins are refused). Sellbird never renews your Codex login: if the log says it has expired or is due for renewal, use Codex once or run <code>codex login</code>. Sellbird needs Codex CLI 0.159.3 on macOS or Linux (Codex isn't supported on Windows; use Claude there) and refuses other versions. While Codex can't be used, Sellbird pauses (Today shows "Codex is paused" and why), leaves replies and queued emails untouched, and resumes once it's fixed; <code>sellbird status --check</code> checks on demand. If the log says isolation could not be verified, a Codex config layer is forcing a tool, hook, MCP server or custom endpoint back on — Sellbird refuses to send prompts until it is removed. Sellbird never falls back to Claude on its own.</div>
+      <div class="faq-body">With <code>brain.provider: codex</code>, set <code>brain.model</code> to an available model ID, including Luna, Sol, or Terra (for example <code>gpt-6.1-sol</code>), or leave it blank to select a listed model. VeloReach runs these models without tools; <code>gpt-5.5</code> also remains supported when present in your account's catalog. Run <code>codex login</code> and choose "Sign in with ChatGPT" (API-key logins are refused). VeloReach never renews your Codex login: if the log says it has expired or is due for renewal, use Codex once or run <code>codex login</code>. VeloReach needs Codex CLI 0.159.3 on macOS or Linux (Codex isn't supported on Windows; use Claude there) and refuses other versions. While Codex can't be used, VeloReach pauses (Today shows "Codex is paused" and why), leaves replies and queued emails untouched, and resumes once it's fixed; <code>sellbird status --check</code> checks on demand. If the log says isolation could not be verified, a Codex config layer is forcing a tool, hook, MCP server or custom endpoint back on — VeloReach refuses to send prompts until it is removed. VeloReach never falls back to Claude on its own.</div>
     </details>
 
     <details>
-      <summary>Sellbird isn't finding prospects</summary>
-      <div class="faq-body">Check that your ICP (ideal customer profile) in sellbird.yaml has realistic titles, industries, and geography. If LinkedIn is set up, check that the credentials are correct. Check the Activity tab to see what Sellbird has been trying to do.</div>
+      <summary>VeloReach isn't finding prospects</summary>
+      <div class="faq-body">Check that your ICP (ideal customer profile) in sellbird.yaml has realistic titles, industries, and geography. If LinkedIn is set up, check that the credentials are correct. Check the Activity tab to see what VeloReach has been trying to do.</div>
     </details>
   </div>
 </div>

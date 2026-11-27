@@ -34,7 +34,7 @@ function toggleOledTheme() {
 (function initTheme() {
   let saved = 'auto';
   try {
-    // Carry the choice over from Harvey, Sellbird's old name.
+    // Carry the choice over from Harvey, VeloReach's old name.
     const legacy = localStorage.getItem('harvey-theme');
     if (legacy && !localStorage.getItem('sellbird-theme')) localStorage.setItem('sellbird-theme', legacy);
     if (legacy) localStorage.removeItem('harvey-theme');
@@ -80,7 +80,7 @@ function safeHref(u) {
 
 // ── One status vocabulary ──
 //
-// Sellbird's tables each carry their own words for state: a prospect is `new`,
+// VeloReach's tables each carry their own words for state: a prospect is `new`,
 // a campaign is `draft`, an email is `pending_review`, a signal is `proposed`.
 // Five of those mean "waiting on you" and the old dashboard styled every one
 // differently. Everything now resolves through this map, so a status reads the
@@ -285,7 +285,7 @@ function actionText(a) {
     case 'outbox_edited': return 'You edited a draft';
     case 'conversation_status':
       return d.to === 'closed' ? 'You closed a conversation'
-        : d.from === 'needs_human' ? 'You handed a conversation back to Sellbird' : 'You reopened a conversation';
+        : d.from === 'needs_human' ? 'You handed a conversation back to VeloReach' : 'You reopened a conversation';
   }
   const text = escHtml(String(a.action_type || '').replace(/_/g, ' '));
   return a.agent === 'main' ? 'Heartbeat: ' + text : text;
@@ -546,7 +546,7 @@ async function loadToday() {
   if (data.error) {
     // A failed check must never read as "Nothing needs you".
     el.innerHTML = emptyState(icon('alert'), 'Couldn\'t check what needs you',
-      'The dashboard hit an error reading Sellbird\'s data: ' + escHtml(data.error));
+      'The dashboard hit an error reading VeloReach\'s data: ' + escHtml(data.error));
     return;
   }
 
@@ -565,7 +565,7 @@ async function loadToday() {
     el.innerHTML = '<div class="queue-clear">' +
       '<div class="queue-icon">' + icon('check') + '</div><div>' +
       '<div class="qtitle">Nothing needs you</div>' +
-      '<div class="qdetail">Sellbird has everything it needs. Anything that requires a ' +
+      '<div class="qdetail">VeloReach has everything it needs. Anything that requires a ' +
       'decision — an email to approve, a signal to confirm — shows up here.</div>' +
       '</div></div>';
     return;
@@ -601,8 +601,8 @@ async function loadLiveStatus() {
   if (!d || !Array.isArray(d.steps)) {
     // Keep the last good numbers on screen, but never let them pass for live.
     const flag = el.querySelector('.live-flag');
-    if (flag) flag.textContent = "Can't reach Sellbird right now — numbers below may be old.";
-    else el.innerHTML = '<p class="muted live-flag">Can\'t reach Sellbird right now. ' +
+    if (flag) flag.textContent = "Can't reach VeloReach right now — numbers below may be old.";
+    else el.innerHTML = '<p class="muted live-flag">Can\'t reach VeloReach right now. ' +
       'Is the dashboard window still open?</p>';
     return;
   }
@@ -731,7 +731,7 @@ async function loadTodayActivity() {
   const shown = data.filter(a => a.agent !== 'main').slice(0, 8);
   if (!shown.length) {
     el.innerHTML = '<p class="muted" style="font-size:13px">' +
-      'Nothing yet. Every action Sellbird takes shows up here.</p>';
+      'Nothing yet. Every action VeloReach takes shows up here.</p>';
     return;
   }
   el.innerHTML = '<div class="timeline">' + shown.map(a =>
@@ -811,7 +811,7 @@ async function loadRenameNotice() {
   if (!data || !data.show) { el.innerHTML = ''; return; }
   el.innerHTML =
     '<div class="card rename-card">' +
-      '<div><h3>Harvey is now Sellbird</h3>' +
+      '<div><h3>Harvey is now VeloReach</h3>' +
         '<p class="muted">Same project, new name. Your settings, data and sign-in came with you. ' +
         'The <code>harvey</code> command still works for now; use <code>sellbird</code> from here on.</p></div>' +
       '<div class="rename-actions">' +
@@ -860,8 +860,8 @@ async function loadSetupStatus() {
 
   el.innerHTML =
     '<div class="card setup-card">' +
-      '<div class="setup-head"><div><h3>Finish setting up Sellbird</h3>' +
-        '<p class="muted">Sellbird starts finding prospects and sending once these are done.</p></div>' +
+      '<div class="setup-head"><div><h3>Finish setting up VeloReach</h3>' +
+        '<p class="muted">VeloReach starts finding prospects and sending once these are done.</p></div>' +
         '<span class="setup-pct">' + done + ' of ' + required.length + ' done</span></div>' +
       '<div class="bar thick" style="margin-bottom:8px"><span style="width:' + pct + '%;background:var(--accent)"></span></div>' +
       required.map(c => renderCheck(c, false)).join('') +
@@ -912,7 +912,7 @@ async function useOtherWarmup() {
   else showToast(failMsg(data, 'Could not save warmup preference.'), 'error');
 }
 
-// ── Signals: Sellbird proposes, you confirm ──
+// ── Signals: VeloReach proposes, you confirm ──
 
 async function loadSignals() {
   const data = await api('/api/signals');
@@ -1003,7 +1003,7 @@ async function setSignals(codes, status) {
     showToast(
       status === 'confirmed'
         ? 'Confirmed ' + data.changed + ' signal' + (data.changed === 1 ? '' : 's') +
-          ' — Sellbird will collect ' + (data.changed === 1 ? 'it' : 'them') + ' from now on.'
+          ' — VeloReach will collect ' + (data.changed === 1 ? 'it' : 'them') + ' from now on.'
         : data.changed + ' signal' + (data.changed === 1 ? '' : 's') + ' turned off.',
       'success');
   } else {
@@ -1056,8 +1056,10 @@ async function loadDiscoverProviders() {
     _discoverPoll = null;
     // A finished run leaves the button stuck on "Running…" otherwise.
     const btn = document.getElementById('disc-run');
-    btn.disabled = true;
-    btn.textContent = 'Estimate first';
+    if (btn) {
+      btn.disabled = false;
+      btn.textContent = 'Find New Leads';
+    }
     showToast(data.running_kind === 'profile' ? 'Finished reading websites.' : 'Discovery finished.', 'success');
   }
   renderDiscoverResult(data.last_report, running);
@@ -1065,21 +1067,40 @@ async function loadDiscoverProviders() {
 
 function pickProvider(key) {
   _provider = key;
-  document.getElementById('disc-run').disabled = true;
-  document.getElementById('disc-run').textContent = 'Estimate first';
+  const btn = document.getElementById('disc-run');
+  if (btn) {
+    btn.disabled = false;
+    btn.textContent = 'Find New Leads';
+  }
   document.getElementById('discover-estimate').innerHTML = '';
   loadDiscoverProviders();
 }
 
+function pickDiscoverChip(term) {
+  const el = document.getElementById('disc-query');
+  if (!el) return;
+  const cur = el.value.split(/[,;\n]/).map(s => s.trim()).filter(Boolean);
+  const low = term.trim().toLowerCase();
+  const idx = cur.findIndex(x => x.toLowerCase() === low);
+  if (idx >= 0) cur.splice(idx, 1);
+  else cur.push(term.trim());
+  el.value = cur.join(', ');
+  el.focus();
+}
+
 function discoverBody() {
-  const raw = document.getElementById('disc-cities').value.trim();
+  const rawCities = (document.getElementById('disc-cities')?.value || '').trim();
+  const rawQuery = (document.getElementById('disc-query')?.value || '').trim();
+  const terms = rawQuery ? rawQuery.split(/[,;\n]/).map(t => t.trim()).filter(Boolean) : [];
   return {
     provider: _provider,
+    query: rawQuery,
+    terms,
     // Semicolons or newlines, never commas: "Denver, CO" is one city.
-    cities: raw ? raw.split(/[;\n]/).map(c => c.trim()).filter(Boolean) : [],
-    depth: Number(document.getElementById('disc-depth').value) || 30,
-    limit: Number(document.getElementById('disc-limit').value) || 100,
-    max_spend: Number(document.getElementById('disc-cap').value) || 1,
+    cities: rawCities ? rawCities.split(/[;\n]/).map(c => c.trim()).filter(Boolean) : [],
+    depth: Number(document.getElementById('disc-depth')?.value) || 30,
+    limit: Number(document.getElementById('disc-limit')?.value) || 50,
+    max_spend: Number(document.getElementById('disc-cap')?.value) || 1,
     preset: (document.getElementById('disc-preset') || {}).value || '',
   };
 }
@@ -1120,17 +1141,36 @@ async function estimateDiscovery() {
 
 async function runDiscovery() {
   const btn = document.getElementById('disc-run');
-  btn.disabled = true;
-  btn.textContent = 'Running…';
+  const body = discoverBody();
+  if (btn) {
+    btn.disabled = true;
+    btn.textContent = 'Checking cost…';
+  }
+  const est = await api('/api/discover/estimate', {
+    method: 'POST', headers: {'Content-Type': 'application/json'},
+    body: JSON.stringify(body),
+  });
+  if (!est || est.error) {
+    showToast((est && est.error) || 'Enter a valid business query or city first.', 'error');
+    if (btn) { btn.disabled = false; btn.textContent = 'Find New Leads'; }
+    return;
+  }
+  if (est.estimated_cost > body.max_spend) {
+    await estimateDiscovery();
+    showToast('Estimated cost exceeds spend cap ($' + body.max_spend.toFixed(2) + ').', 'error');
+    if (btn) { btn.disabled = false; btn.textContent = 'Find New Leads'; }
+    return;
+  }
+  if (btn) btn.textContent = 'Running…';
   const data = await api('/api/discover/run', {
     method: 'POST', headers: {'Content-Type': 'application/json'},
-    body: JSON.stringify(discoverBody()),
+    body: JSON.stringify(body),
   });
   if (data && data.success) {
     showToast('Discovery started — ' + data.queries + ' queries.', 'success');
   } else {
     showToast((data && data.message) || 'Could not start.', 'error');
-    btn.disabled = false;
+    if (btn) { btn.disabled = false; btn.textContent = 'Find New Leads'; }
   }
   loadDiscoverProviders();
 }
@@ -1150,7 +1190,7 @@ function renderProfileCard(pending, running) {
   if (!pending) { el.innerHTML = ''; return; }
   el.innerHTML = '<div class="subhead">Read websites</div><div class="card"><div class="queue-item good" style="padding:0;border:0;box-shadow:none">' +
     '<div class="qtext"><div class="qtitle">' + pending + ' compan' + (pending === 1 ? 'y' : 'ies') +
-    ' not looked at yet</div><div class="qdetail">Free, no account needed. Sellbird reads each site for ' +
+    ' not looked at yet</div><div class="qdetail">Free, no account needed. VeloReach reads each site for ' +
     'who their agency is, what they are missing, and whether they run ads. Up to 200 per run.</div></div>' +
     '<button class="btn btn-primary btn-sm" onclick="runProfile(this)"' + (running ? ' disabled' : '') + '>' +
     (running ? 'Busy…' : 'Read their sites') + '</button></div></div>';
@@ -1173,7 +1213,7 @@ function renderDiscoverResult(report, running) {
   const el = document.getElementById('discover-result');
   if (running) {
     el.innerHTML = '<div class="card"><h2>Running…</h2>' +
-      '<p class="muted" style="font-size:13px">Sellbird is working through the ' +
+      '<p class="muted" style="font-size:13px">VeloReach is working through the ' +
       'queries. Results land in Companies, and the run log is on Today.</p></div>';
     return;
   }
@@ -1829,13 +1869,13 @@ async function loadSellbirdStatus() {
     const label = document.getElementById('control-label');
     label.className = 'label stopped';
     label.textContent = 'Offline';
-    document.getElementById('control-meta').textContent = "Can't reach Sellbird right now.";
+    document.getElementById('control-meta').textContent = "Can't reach VeloReach right now.";
     return;
   }
   const running = !!data.running;
 
   headerDot.className = 'status-dot ' + (running ? 'running' : 'stopped');
-  headerText.textContent = running ? 'Sellbird is running' : 'Sellbird is stopped';
+  headerText.textContent = running ? 'VeloReach is running' : 'VeloReach is stopped';
   document.getElementById('control-dot').className = 'dot ' + (running ? 'running' : 'stopped');
   const label = document.getElementById('control-label');
   label.className = 'label ' + (running ? 'running' : 'stopped');
@@ -1847,7 +1887,7 @@ async function loadSellbirdStatus() {
     if (data.started_at) info += ' &middot; started ' + formatDate(data.started_at);
     meta.innerHTML = info;
   } else {
-    meta.innerHTML = 'Sellbird wakes every few minutes, does what needs doing, and sleeps.';
+    meta.innerHTML = 'VeloReach wakes every few minutes, does what needs doing, and sleeps.';
   }
 
   document.getElementById('btn-start').style.display = running ? 'none' : '';
@@ -2060,7 +2100,7 @@ async function startSellbird() {
   btn.disabled = true;
   try {
     const data = await api('/api/sellbird/start', {method: 'POST'});
-    if (data && data.success) showToast('Sellbird started.', 'success');
+    if (data && data.success) showToast('VeloReach started.', 'success');
     else showToast((data && data.message) || 'Failed to start.', 'error');
   } finally {
     btn.disabled = false;
@@ -2071,12 +2111,12 @@ async function startSellbird() {
 
 async function stopSellbird() {
   const btn = document.getElementById('btn-stop');
-  const origText = btn.textContent || 'Stop Sellbird';
+  const origText = btn.textContent || 'Stop VeloReach';
   btn.textContent = 'Stopping…';
   btn.disabled = true;
   try {
     const data = await api('/api/sellbird/stop', {method: 'POST'});
-    if (data && data.success) showToast('Sellbird stopped.', 'success');
+    if (data && data.success) showToast('VeloReach stopped.', 'success');
     else showToast((data && data.message) || 'Failed to stop.', 'error');
   } finally {
     btn.textContent = origText;
@@ -2092,7 +2132,7 @@ async function loadLogs() {
   if (!el) return;
   if (!data) {
     if (!el.dataset.hasLogs) {
-      el.textContent = "Can't reach Sellbird right now — logs unavailable.";
+      el.textContent = "Can't reach VeloReach right now — logs unavailable.";
     }
     return;
   }
@@ -2103,7 +2143,7 @@ async function loadLogs() {
     if (stick) el.scrollTop = el.scrollHeight;
   } else {
     delete el.dataset.hasLogs;
-    el.textContent = 'No logs yet. Start Sellbird to see activity.';
+    el.textContent = 'No logs yet. Start VeloReach to see activity.';
   }
 }
 
@@ -2155,9 +2195,9 @@ function quotaCardHtml(data) {
   let html = '<h2>' + escHtml(title) + '</h2>';
   if (!data.quota || !Object.keys(data.quota).length) {
     const why = provider === 'codex'
-      ? "Quota unavailable: Sellbird couldn't read your ChatGPT plan's limits (check codex login, the Codex CLI version, and network)."
-      : "Quota unavailable: Sellbird couldn't read your Claude subscription's limits (check claude login and network).";
-    return html + '<p class="muted">' + escHtml(why) + ' Until it can, budgets count Sellbird\'s own calls.</p>';
+      ? "Quota unavailable: VeloReach couldn't read your ChatGPT plan's limits (check codex login, the Codex CLI version, and network)."
+      : "Quota unavailable: VeloReach couldn't read your Claude subscription's limits (check claude login and network).";
+    return html + '<p class="muted">' + escHtml(why) + ' Until it can, budgets count VeloReach\'s own calls.</p>';
   }
   const labels = {five_hour: '5-hour window', seven_day: 'Weekly', primary: 'Primary window',
                   secondary: 'Secondary window', limit_reached: 'Usage limit reached'};
@@ -2260,7 +2300,7 @@ async function loadUsage() {
   const anyRows = (data.by_agent || []).length || (data.by_task || []).length;
   if (!anyRows) {
     tablesEl.innerHTML = emptyState(icon('usage'), 'No usage recorded yet',
-      'Once Sellbird starts making model calls (Claude or Codex), every one is logged here with exact calls and tokens by provider, agent and task.');
+      'Once VeloReach starts making model calls (Claude or Codex), every one is logged here with exact calls and tokens by provider, agent and task.');
   } else {
     const providers = data.by_provider || [];
     const showProviders = providers.length > 1 || (providers.length === 1 && providers[0].provider !== 'claude');
@@ -2338,8 +2378,8 @@ async function loadOutbox() {
   desk.innerHTML = pending.length ? renderDesk(pending, _desk.i) :
     '<div class="card">' + emptyState(icon('check'), 'Nothing to review',
       _sendingMode && _sendingMode.mode === 'autopilot'
-        ? 'Autopilot is on, so Sellbird sends on its own. Anything it holds for you shows up here.'
-        : 'Every draft Sellbird writes lands here first. Approve one and it sends on schedule.') +
+        ? 'Autopilot is on, so VeloReach sends on its own. Anything it holds for you shows up here.'
+        : 'Every draft VeloReach writes lands here first. Approve one and it sends on schedule.') +
     '</div>';
 
   const table = (title, rows, cols) => {
@@ -2410,7 +2450,7 @@ function renderDeskContext(ctx) {
 
 // ── Approval or autopilot ──
 // Approval (the default): every email waits in the Outbox for you.
-// Autopilot (channels.email.require_approval: false): Sellbird sends on its
+// Autopilot (channels.email.require_approval: false): VeloReach sends on its
 // own, and still holds what gate.autopilot_review flags. Turning autopilot
 // on takes typing the word; turning it off is one click and works at once.
 let _sendingMode = null, _autopilotArmed = false, _modeBusy = false;
@@ -2419,7 +2459,7 @@ function sendingModeBanner(m) {
   if (!m) return '';
   if (m.mode === 'autopilot') {
     return '<div class="banner wait mode-banner">' + icon('alert') + '<div><b>Autopilot is on</b>' +
-      '<p>Sellbird sends email on its own. It holds anything that links to a site that isn’t yours or ' +
+      '<p>VeloReach sends email on its own. It holds anything that links to a site that isn’t yours or ' +
       'quotes its own instructions; those wait here' + (m.held ? ' (' + m.held + ' now)' : '') + '.</p></div>' +
       '<button class="btn btn-secondary btn-sm" onclick="setSendingMode(\'approval\')"' +
         (_modeBusy ? ' disabled' : '') + '>Turn off autopilot</button></div>';
@@ -2428,7 +2468,7 @@ function sendingModeBanner(m) {
   return '<div class="banner mode-banner">' + icon('check') + '<div><b>Approval mode</b>' +
     '<p>' + (instantly
       ? 'Instantly can’t hold single emails, so campaigns aren’t sent to Instantly until you turn on autopilot.'
-      : 'Every email Sellbird writes waits here until you approve it.') +
+      : 'Every email VeloReach writes waits here until you approve it.') +
     ' <a href="#" onclick="goTab(\'settings\');return false">About autopilot</a></p></div></div>';
 }
 
@@ -2438,12 +2478,12 @@ function sendingModeCard(m) {
   const instantly = m.provider === 'instantly';
   const domains = (m.your_domains || []).map(escHtml).join(', ') || 'none yet';
   let html = '<div class="card mode-card"><h3>Sending mode: ' + (auto ? 'Autopilot' : 'Approval') + '</h3>' +
-    '<p><b>Approval</b> (the default): every email Sellbird writes, first emails, follow-ups and replies, ' +
+    '<p><b>Approval</b> (the default): every email VeloReach writes, first emails, follow-ups and replies, ' +
       'waits in the Outbox until you approve it.' +
       (instantly ? ' On Instantly, which can’t hold single emails, that means campaigns aren’t deployed.' : '') + '</p>' +
-    '<p><b>Autopilot</b>: Sellbird sends on its own, on schedule, within your daily limit and quiet hours. ' +
+    '<p><b>Autopilot</b>: VeloReach sends on its own, on schedule, within your daily limit and quiet hours. ' +
       'Opt-outs, bounces and Pause all sending work the same. It still holds an email for you when it links ' +
-      'to, or gives an address at, a site that isn’t yours, or quotes Sellbird’s own instructions: text from ' +
+      'to, or gives an address at, a site that isn’t yours, or quotes VeloReach’s own instructions: text from ' +
       'websites and replies can try to steer what it writes. The first reply after you undo an opt-out waits too.</p>' +
     '<p class="muted">Counted as yours: ' + domains + (m.booking_page ? '; your booking page ' + escHtml(m.booking_page) : '') +
       '. Add others under <code>channels.email.link_domains</code> in <code>' + escHtml(m.file) + '</code>.</p>';
@@ -2455,7 +2495,7 @@ function sendingModeCard(m) {
         (_modeBusy ? ' disabled' : '') + '>Turn off autopilot</button></div>';
   } else if (_autopilotArmed) {
     html += '<div class="convo-actions mode-confirm"><span class="muted">Approve a batch or two by hand first ' +
-      'and read what Sellbird writes. Type <b>autopilot</b> to turn it on. It starts from Sellbird’s next cycle.</span>' +
+      'and read what VeloReach writes. Type <b>autopilot</b> to turn it on. It starts from VeloReach’s next cycle.</span>' +
       '<input class="form-input" id="autopilot-confirm" autocomplete="off" aria-label="Type autopilot to confirm" ' +
         'oninput="document.getElementById(\'autopilot-go\').disabled = this.value.trim().toLowerCase() !== \'autopilot\'" ' +
         'onkeydown="if (event.key === \'Enter\' && this.value.trim().toLowerCase() === \'autopilot\') setSendingMode(\'autopilot\')">' +
@@ -2497,7 +2537,7 @@ async function setSendingMode(mode) {
     if (res && res.success) {
       _autopilotArmed = false;
       showToast(mode === 'autopilot'
-        ? 'Autopilot is on from Sellbird’s next cycle. Held emails still wait for you.'
+        ? 'Autopilot is on from VeloReach’s next cycle. Held emails still wait for you.'
         : 'Autopilot is off. Every email waits for you' +
           (res.requeued ? '; ' + res.requeued + ' queued by autopilot came back to the Outbox.' : '.') +
           (_sendingMode && _sendingMode.provider === 'instantly'
@@ -2538,7 +2578,7 @@ function renderOutboxActions(actionsEl, pending, paused) {
       : '') +
     (!selCount && pending.length && !paused && unheld
       ? '<button class="btn btn-primary btn-sm" onclick="outboxApproveAll()" ' +
-        'title="Emails Sellbird held are left for you to approve one by one">Approve all ' + unheld + '</button>'
+        'title="Emails VeloReach held are left for you to approve one by one">Approve all ' + unheld + '</button>'
       : '') +
     (paused
       ? '<button class="btn btn-secondary btn-sm" onclick="sendingToggle(\'resume\')">Resume sending</button>'
@@ -2558,7 +2598,7 @@ function renderDesk(items, i) {
         ' onclick="event.stopPropagation();toggleOutboxSelect(' + jsq(it.id) + ',this.checked)">' +
       '<span class="avatar">' + initials(parts[0], parts[1]) + '</span>' +
       '<div class="di-text"><div class="to">' + escHtml(who) +
-        (heldReason(it) ? ' <span class="tag t-bad" title="Sellbird held this instead of sending it">Held</span>' : '') +
+        (heldReason(it) ? ' <span class="tag t-bad" title="VeloReach held this instead of sending it">Held</span>' : '') +
         (hasTags ? ' <span class="tag t-warn" title="Unrendered merge tag found">Tag!</span>' : '') +
         '</div>' +
       '<div class="sub">' + escHtml(it.subject || '(no subject)') + '</div></div>' +
@@ -2625,9 +2665,9 @@ function renderDesk(items, i) {
       renderDeskContext(cur.context) +
       tagWarn +
       (heldReason(cur)
-        ? '<div class="banner wait desk-held">' + icon('alert') + '<div><b>Sellbird held this instead of sending it</b>' +
+        ? '<div class="banner wait desk-held">' + icon('alert') + '<div><b>VeloReach held this instead of sending it</b>' +
           '<div>' + escHtml(heldReason(cur)) + '. Read it before approving: text from a website or an ' +
-          'email can try to steer what Sellbird writes.</div></div></div>'
+          'email can try to steer what VeloReach writes.</div></div></div>'
         : '') +
       draft + signoffPreview + footer +
       '<div class="desk-actions">' + actions +
@@ -2764,7 +2804,7 @@ async function outboxApproveAll() {
   try {
     const data = await api('/api/outbox/approve-all', {method: 'POST'});
     if (data && data.success) showToast('Approved ' + data.approved + ' email(s).' + (data.held
-      ? ' ' + data.held + ' Sellbird held ' + (data.held === 1 ? 'is' : 'are') + ' left for you to read and approve one by one.'
+      ? ' ' + data.held + ' VeloReach held ' + (data.held === 1 ? 'is' : 'are') + ' left for you to read and approve one by one.'
       : ''), 'success');
     else showToast(failMsg(data, 'Approve-all failed.'), 'error');
     await loadOutbox();
@@ -2942,7 +2982,7 @@ function renderCompaniesPage(page) {
 let _currentCompanyIndex = -1;
 
 // Basic facts about one company, above its contacts: where it came from,
-// why it fits, what's been done, and what Sellbird saw on its own site.
+// why it fits, what's been done, and what VeloReach saw on its own site.
 function companyInfoCard(company, profile) {
   const c = (profile && profile.company) || company;
   const reg = (profile && profile.register) || {};
@@ -3091,7 +3131,7 @@ async function showCompanyContacts(index) {
     '<span class="meta">' + escHtml([company.industry, company.location].filter(Boolean).join(' · ')) + '</span></div>';
   if (!data || !data.length) {
     html += emptyState(icon('contacts'), 'No contacts here yet',
-      'Sellbird hasn\'t found a person at this company. It reads the team and about ' +
+      'VeloReach hasn\'t found a person at this company. It reads the team and about ' +
       'pages of each site it profiles — try <b>Read websites</b> on the Discover tab.') + '</div>';
   } else {
     html += '<table><thead><tr><th>Name</th><th>Email</th><th>Phone</th><th>LinkedIn</th><th>Status</th><th>Source</th></tr></thead><tbody>';
@@ -3118,19 +3158,19 @@ async function submitFeedback(entityType, entityId, promptText) {
     body: JSON.stringify({entity_type: entityType, entity_id: entityId, comment: comment})
   });
   if (data && data.success) showToast(entityType === 'campaign'
-    ? 'Saved. Sellbird follows it in the emails it writes from now on.'
-    : 'Saved. Sellbird uses it if it writes this person\'s first email (Gmail, SMTP or Microsoft 365).', 'success');
+    ? 'Saved. VeloReach follows it in the emails it writes from now on.'
+    : 'Saved. VeloReach uses it if it writes this person\'s first email (Gmail, SMTP or Microsoft 365).', 'success');
   else showToast((data && data.message) || 'Could not save feedback.', 'error');
 }
 
 function fbProspect(i) {
   const p = _prospects[i];
-  if (p) submitFeedback('contact', p.id, 'Anything Sellbird should know before writing to this person?');
+  if (p) submitFeedback('contact', p.id, 'Anything VeloReach should know before writing to this person?');
 }
 
 function fbCampaign(i) {
   const c = _campaigns[i];
-  if (c) submitFeedback('campaign', c.id, 'What should Sellbird do differently in the emails it writes next? (e.g. "shorter; don\'t mention reviews")');
+  if (c) submitFeedback('campaign', c.id, 'What should VeloReach do differently in the emails it writes next? (e.g. "shorter; don\'t mention reviews")');
 }
 
 // Search and status filter live outside the table, so the 15-second refresh
@@ -3592,7 +3632,7 @@ function filterByContactTag(tag) {
         '<span class="cell-sub">' + relTime(p.created_at) + '</span></div></td>' +
       '<td class="actions-td"><div class="cell-row">' + (p.status === 'opted_out' || p.opt_out_undone || _optOut.id === p.id
         ? '<button class="btn btn-ghost btn-sm" onclick="toggleOptOut(' + i + ')" ' +
-          'aria-expanded="' + (_optOut.id === p.id) + '" title="What made Sellbird stop emailing them">' +
+          'aria-expanded="' + (_optOut.id === p.id) + '" title="What made VeloReach stop emailing them">' +
           (p.status === 'opted_out' ? 'Why?' : 'Opt-out history') + '</button>' : '') +
         '<button class="btn btn-ghost btn-sm row-action" onclick="openContactDetailModal(' + jsq(p.id) + ')" title="Edit contact & view email timeline">Edit</button>' +
         (p.email && p.status !== 'opted_out'
@@ -3688,7 +3728,7 @@ async function saveContactDetail(btn) {
   }
 }
 
-// Why someone is opted out, and undoing it. Sellbird never moves anyone off
+// Why someone is opted out, and undoing it. VeloReach never moves anyone off
 // "opted out" on its own, so a mistaken one (a bare "stop" that meant
 // something else) needs you: see what triggered it, then undo it here.
 let _optOut = {id: null, data: null, armed: false, busy: false};
@@ -3716,13 +3756,13 @@ function optOutPanel(p) {
   const name = escHtml([p.first_name, p.last_name].filter(Boolean).join(' ') || p.email);
   if (!d) return '<div class="optout-panel muted">Loading…</div>';
   if (d.error) return '<div class="optout-panel muted">Couldn’t load the opt-out record. Try again.</div>';
-  let html = '<div class="optout-panel"><h4>' + (d.opted_out ? 'Why Sellbird stopped emailing ' : 'Opt-out history for ') +
+  let html = '<div class="optout-panel"><h4>' + (d.opted_out ? 'Why VeloReach stopped emailing ' : 'Opt-out history for ') +
     name + '</h4>';
   if (d.recorded) {
     html += '<p>' + escHtml(d.why) + '</p><div class="optout-meta">' +
       escHtml(own(OPT_OUT_RULES, d.rule) || d.rule || '') + (d.at ? ' · ' + relTime(d.at) : '') + '</div>';
   } else if (d.opted_out || (d.history || []).length) {
-    html += '<p>They opted out before Sellbird kept a record of why.' +
+    html += '<p>They opted out before VeloReach kept a record of why.' +
       (d.message ? ' The last thing they wrote:' : ' There’s no reply from them on file.') + '</p>';
   }
   if (d.message) {
@@ -3737,8 +3777,8 @@ function optOutPanel(p) {
     html += '<div class="convo-actions"><span class="muted">Not opted out now (' +
       escHtml(statusMeta(d.status).label) + ').</span></div>';
   } else if (_optOut.armed) {
-    html += '<div class="convo-actions"><span class="muted">Sellbird will treat them as having replied. Nothing is ' +
-      'sent automatically, emails the opt-out cancelled stay cancelled, and Sellbird’s answer to their next ' +
+    html += '<div class="convo-actions"><span class="muted">VeloReach will treat them as having replied. Nothing is ' +
+      'sent automatically, emails the opt-out cancelled stay cancelled, and VeloReach’s answer to their next ' +
       'reply waits for your approval, even on autopilot. Only undo it if they didn’t mean to opt out.</span>' +
       '<button class="btn btn-primary btn-sm" onclick="undoOptOut()"' + (_optOut.busy ? ' disabled' : '') +
         '>Confirm undo</button>' +
@@ -3759,7 +3799,7 @@ async function undoOptOut() {
     method: 'POST', headers: {'Content-Type': 'application/json'},
     body: JSON.stringify({confirm: true}),
   });
-  if (res && res.success) showToast('Opt-out undone. They’re marked as replied; Sellbird sends nothing on its own.', 'success');
+  if (res && res.success) showToast('Opt-out undone. They’re marked as replied; VeloReach sends nothing on its own.', 'success');
   else showToast(failMsg(res, 'Could not undo the opt-out. Try again.'), 'error');
   if (_optOut.id !== id) return;
   _optOut.armed = false;
@@ -3808,7 +3848,7 @@ async function openInGmail(ci, si, ri) {
   // Cold email carries the postal address and opt-out line, sent by hand too.
   const filled = fillMergeVars(step.body, r).trimEnd();
   const body = filled + (c.footer && !filled.endsWith(c.footer) ? '\n\n' + c.footer : '');
-  // authuser picks the Google account Sellbird sends as, not just whichever
+  // authuser picks the Google account VeloReach sends as, not just whichever
   // one the browser happens to be signed into.
   const url = 'https://mail.google.com/mail/?view=cm&fs=1' +
     (c.send_as ? '&authuser=' + encodeURIComponent(c.send_as) : '') +
@@ -3826,7 +3866,7 @@ async function openInGmail(ci, si, ri) {
     return;
   }
   w.opener = null;
-  // Record the send BEFORE the user can press Send in Gmail, so Sellbird can
+  // Record the send BEFORE the user can press Send in Gmail, so VeloReach can
   // never email them as well — not even if they forget to tick the box.
   _gmailBusy = true;
   let claimed = r.sent_by_hand;
@@ -3905,7 +3945,7 @@ function renderFrameworks(data) {
   }).join('');
   el.innerHTML = '<section class="card frameworks-card" aria-labelledby="frameworks-h">' +
     '<h3 id="frameworks-h">Framework experiment</h3>' +
-    '<p class="lede">Each campaign tests one email shape. Sellbird gives the next campaign to a shape by Thompson sampling over these real replies, so winners gradually get more traffic. “Finished” means a person replied or their sequence ran its course.</p>' +
+    '<p class="lede">Each campaign tests one email shape. VeloReach gives the next campaign to a shape by Thompson sampling over these real replies, so winners gradually get more traffic. “Finished” means a person replied or their sequence ran its course.</p>' +
     '<div class="table-card"><table><thead><tr><th>Framework</th><th class="num">Finished</th>' +
     '<th class="num">Replies</th><th class="num">Reply rate</th></tr></thead><tbody>' + body +
     '</tbody></table></div></section>';
@@ -4628,7 +4668,7 @@ function renderCampaignsList() {
   const data = _campaigns || [];
   if (!data.length) {
     el.innerHTML = emptyState(icon('campaigns'), 'No campaigns yet',
-      'Create a sequence with <b>+ New Campaign</b> or click <b>Write Emails Now</b> to let Sellbird draft from your scored prospects.');
+      'Create a sequence with <b>+ New Campaign</b> or click <b>Write Emails Now</b> to let VeloReach draft from your scored prospects.');
     return;
   }
   const filters = ['all', 'active', 'paused', 'draft'];
@@ -4650,22 +4690,22 @@ function renderCampaignsList() {
     let stepsHtml = '';
     (c.sequence || []).forEach((step, s) => {
       const sendBtns = (c.recipients || []).map((r, ri) => {
-        // Only offered when Sellbird can't send itself and this person can
+        // Only offered when VeloReach can't send itself and this person can
         // still be emailed (the server decides: can_send_by_hand).
         if (r.sent_by_hand) {
           const tick = '<label style="display:inline-flex;align-items:center;gap:4px;font-size:13px;cursor:pointer">' +
             '<input type="checkbox" checked onchange="markSent(' + i + ',' + ri + ',this.checked)"> ' +
             '&#10003; Sent by you</label>';
           if (s === 0) return '<span class="rcpt-who">' + escHtml(r.email) + '</span>' + tick;
-          // Follow-ups are the user's too: Sellbird never emails someone they emailed.
+          // Follow-ups are the user's too: VeloReach never emails someone they emailed.
           return '<span class="rcpt-who">' + escHtml(r.email) + '</span>' +
             '<button class="btn btn-secondary btn-sm" onclick="openInGmail(' + i + ',' + s + ',' + ri + ')">' +
             'Open in Gmail</button>' +
-            '<span class="muted" style="font-size:12px">Sellbird won\'t send follow-ups to people you emailed yourself.</span>';
+            '<span class="muted" style="font-size:12px">VeloReach won\'t send follow-ups to people you emailed yourself.</span>';
         }
         if (s !== 0) return '';
         if (!r.can_send_by_hand) {
-          // Sellbird sends here; this only records an email the user already sent.
+          // VeloReach sends here; this only records an email the user already sent.
           return r.can_mark_sent
             ? '<label class="muted" style="display:inline-flex;align-items:center;gap:4px;font-size:12px;cursor:pointer">' +
               '<input type="checkbox" onchange="markSent(' + i + ',' + ri + ',this.checked)"> ' +
@@ -4720,8 +4760,8 @@ function renderCampaignsList() {
   el.innerHTML = html;
 }
 
-// The whole exchange in order: Sellbird's cold emails (from the Outbox), the
-// replies, Sellbird's answers, and any answer still waiting for approval.
+// The whole exchange in order: VeloReach's cold emails (from the Outbox), the
+// replies, VeloReach's answers, and any answer still waiting for approval.
 let _convos = [], _convoFilter = 'needs';
 const STAGE_LABELS = {
   initial_outreach: 'Outreach', engaged: 'Engaged', qualifying: 'Qualifying', presenting: 'Presenting',
@@ -4791,11 +4831,11 @@ function convoCard(c) {
     }
     const m = it.msg, sent = m.sender !== 'prospect';  // 'harvey' (the old name) is ours too
     return '<div class="thread-msg ' + (sent ? 'sent' : 'received') + '"><div class="sender">' +
-      (sent ? 'Sellbird' : escHtml(first)) + ' &middot; ' + relTime(m.timestamp) + '</div>' +
+      (sent ? 'VeloReach' : escHtml(first)) + ' &middot; ' + relTime(m.timestamp) + '</div>' +
       escHtml(m.content) + '</div>';
   }).join('');
   const draft = c.draft
-    ? '<div class="thread-draft"><div class="sender">' + icon('pen') + 'Sellbird drafted a reply · waiting for you</div>' +
+    ? '<div class="thread-draft"><div class="sender">' + icon('pen') + 'VeloReach drafted a reply · waiting for you</div>' +
       '<div class="td-body">' + escHtml(c.draft.body) + '</div>' +
       '<button class="btn btn-primary btn-sm" onclick="goTab(\'outbox\')">Review in Outbox' + icon('arrow') + '</button></div>'
     : '';
@@ -4814,7 +4854,7 @@ function convoCard(c) {
 
 let _convoSlots = {};
 
-// Sellbird answers new replies only on open conversations: an escalated one
+// VeloReach answers new replies only on open conversations: an escalated one
 // waits for you to reply yourself, then close it or hand it back.
 function convoActions(c) {
   const canReply = c.prospect_status !== 'opted_out';
@@ -4845,18 +4885,18 @@ function convoActions(c) {
     : '';
   if (c.status === 'needs_human' && c.prospect_status === 'opted_out') {
     // A complaint or legal threat from someone who opted out: handing it
-    // back wouldn't help, Sellbird never answers them.
+    // back wouldn't help, VeloReach never answers them.
     return '<div class="convo-actions"><span class="muted">' + icon('alert') +
-      'Opted out, and Sellbird handed this to you. Reply from your inbox if you need to, then:</span>' +
+      'Opted out, and VeloReach handed this to you. Reply from your inbox if you need to, then:</span>' +
       '<button class="btn btn-secondary btn-sm" onclick="setConvoStatus(' + jsq(c.id) + ',\'closed\')">Close</button>' +
       '<button class="btn btn-secondary btn-sm" onclick="showOptOut(' + jsq(c.prospect_id) + ',' + jsq(c.prospect_email) +
       ')">Why opted out?</button></div>';
   }
   if (c.status === 'needs_human') {
     return '<div class="convo-actions"><span class="muted">' + icon('alert') +
-      'Sellbird handed this to you. Stage a reply below or handle directly:</span>' +
+      'VeloReach handed this to you. Stage a reply below or handle directly:</span>' +
       replyBtn + bookBtn +
-      '<button class="btn btn-secondary btn-sm" onclick="setConvoStatus(' + jsq(c.id) + ',\'open\')">Hand back to Sellbird</button>' +
+      '<button class="btn btn-secondary btn-sm" onclick="setConvoStatus(' + jsq(c.id) + ',\'open\')">Hand back to VeloReach</button>' +
       '<button class="btn btn-secondary btn-sm" onclick="setConvoStatus(' + jsq(c.id) + ',\'closed\')">Close</button></div>' +
       replyPanel + bookPanel;
   }
@@ -4868,8 +4908,8 @@ function convoActions(c) {
     return '<div class="convo-actions">' + replyBtn + bookBtn + '</div>' + replyPanel + bookPanel;
   }
   if (c.status === 'closed' && c.prospect_status === 'opted_out') {
-    // Reopening wouldn't help: Sellbird never answers someone who opted out.
-    return '<div class="convo-actions"><span class="muted">' + icon('alert') + 'Opted out. Sellbird won’t write to them.</span>' +
+    // Reopening wouldn't help: VeloReach never answers someone who opted out.
+    return '<div class="convo-actions"><span class="muted">' + icon('alert') + 'Opted out. VeloReach won’t write to them.</span>' +
       '<button class="btn btn-secondary btn-sm" onclick="showOptOut(' + jsq(c.prospect_id) + ',' + jsq(c.prospect_email) +
       ')">Why opted out?</button></div>';
   }
@@ -4971,7 +5011,7 @@ async function confirmBookSlot(convoId, idx, btn) {
         prospect_email: convo.prospect_email || '',
         prospect_name: [convo.first_name, convo.last_name].filter(Boolean).join(' '),
         slot: slot,
-        notes: 'Booked from Sellbird dashboard',
+        notes: 'Booked from VeloReach dashboard',
       }),
     });
     if (res && res.success) {
@@ -4993,7 +5033,7 @@ async function setConvoStatus(id, status) {
     method: 'POST', headers: {'Content-Type': 'application/json'},
     body: JSON.stringify({status: status}),
   });
-  if (data && data.success) showToast(status === 'open' ? 'Open again. Sellbird will answer the next reply.' : 'Closed. A new reply starts a new conversation.', 'success');
+  if (data && data.success) showToast(status === 'open' ? 'Open again. VeloReach will answer the next reply.' : 'Closed. A new reply starts a new conversation.', 'success');
   else showToast(failMsg(data, 'Could not update that conversation.'), 'error');
   loadConversations();
   loadToday();
@@ -5123,7 +5163,7 @@ function openInbox(i) {
   let body = '';
   if (ib.state === 'not_connected') {
     body += '<div class="notice bad"><b>Not connected.</b> ' +
-      escHtml(ib.connect_hint || 'Sellbird can\'t sign in to it from this computer. Check the connection to see why, or remove it and add it again.') + '</div>';
+      escHtml(ib.connect_hint || 'VeloReach can\'t sign in to it from this computer. Check the connection to see why, or remove it and add it again.') + '</div>';
   }
   if (ib.paused_reason) {
     body += '<div class="notice wait"><b>Paused:</b> ' + escHtml(ib.paused_reason) + '</div>';
@@ -5148,7 +5188,7 @@ function openInbox(i) {
     if (ib.state === 'not_connected' && kind) {
       const can = (_inboxes.can_connect || {})[kind];
       body = '<div id="main-status"></div>' + (can
-        ? '<div class="notice bad"><b>Not connected.</b> Sign in to the mailbox Sellbird sends from.</div>' +
+        ? '<div class="notice bad"><b>Not connected.</b> Sign in to the mailbox VeloReach sends from.</div>' +
           '<button class="btn btn-primary" id="main-go" onclick="connectMainMailbox(\'' + kind + '\')">Sign in with ' +
           (kind === 'gmail' ? 'Google' : 'Microsoft') + '</button><div style="height:16px"></div>'
         : connectSetupNotice(kind)) + body.replace(/<div class="notice bad"><b>Not connected.<\/b>[\s\S]*?<\/div>/, '');
@@ -5170,7 +5210,7 @@ function openInbox(i) {
     '<div class="inline-edit"><input class="form-input" id="ib-name" maxlength="100" placeholder="Your persona name" value="' + escHtml(ib.name || '') + '">' +
     '<button class="btn btn-secondary" onclick="saveInboxName(' + id + ')">Save</button></div>' +
     '<div class="form-hint">The name people see in From.</div></div>';
-  body += '<div class="modal-section"><h4>Remove this inbox</h4><p>Sellbird stops sending from it, and threads it started end. Its sign-in stays in your keychain.</p>' +
+  body += '<div class="modal-section"><h4>Remove this inbox</h4><p>VeloReach stops sending from it, and threads it started end. Its sign-in stays in your keychain.</p>' +
     '<div class="inline-edit" style="margin-top:8px"><input class="form-input" id="ib-confirm" placeholder="Type ' + escHtml(ib.address) + ' to confirm">' +
     '<button class="btn btn-danger" onclick="removeInbox(' + id + ')">Remove</button></div></div>';
 
@@ -5249,16 +5289,16 @@ function openAddInbox(kind) {
       '<div class="form-group"><label class="form-label" for="add-user">Username</label><input class="form-input" id="add-user" placeholder="Same as the address"></div>' +
       '<div class="form-row"><div class="form-group"><label class="form-label" for="add-imap">IMAP server</label><input class="form-input" id="add-imap" placeholder="Same as the SMTP server"></div>' +
       '<div class="form-group" style="max-width:110px"><label class="form-label" for="add-imap-port">Port</label><input class="form-input" id="add-imap-port" type="number" value="993"></div></div></details>';
-    note = '<p class="form-hint">The password goes straight to your system keychain. Sellbird never shows it again.</p>';
+    note = '<p class="form-hint">The password goes straight to your system keychain. VeloReach never shows it again.</p>';
   } else if (!can[_addKind]) {
     note = connectSetupNotice(_addKind);
   } else {
-    note = '<p class="form-hint">A ' + INBOX_KINDS[_addKind][0] + ' sign-in opens in the browser on the computer running Sellbird. Sign in as the address above.</p>';
+    note = '<p class="form-hint">A ' + INBOX_KINDS[_addKind][0] + ' sign-in opens in the browser on the computer running VeloReach. Sign in as the address above.</p>';
   }
   note += '<div class="modal-section"><h4>Or from your terminal</h4><div class="cmd-copy"><code id="add-cmd"></code>' +
     '<button class="btn btn-secondary btn-sm" onclick="copyAddCommand()">Copy</button></div></div>';
   const disabled = _addKind !== 'smtp' && !can[_addKind];
-  inboxDialog(inboxDialogHead('Add an inbox', 'Connect an inbox you already own. Sellbird sends from it and reads its replies.') +
+  inboxDialog(inboxDialogHead('Add an inbox', 'Connect an inbox you already own. VeloReach sends from it and reads its replies.') +
     '<div class="modal-body"><div class="provider-picks">' + picks + '</div><div style="height:16px"></div>' +
     '<div id="add-status"></div>' + form + note + '</div>' +
     '<div class="modal-foot"><button class="btn btn-ghost" onclick="closeInboxDialog()">Cancel</button>' +
@@ -5406,7 +5446,7 @@ async function loadActivity() {
   if (!data) { el.innerHTML = offlineState(); return; }
   if (!data.length) {
     el.innerHTML = emptyState(icon('activity'), 'No activity yet',
-      'Sellbird hasn\'t taken any actions. Every prospect found, email written, and reply handled will appear here the moment it happens.');
+      'VeloReach hasn\'t taken any actions. Every prospect found, email written, and reply handled will appear here the moment it happens.');
     return;
   }
   let html = '<div class="card"><div class="timeline">';
@@ -5474,7 +5514,7 @@ setInterval(() => {
 }, 15000);
 
 
-// ── Your company (sellbird.offer): what Sellbird writes from, and the offer ──
+// ── Your company (sellbird.offer): what VeloReach writes from, and the offer ──
 
 let _company = null;
 let _offerIdeas = [];
@@ -5696,7 +5736,7 @@ async function loadCompany() {
   <section class="card company-card" aria-labelledby="co-brief-h">
     <div class="company-card-head">
       <h3 id="co-brief-h">Quick Setup: Describe What You Want &amp; Who You Need</h3>
-      <span class="hint">Type in plain English or Roman Urdu — Sellbird fills your Product, Offer, Target Audience &amp; Cities</span>
+      <span class="hint">Type in plain English or Roman Urdu — VeloReach fills your Product, Offer, Target Audience &amp; Cities</span>
     </div>
     <div class="form-group" style="margin-bottom:8px">
       <textarea class="form-input" id="co-brief-input" rows="2" placeholder="Example: Main apni AI appointment SaaS ($99/mo) dentists aur salons ko Austin, TX aur Denver, CO mein pitch karna chahta hoon. Free 15-min demo offer hai."></textarea>
@@ -5714,7 +5754,7 @@ async function loadCompany() {
     </div>
     <div class="company-train-row">
       <input type="url" class="form-input" id="co-train-url" placeholder="https://your-saas.com" autocomplete="off">
-      <button class="btn btn-primary btn-sm" id="co-train-btn" onclick="trainCompanyFromUrl()">Train Sellbird</button>
+      <button class="btn btn-primary btn-sm" id="co-train-btn" onclick="trainCompanyFromUrl()">Train VeloReach</button>
     </div>
     <div id="co-train-status" class="hint" aria-live="polite" style="margin-top:8px"></div>
   </section>
@@ -5733,7 +5773,7 @@ async function loadCompany() {
         <button class="btn btn-secondary btn-sm" onclick="dismissProposedOffer()">Dismiss</button>
       </div>
     </div>` : ''}
-    <p class="desc">Each first email names something Sellbird found about the prospect, says what it costs them, and offers this as the fix. Make it free, specific, and deliverable this week. ${o.entry ? '' : '<b>No offer yet</b>, so first emails end with a question instead.'}</p>
+    <p class="desc">Each first email names something VeloReach found about the prospect, says what it costs them, and offers this as the fix. Make it free, specific, and deliverable this week. ${o.entry ? '' : '<b>No offer yet</b>, so first emails end with a question instead.'}</p>
     <div class="form-group"><label class="form-label" for="offer-entry">Offer CTA</label>
       <textarea class="form-input" id="offer-entry" rows="2" maxlength="300" placeholder="e.g. a 2-minute breakdown of leads slipping past your homepage &amp; Google listing">${ce(o.entry || '')}</textarea></div>
     <div class="form-group"><label class="form-label" for="offer-booking-url">Calendar / Booking Link <span class="hint">(optional Cal.com or Calendly URL shared when prospects ask to book)</span></label>
@@ -5818,7 +5858,7 @@ async function loadCompany() {
   </section>
 
   ${data.knowledge || data.competitors ? `<section class="card company-card" aria-labelledby="co-learned-h">
-    <div class="company-card-head"><h3 id="co-learned-h">What Sellbird learned from your site</h3>
+    <div class="company-card-head"><h3 id="co-learned-h">What VeloReach learned from your site</h3>
       <span class="hint">From training. Retrain with <b>Train from Website</b> above or <code>sellbird train &lt;url&gt;</code></span></div>
     ${data.knowledge ? `<details class="company-learned"><summary>Product knowledge</summary><pre>${ce(data.knowledge)}</pre></details>` : ''}
     ${data.competitors ? `<details class="company-learned"><summary>Competitors</summary><pre>${ce(data.competitors)}</pre></details>` : ''}
@@ -5867,7 +5907,7 @@ async function trainCompanyFromUrl() {
     if (input && input.focus) input.focus();
     return;
   }
-  const origText = btn ? btn.textContent : 'Train Sellbird';
+  const origText = btn ? btn.textContent : 'Train VeloReach';
   if (btn) { btn.disabled = true; btn.textContent = 'Training…'; }
   if (status) status.textContent = 'Crawling website and learning about your product…';
   try {
@@ -5957,10 +5997,10 @@ async function suggestOffers() {
   const btn = document.getElementById('offer-suggest-btn');
   btn.disabled = true; btn.textContent = 'Thinking...';
   document.getElementById('offer-ideas').innerHTML =
-    '<p class="desc">Sellbird is reading your product and coming up with offers that fit it...</p>';
+    '<p class="desc">VeloReach is reading your product and coming up with offers that fit it...</p>';
   const r = await api('/api/offer/suggest', {method: 'POST'});
   btn.disabled = false; btn.textContent = 'Suggest ideas';
-  if (!r || r.error || !r.ideas) { renderOfferIdeas(); showToast((r && r.error) || 'Sellbird couldn\'t come up with offers just now. Try again.', 'error'); return; }
+  if (!r || r.error || !r.ideas) { renderOfferIdeas(); showToast((r && r.error) || 'VeloReach couldn\'t come up with offers just now. Try again.', 'error'); return; }
   _offerIdeas = r.ideas;
   renderOfferIdeas();
 }
@@ -6400,7 +6440,7 @@ async function loadEnrichment() {
   const companiesMap = data.companies || {};
   if (!cols.length) {
     list.innerHTML = emptyState(icon('enrichment'), 'No AI columns yet',
-      'Define a prompt once and Sellbird runs it against every company it has read. ' +
+      'Define a prompt once and VeloReach runs it against every company it has read. ' +
       'Click <b>+ Add AI Column</b> to create the first one.');
   } else {
     list.innerHTML = cols.map(col => {

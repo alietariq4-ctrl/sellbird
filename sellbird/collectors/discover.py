@@ -1069,6 +1069,8 @@ class OpenStreetMap(DiscoveryProvider):
     # independence at the DNS level is not enough.
     ENDPOINTS = (
         "https://overpass-api.de/api/interpreter",
+        "https://overpass.private.coffee/api/interpreter",
+        "https://maps.mail.ru/osm/tools/overpass/api/interpreter",
         "https://overpass.kumi.systems/api/interpreter",
     )
     # Overpass etiquette for a shipped tool: modest volume, no parallelism.
@@ -1184,8 +1186,10 @@ class OpenStreetMap(DiscoveryProvider):
         # out readily under load. Walk the mirrors, then RAISE: returning []
         # would make a throttled run look exactly like a market with no
         # businesses in it.
-        headers = {"User-Agent": "Sellbird/0.1 (open-source sales agent; "
-                                 "github.com/ethanplusai/sellbird)"}
+        headers = {
+            "User-Agent": "VeloReach/0.2 (open-source outreach agent)",
+            "Accept": "application/json, */*",
+        }
         r = None
         for i, endpoint in enumerate(self.ENDPOINTS):
             if i:
@@ -1961,8 +1965,9 @@ def preset_problem(preset: str, provider_key: str, config=None) -> str | None:
 
 
 def build_queries(config, cities: list[str] | None = None,
-                  depth: int = 30, limit: int = 100, preset: str = "") -> list[DiscoveryQuery]:
-    """Turn the configured ICP into a concrete query list.
+                  depth: int = 30, limit: int = 100, preset: str = "",
+                  terms: list[str] | None = None) -> list[DiscoveryQuery]:
+    """Turn the configured ICP (or explicit query terms) into a concrete query list.
 
     One query per (industry or keyword variant x city). Coordinates come from
     ``icp.geo_coordinates`` when present, because listings providers need a
@@ -1970,7 +1975,8 @@ def build_queries(config, cities: list[str] | None = None,
     into its search; a non-local one only uses cities you pass.
     """
     icp = config.icp
-    terms = list(icp.industries) or [config.product.name]
+    custom_terms = [str(t).strip() for t in (terms or []) if str(t).strip()]
+    base_terms = custom_terms or list(icp.industries) or [config.product.name]
     spec = PRESETS.get(preset) if preset else None
     if spec:
         templates = preset_templates(spec)
@@ -1978,15 +1984,15 @@ def build_queries(config, cities: list[str] | None = None,
         from sellbird.collectors.ats import role_keywords
         roles = role_keywords(icp) if any("{role}" in tpl for tpl in templates) else [""]
         terms = [tpl.format(industry=t, role=r, since=since)
-                 for r in roles for t in terms for tpl in templates]
+                 for r in roles for t in base_terms for tpl in templates]
         places = cities if cities is not None else ([""] if not spec["local"] else list(icp.geography) or [""])
     else:
         # "roofing contractor" is one way to search for a roofer. Each
         # configured variant is another search in every city — ranks differ
         # by phrasing, and the email should quote the phrase that was used.
-        variants = getattr(icp, "keyword_variants", {}) or {}
+        variants = {} if custom_terms else (getattr(icp, "keyword_variants", {}) or {})
         terms = list(dict.fromkeys(
-            v.strip() for t in terms for v in [t, *variants.get(t, [])] if v.strip()))
+            v.strip() for t in base_terms for v in [t, *variants.get(t, [])] if v.strip()))
         places = cities if cities is not None else list(icp.geography) or [""]
     coords = getattr(icp, "geo_coordinates", {}) or {}
 
