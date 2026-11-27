@@ -949,8 +949,11 @@
 
     <div class="settings-row">
       <div>
-        <h3>SMTP + IMAP mailbox</h3>
-        <p class="desc">Any real mailbox (AgentMail, Fastmail, a Workspace app password). IMAP defaults to the SMTP host and login if left blank.</p>
+        <h3>SMTP + IMAP mailbox <span class="tag accent">Works with Resend SMTP</span></h3>
+        <p class="desc">Any real mailbox (AgentMail, Fastmail, Google Workspace app password) OR an outbound SMTP relay like <strong>Resend</strong> (3,000 free/mo, ideal for live demos). Note: Resend has no IMAP inbox for reply polling and forbids bulk unsolicited cold blasts; for scaled cold email with reply tracking use Workspace/M365 or SMTP+IMAP.</p>
+        <div style="margin-top:8px;">
+          <button type="button" class="btn btn-secondary btn-sm" onclick="fillResendPreset()">Use Resend SMTP Preset (smtp.resend.com)</button>
+        </div>
       </div>
       <div class="fields">
         <div class="form-row">
@@ -960,15 +963,15 @@
             <input type="text" class="form-input" id="smtp-port" placeholder="587" autocomplete="off"></div>
         </div>
         <div class="form-group"><label class="form-label" for="smtp-user">Username</label>
-          <input type="text" class="form-input" id="smtp-user" placeholder="you@example.com" autocomplete="off"></div>
-        <div class="form-group"><label class="form-label" for="smtp-pass">Password</label>
-          <div class="with-btn"><input type="password" class="form-input" id="smtp-pass" placeholder="Enter password / app password" autocomplete="off">
+          <input type="text" class="form-input" id="smtp-user" placeholder="you@example.com or resend" autocomplete="off"></div>
+        <div class="form-group"><label class="form-label" for="smtp-pass">Password / API key</label>
+          <div class="with-btn"><input type="password" class="form-input" id="smtp-pass" placeholder="Password or Resend API key (re_...)" autocomplete="off">
             <button class="btn btn-secondary" onclick="toggleVisibility('smtp-pass')">Show</button></div></div>
         <details class="more-fields">
           <summary>Reading replies from a different IMAP server or login</summary>
           <div class="form-row">
             <div class="form-group"><label class="form-label" for="imap-host">IMAP host</label>
-              <input type="text" class="form-input" id="imap-host" placeholder="Same as SMTP host" autocomplete="off"></div>
+              <input type="text" class="form-input" id="imap-host" placeholder="Same as SMTP host (blank for Resend)" autocomplete="off"></div>
             <div class="form-group" style="max-width:120px"><label class="form-label" for="imap-port">Port</label>
               <input type="text" class="form-input" id="imap-port" placeholder="993" autocomplete="off"></div>
           </div>
@@ -980,7 +983,8 @@
           <label class="check-line"><input type="checkbox" id="imap-same-pass"> Use the SMTP password for IMAP</label>
         </details>
         <div style="display:flex;gap:8px;align-items:center;flex-wrap:wrap;margin-top:6px;">
-          <button class="btn btn-primary btn-sm" onclick="saveSmtp()">Save SMTP</button>
+          <button class="btn btn-primary btn-sm" onclick="saveSmtp(true)">Save &amp; Activate SMTP</button>
+          <button class="btn btn-secondary btn-sm" onclick="saveSmtp(false)">Save Credentials Only</button>
           <button class="btn btn-secondary btn-sm" id="test-smtp-btn" onclick="testSmtpConnection(this)">Test SMTP / IMAP</button>
           <span id="smtp-test-result" class="muted" style="font-size:12px;"></span>
         </div>

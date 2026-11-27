@@ -1733,7 +1733,24 @@ function saveGmail() {
   saveEnv(payload, 'Saved. Now sign in on the Inboxes tab.').then(loadSettings);
 }
 
-function saveSmtp() {
+function fillResendPreset() {
+  const hostEl = document.getElementById('smtp-host');
+  const portEl = document.getElementById('smtp-port');
+  const userEl = document.getElementById('smtp-user');
+  const passEl = document.getElementById('smtp-pass');
+  const imapHostEl = document.getElementById('imap-host');
+  if (hostEl) hostEl.value = 'smtp.resend.com';
+  if (portEl) portEl.value = '587';
+  if (userEl) userEl.value = 'resend';
+  if (imapHostEl) imapHostEl.value = '';
+  if (passEl) {
+    passEl.placeholder = 'Paste Resend API key (re_...)';
+    passEl.focus();
+  }
+  showToast('Resend SMTP preset loaded. Paste your re_... API key, then click Save & Activate SMTP.', 'info');
+}
+
+async function saveSmtp(activateProvider) {
   const payload = {
     SMTP_HOST: document.getElementById('smtp-host').value.trim(),
     SMTP_PORT: document.getElementById('smtp-port').value.trim(),
@@ -1750,7 +1767,18 @@ function saveSmtp() {
   const imapPass = document.getElementById('imap-pass').value;
   if (imapPass) payload.IMAP_PASSWORD = imapPass;
   else if (document.getElementById('imap-same-pass').checked) payload.IMAP_PASSWORD = '';
-  saveEnv(payload, 'SMTP settings saved.').then(loadSettings);
+  await saveEnv(payload, activateProvider ? 'SMTP settings saved.' : 'SMTP credentials saved.');
+  if (activateProvider) {
+    try {
+      await api('/api/settings/email-provider', {
+        method: 'POST',
+        headers: {'Content-Type': 'application/json'},
+        body: JSON.stringify({provider: 'smtp'}),
+      });
+      showToast('Active email provider switched to SMTP.', 'success');
+    } catch (_) {}
+  }
+  loadSettings();
 }
 
 async function testSmtpConnection(btn) {

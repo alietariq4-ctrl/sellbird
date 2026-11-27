@@ -506,6 +506,11 @@ vm.runInContext(code, context);
   await context.openTestSendModal('o1');
   if (!getEl('ts-preview').innerHTML.includes('Rendered inbox preview')) throw new Error('Test send modal missing rendered preview');
 
+  context.fillResendPreset();
+  if (getEl('smtp-host').value !== 'smtp.resend.com' || getEl('smtp-user').value !== 'resend') {
+    throw new Error('fillResendPreset did not populate Resend SMTP fields');
+  }
+
   console.log('VM_ADV_SUITE_OK');
   process.exit(0);
 })().catch(e => { console.error(e); process.exit(1); });
@@ -513,3 +518,140 @@ vm.runInContext(code, context);
     proc = subprocess.run(["node", "-e", vm_script, str(app_js)], capture_output=True, text=True, timeout=15)
     assert proc.returncode == 0, f"VM test failed:\n{proc.stderr}\n{proc.stdout}"
     assert "VM_ADV_SUITE_OK" in proc.stdout
+
+
+@pytest.mark.asyncio
+async def test_osm_places_and_yc_oss_free_providers(monkeypatch):
+    from sellbird.collectors.discover import (
+        DiscoveryQuery,
+        OsmPlacesProvider,
+        PROVIDERS,
+        YcDirectoryProvider,
+    )
+
+    assert "osm_places" in PROVIDERS
+    assert "yc_oss" in PROVIDERS
+    assert PROVIDERS["osm_places"].env_keys == ()
+    assert PROVIDERS["yc_oss"].env_keys == ()
+
+    class _Resp:
+        def __init__(self, status_code, payload):
+            self.status_code = status_code
+            self._payload = payload
+            self.content = b"1"
+
+        def raise_for_status(self):
+            if self.status_code >= 400:
+                raise RuntimeError(f"http {self.status_code}")
+
+        def json(self):
+            return self._payload
+
+    class _FakeClient:
+        async def get(self, url, **kwargs):
+            if "photon.komoot.io" in url:
+                return _Resp(200, {
+                    "features": [
+                        {
+                            "properties": {
+                                "name": "Bright Smile Dental",
+                                "osm_type": "N",
+                                "osm_id": 101,
+                                "city": "Chicago",
+                                "state": "IL",
+                                "osm_value": "dentist",
+                                "website": "https://brightsmilechicago.com",
+                            }
+                        }
+                    ]
+                })
+            if "nominatim.openstreetmap.org" in url:
+                return _Resp(200, [
+                    {
+                        "name": "Lakeview Dental Group",
+                        "osm_type": "way",
+                        "osm_id": 202,
+                        "address": {"city": "Chicago", "state": "IL", "road": "N Clark St"},
+                        "extratags": {"website": "https://lakeviewdental.io", "phone": "+1-312-555-0199", "amenity": "dentist"},
+                    }
+                ])
+            if "yc-oss.github.io" in url:
+                return _Resp(200, [
+                    {
+                        "id": 1,
+                        "slug": "stripe",
+                        "name": "Stripe",
+                        "website": "https://stripe.com",
+                        "one_liner": "Online payment infrastructure for B2B SaaS",
+                        "industry": "Fintech",
+                        "subindustry": "Payments",
+                        "all_locations": "San Francisco, CA, USA",
+                    },
+                    {
+                        "id": 2,
+                        "slug": "airbnb",
+                        "name": "Airbnb",
+                        "website": "https://airbnb.com",
+                        "one_liner": "Consumer travel marketplace",
+                        "industry": "Consumer",
+                        "all_locations": "San Francisco, CA, USA",
+                    },
+                ])
+            raise AssertionError(f"Unexpected URL: {url}")
+
+    osm = OsmPlacesProvider()
+    places = await osm.fetch(_FakeClient(), {}, DiscoveryQuery(term="dentist", location="Chicago, IL", limit=5))
+    assert [b.domain for b in places] == ["brightsmilechicago.com", "lakeviewdental.io"]
+    assert places[1].phone == "+1-312-555-0199"
+
+    yc = YcDirectoryProvider()
+    startups = await yc.fetch(_FakeClient(), {}, DiscoveryQuery(term="payment SaaS", location="San Francisco", limit=5))
+    assert [b.domain for b in startups] == ["stripe.com"]
+
+
+def test_resend_smtp_only_relay_and_provider_switch(adv_env, monkeypatch):
+    import types
+    import yaml
+    from sellbird.integrations.smtp_mail import MailIdentity, SmtpImapProvider, SmtpSettings
+
+    client, headers, _ = adv_env
+
+    # Switch channels.email.provider via the dashboard API
+    sw = client.post("/api/settings/email-provider", headers=headers, json={"provider": "smtp"})
+    assert sw.status_code == 200, sw.text
+    assert sw.json()["provider"] == "smtp"
+    cfg_written = yaml.safe_load(dash._offer_config_file().read_text(encoding="utf-8"))
+    assert cfg_written["channels"]["email"]["provider"] == "smtp"
+
+    # Mock aiosmtplib.SMTP so Resend SMTP relay test skips IMAP when imap_host is blank
+    class _FakeSmtp:
+        def __init__(self, **kwargs):
+            pass
+
+        async def connect(self):
+            return None
+
+        async def login(self, user, pwd):
+            return None
+
+        async def quit(self):
+            return None
+
+    import sellbird.integrations.smtp_mail as smtp_mod
+    monkeypatch.setattr(smtp_mod, "aiosmtplib", types.SimpleNamespace(SMTP=_FakeSmtp))
+
+    def _boom_imap(*args, **kwargs):
+        raise AssertionError("IMAP should NOT be called for outbound-only Resend relay")
+
+    monkeypatch.setattr(smtp_mod, "_open_imap", _boom_imap)
+
+    prov = SmtpImapProvider(
+        None,
+        None,
+        identity=MailIdentity(display_name="Ali", address="ali@harveysaas.io"),
+        smtp=SmtpSettings(host="smtp.resend.com", username="resend", password="re_test_123", port=587, imap_host=""),
+    )
+    ok, msg = asyncio.run(prov.test_connection())
+    assert ok is True
+    assert "outbound relay" in msg.lower()
+

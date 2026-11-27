@@ -632,6 +632,51 @@ async def save_env_settings(request: Request):
     return {"success": True}
 
 
+@app.post("/api/settings/email-provider")
+async def set_active_email_provider(request: Request):
+    """Switch channels.email.provider in the active sellbird config YAML."""
+    require_self_hosted("env_settings")
+    try:
+        data = await request.json()
+    except Exception:
+        data = {}
+    provider = str((data.get("provider") if isinstance(data, dict) else "") or "").strip().lower()
+    allowed = {"gmail", "microsoft", "smtp", "instantly"}
+    if provider not in allowed:
+        return JSONResponse(
+            {"success": False, "message": f"Provider must be one of: {', '.join(sorted(allowed))}."},
+            status_code=400,
+        )
+    target = _offer_config_file()
+    try:
+        import yaml
+        from sellbird.offer import read_user_text
+
+        raw = read_user_text(target) if target.exists() else ""
+        cfg_data = yaml.safe_load(raw) or {}
+        if not isinstance(cfg_data, dict):
+            cfg_data = {}
+        ch = cfg_data.setdefault("channels", {})
+        if not isinstance(ch, dict):
+            ch = {}
+            cfg_data["channels"] = ch
+        em = ch.setdefault("email", {})
+        if not isinstance(em, dict):
+            em = {}
+            ch["email"] = em
+        em["provider"] = provider
+        if target.exists():
+            target.with_name(target.name + ".bak").write_text(raw, encoding="utf-8")
+        target.write_text(
+            yaml.safe_dump(cfg_data, default_flow_style=False, sort_keys=False, allow_unicode=True),
+            encoding="utf-8",
+        )
+        return {"success": True, "provider": provider}
+    except Exception as exc:
+        logger.warning("Failed to update email provider: %s", exc)
+        return JSONResponse({"success": False, "message": f"Couldn't update config: {exc}"}, status_code=500)
+
+
 @app.post("/api/trulyinbox/connect")
 async def trulyinbox_connect(request: Request):
     """Check a TrulyInbox key against the sending mailbox, then save it to .env."""

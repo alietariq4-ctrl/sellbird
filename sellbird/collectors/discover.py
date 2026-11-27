@@ -1071,7 +1071,6 @@ class OpenStreetMap(DiscoveryProvider):
         "https://overpass-api.de/api/interpreter",
         "https://overpass.private.coffee/api/interpreter",
         "https://maps.mail.ru/osm/tools/overpass/api/interpreter",
-        "https://overpass.kumi.systems/api/interpreter",
     )
     # Overpass etiquette for a shipped tool: modest volume, no parallelism.
     MIN_INTERVAL = 2.0
@@ -1767,9 +1766,266 @@ class FirecrawlSearch(DiscoveryProvider):
         return out
 
 
+class OsmPlacesProvider(DiscoveryProvider):
+    """Keyless live local-business search via OpenStreetMap Photon + Nominatim.
+
+    Unlike Overpass API (which frequently throttles with 406/429), Photon
+    (komoot.io) and Nominatim accept free public text searches reliably
+    with zero API keys or lat/lng config.
+    """
+
+    key = "osm_places"
+    label = "OSM Live Places (Photon + Nominatim)"
+    kind = "listings"
+    rank_codes = ()
+    blurb = ("Free keyless local business lookup using Photon (Komoot) and "
+             "OpenStreetMap Nominatim with automatic failover when Overpass "
+             "throttles.")
+    cost_note = "Free (OSM Photon + Nominatim public APIs)"
+    free_tier = "Unlimited free public searches with polite pacing; no API key"
+    signup_url = "https://photon.komoot.io"
+    env_keys = ()
+    caveat = ("Covers named OpenStreetMap businesses without requiring Overpass "
+              "mirrors; some listings may lack websites until enrichment runs.")
+
+    PHOTON_URL = "https://photon.komoot.io/api/"
+    NOMINATIM_URL = "https://nominatim.openstreetmap.org/search"
+    HEADERS = {"User-Agent": "VeloReach/1.0 (+https://github.com/alietariq4-ctrl/sellbird)"}
+
+    def estimate(self, queries: list[DiscoveryQuery]) -> float:
+        return 0.0
+
+    @staticmethod
+    def _clean_tags(props: dict) -> tuple[str, str, str, str]:
+        extra = props.get("extratags") if isinstance(props.get("extratags"), dict) else {}
+        site = str(
+            props.get("website")
+            or extra.get("website")
+            or extra.get("contact:website")
+            or extra.get("url")
+            or ""
+        ).strip()
+        phone = str(
+            props.get("phone")
+            or extra.get("phone")
+            or extra.get("contact:phone")
+            or ""
+        ).strip()
+        category = str(
+            props.get("osm_value")
+            or props.get("type")
+            or props.get("category")
+            or extra.get("amenity")
+            or extra.get("shop")
+            or ""
+        ).strip()
+        city = str(props.get("city") or props.get("town") or props.get("county") or "").strip()
+        state = str(props.get("state") or "").strip()
+        loc = ", ".join(x for x in (city, state) if x)
+        return site, phone, category, loc
+
+    async def fetch(self, client: httpx.AsyncClient, env: dict,
+                    query: DiscoveryQuery) -> list[Business]:
+        q = query.keyword() or query.term or query.location
+        limit = max(1, min(query.limit or 20, 50))
+        out: list[Business] = []
+        seen_keys: set[str] = set()
+
+        def _append_biz(b: Business) -> None:
+            dedupe = b.domain or b.external_id or b.name.lower()
+            if not b.name or dedupe in seen_keys:
+                return
+            seen_keys.add(dedupe)
+            out.append(b)
+
+        # 1. Primary fast geo-search: Photon (Komoot)
+        try:
+            r = await client.get(
+                self.PHOTON_URL,
+                params={"q": q, "limit": limit},
+                headers=self.HEADERS,
+            )
+            if r.status_code == 200:
+                data = r.json() if r.content else {}
+                for feat in (data.get("features") or []):
+                    if not isinstance(feat, dict):
+                        continue
+                    props = feat.get("properties") or {}
+                    name = str(props.get("name") or "").strip()
+                    if not name:
+                        continue
+                    site, phone, category, loc = self._clean_tags(props)
+                    osm_type = str(props.get("osm_type") or "N").lower()
+                    osm_type_full = {"n": "node", "w": "way", "r": "relation"}.get(osm_type, "node")
+                    osm_id = props.get("osm_id") or ""
+                    street = " ".join(
+                        str(x) for x in (props.get("housenumber"), props.get("street")) if x
+                    )
+                    ext_id = f"osm:{osm_type_full}/{osm_id}" if osm_id else ""
+                    src_url = f"https://www.openstreetmap.org/{osm_type_full}/{osm_id}" if osm_id else ""
+                    _append_biz(Business(
+                        name=name,
+                        domain=normalize_domain(site),
+                        website=site,
+                        phone=phone,
+                        address=street,
+                        location=loc or query.location,
+                        category=category,
+                        has_website=bool(site),
+                        external_id=ext_id,
+                        source_url=src_url,
+                        provider=self.key,
+                        keyword=q,
+                    ))
+        except Exception as exc:
+            logger.debug("osm_places photon failed for %r: %s", q, exc)
+
+        # 2. Fallback / supplement: Nominatim structured extratags (carries websites & phones)
+        if len(out) < limit:
+            try:
+                r = await client.get(
+                    self.NOMINATIM_URL,
+                    params={
+                        "q": q,
+                        "format": "jsonv2",
+                        "addressdetails": 1,
+                        "extratags": 1,
+                        "limit": limit,
+                    },
+                    headers=self.HEADERS,
+                )
+                if r.status_code == 200:
+                    items = r.json() if r.content else []
+                    if isinstance(items, list):
+                        for item in items:
+                            if not isinstance(item, dict):
+                                continue
+                            addr = item.get("address") if isinstance(item.get("address"), dict) else {}
+                            name = str(
+                                item.get("name")
+                                or (item.get("display_name") or "").split(",")[0]
+                            ).strip()
+                            if not name:
+                                continue
+                            site, phone, category, _ = self._clean_tags(item)
+                            city = str(
+                                addr.get("city") or addr.get("town") or addr.get("village") or ""
+                            ).strip()
+                            state = str(addr.get("state") or "").strip()
+                            loc = ", ".join(x for x in (city, state) if x)
+                            street = " ".join(
+                                str(x) for x in (addr.get("house_number"), addr.get("road")) if x
+                            )
+                            osm_type = str(item.get("osm_type") or "node")
+                            osm_id = item.get("osm_id") or ""
+                            ext_id = f"osm:{osm_type}/{osm_id}" if osm_id else ""
+                            src_url = f"https://www.openstreetmap.org/{osm_type}/{osm_id}" if osm_id else ""
+                            _append_biz(Business(
+                                name=name,
+                                domain=normalize_domain(site),
+                                website=site,
+                                phone=phone,
+                                address=street,
+                                location=loc or query.location,
+                                category=category,
+                                has_website=bool(site),
+                                external_id=ext_id,
+                                source_url=src_url,
+                                provider=self.key,
+                                keyword=q,
+                            ))
+            except Exception as exc:
+                logger.debug("osm_places nominatim failed for %r: %s", q, exc)
+
+        return out[:limit]
+
+
+class YcDirectoryProvider(DiscoveryProvider):
+    """Keyless B2B startup & SaaS directory from yc-oss open JSON feeds."""
+
+    key = "yc_oss"
+    label = "YC Startups Directory (yc-oss)"
+    kind = "serp"
+    rank_codes = ()
+    blurb = ("Free keyless B2B database of Y Combinator startups and SaaS "
+             "companies via yc-oss open JSON — ideal for SaaS, AI, fintech, "
+             "and software outreach.")
+    cost_note = "Free (yc-oss open public JSON)"
+    free_tier = "Unlimited free lookups; no account or API key required"
+    signup_url = "https://github.com/yc-oss/api"
+    env_keys = ()
+    caveat = ("Covers YC-backed technology/SaaS companies rather than local "
+              "offline storefronts like plumbers or clinics.")
+
+    TOP_URL = "https://yc-oss.github.io/api/companies/top.json"
+
+    def estimate(self, queries: list[DiscoveryQuery]) -> float:
+        return 0.0
+
+    async def fetch(self, client: httpx.AsyncClient, env: dict,
+                    query: DiscoveryQuery) -> list[Business]:
+        r = await client.get(self.TOP_URL)
+        r.raise_for_status()
+        items = r.json() if r.content else []
+        if not isinstance(items, list):
+            return []
+
+        tokens = [t.lower() for t in re.split(r"[\s,;/]+", query.term or "") if len(t) > 1]
+        loc_tokens = [t.lower() for t in re.split(r"[\s,;/]+", query.location or "") if len(t) > 2]
+        limit = max(1, min(query.limit or 20, 50))
+        scored: list[tuple[int, dict]] = []
+
+        for item in items:
+            if not isinstance(item, dict):
+                continue
+            website = str(item.get("website") or "").strip()
+            domain = normalize_domain(website)
+            if not domain:
+                continue
+            hay = " ".join([
+                str(item.get("name") or ""),
+                str(item.get("one_liner") or ""),
+                str(item.get("long_description") or ""),
+                str(item.get("industry") or ""),
+                str(item.get("subindustry") or ""),
+                " ".join(str(x) for x in (item.get("tags") or [])),
+            ]).lower()
+            term_hits = sum(1 for tok in tokens if tok in hay) if tokens else 1
+            if tokens and term_hits == 0:
+                continue
+            loc_hay = str(item.get("all_locations") or "").lower()
+            loc_hits = sum(1 for lt in loc_tokens if lt in loc_hay)
+            scored.append((term_hits * 10 + loc_hits, item))
+
+        scored.sort(key=lambda pair: pair[0], reverse=True)
+        out: list[Business] = []
+        for _, item in scored[:limit]:
+            website = str(item.get("website") or "").strip()
+            domain = normalize_domain(website)
+            name = str(item.get("name") or domain).strip()
+            loc = str(item.get("all_locations") or query.location or "").split(";")[0].strip()
+            cat = str(item.get("subindustry") or item.get("industry") or "Startup").strip()
+            out.append(Business(
+                name=name,
+                raw_title=str(item.get("one_liner") or name),
+                domain=domain,
+                website=website,
+                location=loc,
+                category=cat,
+                has_website=True,
+                external_id=f"yc:{item.get('slug') or item.get('id') or domain}",
+                source_url=str(item.get("url") or website),
+                provider=self.key,
+                keyword=query.keyword(),
+            ))
+        return out
+
+
 PROVIDERS: dict[str, DiscoveryProvider] = {
     p.key: p for p in (
         OpenStreetMap(),
+        OsmPlacesProvider(),
+        YcDirectoryProvider(),
         DuckDuckGoSearch(),
         SearXNGSearch(),
         TinyFish(),

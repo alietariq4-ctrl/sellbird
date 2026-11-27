@@ -87,6 +87,18 @@ class SmtpSettings:
         return data
 
 
+_SMTP_ONLY_RELAY_SUFFIXES = (
+    "resend.com",
+    "sendgrid.net",
+    "postmarkapp.com",
+    "mailgun.org",
+    "amazonaws.com",
+    "sparkpostmail.com",
+    "brevo.com",
+    "mailjet.com",
+)
+
+
 class SmtpImapProvider(MailProvider):
     name = "smtp"
     carries_headers = True
@@ -99,6 +111,7 @@ class SmtpImapProvider(MailProvider):
         if smtp is not None:  # another inbox: its own settings, not the .env's
             self.smtp_host, self.smtp_port = smtp.host, int(smtp.port or 587)
             self.smtp_user, self.smtp_pass = smtp.username, smtp.password
+            self._imap_explicit = bool((smtp.imap_host or "").strip())
             self.imap_host = smtp.imap_host or smtp.host
             self.imap_port = int(smtp.imap_port or 993)
             self.imap_user, self.imap_pass = smtp.username, smtp.password
@@ -107,7 +120,9 @@ class SmtpImapProvider(MailProvider):
         self.smtp_port = int(getattr(env, "smtp_port", 587) or 587)
         self.smtp_user = getattr(env, "smtp_username", "")
         self.smtp_pass = getattr(env, "smtp_password", "")
-        self.imap_host = getattr(env, "imap_host", "") or self.smtp_host
+        raw_imap_host = (getattr(env, "imap_host", "") or "").strip()
+        self._imap_explicit = bool(raw_imap_host)
+        self.imap_host = raw_imap_host or self.smtp_host
         self.imap_port = int(getattr(env, "imap_port", 993) or 993)
         self.imap_user = getattr(env, "imap_username", "") or self.smtp_user
         self.imap_pass = getattr(env, "imap_password", "") or self.smtp_pass
@@ -299,6 +314,12 @@ class SmtpImapProvider(MailProvider):
             await smtp.quit()
         except Exception as e:
             return False, f"SMTP login failed: {str(e)[:200]}"
+        # Outbound-only SMTP relays (Resend, SendGrid, Postmark, etc.) don't offer IMAP.
+        host_low = (self.smtp_host or "").strip().lower()
+        if not getattr(self, "_imap_explicit", True) and any(
+            host_low.endswith(suf) for suf in _SMTP_ONLY_RELAY_SUFFIXES
+        ):
+            return True, f"SMTP connected (outbound relay as {self.smtp_user}; no IMAP inbox on {self.smtp_host})"
         # IMAP handshake
         loop = asyncio.get_running_loop()
 
