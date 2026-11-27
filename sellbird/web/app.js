@@ -222,13 +222,17 @@ function timeOfDay(d) {
 }
 
 // Columns of a tiny bar chart; the last day is "today".
-function sparkBars(values, title) {
+function sparkBars(values, title, days) {
   const vals = (values || []).map(v => Number(v) || 0);
   if (!vals.length) return '';
   const max = Math.max(...vals, 1);
-  return '<span class="spark" role="img" aria-label="' + escHtml(title || 'trend') + '">' +
-    vals.map((v, i) => '<i class="' + (v ? 'on' : '') + '" style="height:' +
-      Math.max(2, Math.round(v / max * 28)) + 'px" title="' + v + '"></i>').join('') + '</span>';
+  return '<span class="spark" role="group" aria-label="' + escHtml(title || 'trend') + '">' +
+    vals.map((v, i) => {
+      const lbl = (Array.isArray(days) && days[i]) ? days[i] : ('Day ' + (i + 1));
+      const tip = lbl + ': ' + v;
+      return '<i role="img" class="' + (v ? 'on' : '') + '" tabindex="0" data-tip="' + escHtml(tip) +
+        '" aria-label="' + escHtml(tip) + '" style="height:' + Math.max(2, Math.round(v / max * 28)) + 'px"></i>';
+    }).join('') + '</span>';
 }
 
 // A segmented meter, 0-100.
@@ -404,11 +408,23 @@ async function downloadCsv(path, filename, btn) {
 }
 
 function showToast(msg, type = 'info') {
+  const stack = document.getElementById('toast-stack') || document.body;
+  const kind = type || 'info';
   const t = document.createElement('div');
-  t.className = 'toast ' + (type || 'info');
-  t.textContent = msg;
-  document.body.appendChild(t);
-  setTimeout(() => t.remove(), 2600);
+  t.className = 'toast ' + kind;
+  if (typeof t.setAttribute === 'function') t.setAttribute('role', kind === 'error' ? 'alert' : 'status');
+  const glyph = kind === 'error' ? 'alert' : kind === 'success' ? 'check' : 'sparkle';
+  t.innerHTML =
+    '<svg class="icon toast-icon" aria-hidden="true"><use href="#i-' + glyph + '"/></svg>' +
+    '<span class="toast-msg">' + escHtml(msg) + '</span>' +
+    '<button type="button" class="toast-close" aria-label="Dismiss notification">&times;</button>';
+  const closeBtn = typeof t.querySelector === 'function' ? t.querySelector('.toast-close') : null;
+  if (closeBtn) closeBtn.onclick = () => t.remove();
+  if (stack && typeof stack.appendChild === 'function') stack.appendChild(t);
+  if (stack && stack.id === 'toast-stack' && stack.children && stack.children.length > 3) {
+    stack.children[0].remove();
+  }
+  setTimeout(() => { if (typeof t.remove === 'function') t.remove(); }, 3200);
 }
 
 function toggleVisibility(inputId) {
@@ -444,17 +460,56 @@ function topbarQuickSearch(q) {
   }, 120);
 }
 
+function toggleNavGroup(btn) {
+  const grp = btn && typeof btn.closest === 'function' ? btn.closest('.nav-group') : null;
+  if (!grp) return;
+  const nextCollapsed = !grp.classList.contains('collapsed');
+  grp.classList.toggle('collapsed', nextCollapsed);
+  if (typeof btn.setAttribute === 'function') btn.setAttribute('aria-expanded', nextCollapsed ? 'false' : 'true');
+  try {
+    const key = typeof grp.getAttribute === 'function' ? grp.getAttribute('data-nav-group') : null;
+    if (key && typeof localStorage !== 'undefined') {
+      const saved = JSON.parse(localStorage.getItem('vr_nav_collapsed') || '{}');
+      saved[key] = nextCollapsed;
+      localStorage.setItem('vr_nav_collapsed', JSON.stringify(saved));
+    }
+  } catch {}
+}
+
+(function restoreNavGroups() {
+  try {
+    if (typeof localStorage === 'undefined' || !document.querySelectorAll) return;
+    const saved = JSON.parse(localStorage.getItem('vr_nav_collapsed') || '{}');
+    document.querySelectorAll('.nav-group[data-nav-group]').forEach(grp => {
+      const key = typeof grp.getAttribute === 'function' ? grp.getAttribute('data-nav-group') : null;
+      if (key && saved[key]) {
+        grp.classList.add('collapsed');
+        const btn = typeof grp.querySelector === 'function' ? grp.querySelector('.nav-group-toggle') : null;
+        if (btn && typeof btn.setAttribute === 'function') btn.setAttribute('aria-expanded', 'false');
+      }
+    });
+  } catch {}
+})();
+
 function showTab(id, btn, skipLoad) {
   const apply = () => {
     currentTab = id;
     if (id === 'companies') companyDrill = false;
     document.querySelectorAll('.section').forEach(s => s.classList.remove('active'));
-    document.querySelectorAll('nav button').forEach(b => b.classList.remove('active'));
+    document.querySelectorAll('nav .nav-items button').forEach(b => b.classList.remove('active'));
     const sec = document.getElementById(id);
     if (sec) sec.classList.add('active');
-    const activeBtn = btn || Array.from(document.querySelectorAll('nav button'))
+    const activeBtn = btn || Array.from(document.querySelectorAll('nav .nav-items button'))
       .find(b => (b.getAttribute('onclick') || '').includes("'" + id + "'"));
-    if (activeBtn) activeBtn.classList.add('active');
+    if (activeBtn) {
+      activeBtn.classList.add('active');
+      const grp = typeof activeBtn.closest === 'function' ? activeBtn.closest('.nav-group') : null;
+      if (grp && grp.classList && grp.classList.contains('collapsed')) {
+        grp.classList.remove('collapsed');
+        const tog = grp.querySelector('.nav-group-toggle');
+        if (tog) tog.setAttribute('aria-expanded', 'true');
+      }
+    }
     syncTopbar(id);
     if (!skipLoad && typeof window.scrollTo === 'function') window.scrollTo(0, 0);
   };
@@ -468,6 +523,156 @@ function showTab(id, btn, skipLoad) {
 }
 
 function goToTab(id) { showTab(id, null); }
+
+const CMDK_ITEMS = [
+  { group: 'Outreach', label: 'Today Dashboard', meta: 'Overview', icon: 'today', run: () => goTab('today') },
+  { group: 'Outreach', label: 'Outbox Queue', meta: 'Approve & send', icon: 'outbox', run: () => goTab('outbox') },
+  { group: 'Outreach', label: 'Conversations Unibox', meta: 'Replies', icon: 'conversations', run: () => goTab('conversations') },
+  { group: 'Outreach', label: 'Campaigns', meta: 'Sequences', icon: 'campaigns', run: () => goTab('campaigns') },
+  { group: 'Prospecting & CRM', label: 'Discover Leads', meta: 'Lead Finder', icon: 'discover', run: () => goTab('discover') },
+  { group: 'Prospecting & CRM', label: 'Companies', meta: 'Accounts', icon: 'companies', run: () => goTab('companies') },
+  { group: 'Prospecting & CRM', label: 'Contacts', meta: 'Prospects', icon: 'contacts', run: () => goTab('prospects') },
+  { group: 'Prospecting & CRM', label: 'Signals', meta: 'Intent rules', icon: 'signals', run: () => goTab('signals') },
+  { group: 'Prospecting & CRM', label: 'AI Enrichment', meta: 'Clay columns', icon: 'enrichment', run: () => goTab('enrichment') },
+  { group: 'Infrastructure & AI', label: 'Sender Inboxes', meta: 'Mailboxes', icon: 'inboxes', run: () => goTab('inboxes') },
+  { group: 'Infrastructure & AI', label: 'AI Models', meta: 'LLM routing', icon: 'brain', run: () => goTab('brain') },
+  { group: 'Infrastructure & AI', label: 'Agent Loop', meta: 'Runner', icon: 'controls', run: () => goTab('controls') },
+  { group: 'Infrastructure & AI', label: 'Activity Log', meta: 'Events', icon: 'activity', run: () => goTab('activity') },
+  { group: 'Infrastructure & AI', label: 'Cost & Usage', meta: 'Spend', icon: 'usage', run: () => goTab('usage') },
+  { group: 'Workspace', label: 'Your Company & Offer', meta: 'ICP & Messaging', icon: 'company', run: () => goTab('company') },
+  { group: 'Workspace', label: 'Settings', meta: 'SMTP, Keys, DNS', icon: 'settings', run: () => goTab('settings') },
+  { group: 'Workspace', label: 'Help & Docs', meta: 'Guide', icon: 'help', run: () => goTab('help') },
+  { group: 'Quick Actions', label: 'New Campaign Sequence', meta: 'Create', icon: 'plus', run: () => { goTab('campaigns'); setTimeout(() => openCampaignBuilderModal(), 90); } },
+  { group: 'Quick Actions', label: 'Send Test Email', meta: 'Resend / SMTP', icon: 'message', run: () => openTestSendModal() },
+  { group: 'Quick Actions', label: 'Toggle Dark / Light Theme', meta: 'Appearance', icon: 'moon', run: () => toggleOledTheme() },
+];
+let _cmdkFiltered = [];
+let _cmdkActiveIdx = 0;
+
+function openCmdk(initialQuery) {
+  const dlg = document.getElementById('cmdk-dialog');
+  const inp = document.getElementById('cmdk-input');
+  if (!dlg || typeof dlg.showModal !== 'function') return;
+  if (inp) inp.value = initialQuery || '';
+  _cmdkActiveIdx = 0;
+  renderCmdkList(initialQuery || '');
+  if (!dlg.open) dlg.showModal();
+  if (inp) setTimeout(() => inp.focus(), 20);
+}
+
+function closeCmdk() {
+  const dlg = document.getElementById('cmdk-dialog');
+  if (dlg && dlg.open && typeof dlg.close === 'function') dlg.close();
+}
+
+function renderCmdkList(query) {
+  const list = document.getElementById('cmdk-list');
+  if (!list) return;
+  const q = String(query || '').trim().toLowerCase();
+  const base = q
+    ? CMDK_ITEMS.filter(it => (it.label + ' ' + it.group + ' ' + it.meta).toLowerCase().includes(q))
+    : CMDK_ITEMS;
+  const rows = base.slice();
+  if (q) {
+    rows.push({
+      group: 'Search',
+      label: 'Search Contacts matching "' + query.trim() + '"',
+      meta: 'Enter',
+      icon: 'contacts',
+      run: () => topbarQuickSearch(query.trim()),
+    });
+  }
+  _cmdkFiltered = rows;
+  _cmdkActiveIdx = Math.max(0, Math.min(_cmdkActiveIdx, rows.length - 1));
+  if (!rows.length) {
+    list.innerHTML = '<div class="cmdk-empty">No matching pages or actions.</div>';
+    return;
+  }
+  let lastGroup = '';
+  list.innerHTML = rows.map((it, idx) => {
+    const hdr = it.group !== lastGroup ? '<div class="cmdk-group">' + escHtml(it.group) + '</div>' : '';
+    lastGroup = it.group;
+    return hdr +
+      '<button type="button" class="cmdk-item" role="option" data-cmdk-idx="' + idx +
+      '" aria-selected="' + (idx === _cmdkActiveIdx ? 'true' : 'false') + '" onclick="runCmdkIdx(' + idx + ')">' +
+        '<span class="cmdk-item-l">' + icon(it.icon) + '<span>' + escHtml(it.label) + '</span></span>' +
+        '<span class="cmdk-item-meta">' + escHtml(it.meta) + '</span>' +
+      '</button>';
+  }).join('');
+}
+
+function runCmdkIdx(idx) {
+  const item = _cmdkFiltered[idx];
+  closeCmdk();
+  if (item && typeof item.run === 'function') item.run();
+}
+
+(function wireCmdk() {
+  if (typeof document.addEventListener !== 'function') return;
+  document.addEventListener('keydown', e => {
+    if ((e.ctrlKey || e.metaKey) && String(e.key || '').toLowerCase() === 'k') {
+      e.preventDefault();
+      openCmdk();
+    }
+  });
+  const dlg = document.getElementById('cmdk-dialog');
+  const inp = document.getElementById('cmdk-input');
+  if (dlg) {
+    dlg.addEventListener('click', e => { if (e.target === dlg) closeCmdk(); });
+  }
+  if (inp) {
+    inp.addEventListener('input', () => { _cmdkActiveIdx = 0; renderCmdkList(inp.value); });
+    inp.addEventListener('keydown', e => {
+      if (e.key === 'ArrowDown') {
+        e.preventDefault();
+        _cmdkActiveIdx = Math.min(_cmdkFiltered.length - 1, _cmdkActiveIdx + 1);
+        renderCmdkList(inp.value);
+      } else if (e.key === 'ArrowUp') {
+        e.preventDefault();
+        _cmdkActiveIdx = Math.max(0, _cmdkActiveIdx - 1);
+        renderCmdkList(inp.value);
+      } else if (e.key === 'Enter') {
+        e.preventDefault();
+        runCmdkIdx(_cmdkActiveIdx);
+      }
+    });
+  }
+})();
+
+(function wireUiTooltips() {
+  if (typeof document.addEventListener !== 'function') return;
+  let activeEl = null;
+  const show = (target) => {
+    const tip = document.getElementById('ui-tooltip');
+    const text = target && typeof target.getAttribute === 'function' ? target.getAttribute('data-tip') : '';
+    if (!tip || !text || typeof target.getBoundingClientRect !== 'function') return;
+    activeEl = target;
+    tip.textContent = text;
+    tip.classList.add('open');
+    tip.setAttribute('aria-hidden', 'false');
+    const r = target.getBoundingClientRect();
+    const tr = tip.getBoundingClientRect();
+    const vw = window.innerWidth || 1280;
+    const x = Math.max(8, Math.min(vw - tr.width - 8, r.left + r.width / 2 - tr.width / 2));
+    const y = Math.max(8, r.top - tr.height - 6);
+    tip.style.left = Math.round(x) + 'px';
+    tip.style.top = Math.round(y) + 'px';
+  };
+  const hide = () => {
+    const tip = document.getElementById('ui-tooltip');
+    if (tip) { tip.classList.remove('open'); tip.setAttribute('aria-hidden', 'true'); }
+    activeEl = null;
+  };
+  document.addEventListener('mouseover', e => {
+    const t = e.target && typeof e.target.closest === 'function' ? e.target.closest('[data-tip]') : null;
+    if (t) show(t); else if (activeEl) hide();
+  }, { passive: true });
+  document.addEventListener('focusin', e => {
+    const t = e.target && typeof e.target.closest === 'function' ? e.target.closest('[data-tip]') : null;
+    if (t) show(t);
+  });
+  document.addEventListener('focusout', () => hide());
+})();
 
 let _asciiTimer = null;
 let _asciiIdx = 0;
@@ -689,7 +894,7 @@ function renderFigures(stats) {
   // Instantly sends from its own servers, so the Outbox never sees them.
   const sent = stats.email_provider === 'instantly'
     ? card('Emails sent', '&mdash;', '', 'Instantly tracks sends')
-    : card('Emails sent', sum(t.sent), sparkBars(t.sent, 'Emails sent per day, last 14 days'),
+    : card('Emails sent', sum(t.sent), sparkBars(t.sent, 'Emails sent per day, last 14 days', t.days),
            'Last 14 days, <b>' + (stats.outbox_approved || 0) + '</b> scheduled');
   const waiting = (stats.outbox_pending || 0) + (stats.needs_human || 0);
   const waitNote = [
@@ -703,10 +908,10 @@ function renderFigures(stats) {
     '<span><b>' + (stats.signals_confirmed || 0) + '</b> signals on</span>';
 
   el.innerHTML = '<div class="kpis">' +
-    card('Contacts found', stats.prospects || 0, sparkBars(t.found, 'Contacts found per day, last 14 days'),
+    card('Contacts found', stats.prospects || 0, sparkBars(t.found, 'Contacts found per day, last 14 days', t.days),
          '<b>+' + last7(t.found) + '</b> this week') +
     sent +
-    card('Conversations', stats.open_conversations || 0, sparkBars(t.replies, 'New replies per day, last 14 days'),
+    card('Conversations', stats.open_conversations || 0, sparkBars(t.replies, 'New replies per day, last 14 days', t.days),
          '<b>' + sum(t.replies) + '</b> new in 14 days') +
     card('Waiting on you', waiting, '', waitNote) +
   '</div>';
@@ -742,9 +947,11 @@ async function loadFunnel() {
     return;
   }
   el.innerHTML =
-    '<div class="funnel-bar" role="img" aria-label="Contacts by stage">' +
+    '<div class="funnel-bar" role="group" aria-label="Contacts by stage">' +
       stages.filter(s => s[1] > 0).map(s =>
-        '<span class="seg ' + s[2] + '" style="flex:' + s[1] + '" title="' + s[0] + ': ' + s[1] + '"></span>').join('') +
+        '<span class="seg ' + s[2] + '" role="img" tabindex="0" style="flex:' + s[1] + '" data-tip="' +
+        escHtml(s[0] + ': ' + s[1] + ' (' + Math.round(100 * s[1] / total) + '%)') +
+        '" aria-label="' + escHtml(s[0] + ': ' + s[1]) + '"></span>').join('') +
     '</div>' +
     '<div class="legend-rows">' + stages.map(s =>
       '<div class="legend-row"><span class="legend-key"><i class="' + s[2] + '"></i>' + s[0] + '</span>' +
@@ -807,7 +1014,7 @@ function navCount(id, n) {
 
 // Jump to a tab from a link that isn't itself a nav button.
 function goTab(id, skipLoad) {
-  const btns = [...document.querySelectorAll('nav button')];
+  const btns = [...document.querySelectorAll('nav .nav-items button')];
   const btn = btns.find(b => (b.getAttribute('onclick') || '').includes("'" + id + "'"));
   showTab(id, btn, skipLoad);
 }
@@ -4613,13 +4820,50 @@ function closeCampaignBuilderModal() {
   d.addEventListener('click', e => { if (e.target === d) closeCampaignBuilderModal(); });
 })();
 
+let _cbDragIdx = null;
+function onBuilderDragStart(idx) { _cbDragIdx = idx; }
+function onBuilderDragOver(e, idx) {
+  e.preventDefault();
+  if (e.currentTarget && e.currentTarget.classList) e.currentTarget.classList.add('drag-over');
+}
+function onBuilderDragLeave(e) {
+  if (e.currentTarget && e.currentTarget.classList) e.currentTarget.classList.remove('drag-over');
+}
+function onBuilderDrop(e, targetIdx) {
+  e.preventDefault();
+  if (e.currentTarget && e.currentTarget.classList) e.currentTarget.classList.remove('drag-over');
+  if (_cbDragIdx === null || _cbDragIdx === targetIdx) { _cbDragIdx = null; return; }
+  const steps = _campaignBuilder.steps;
+  if (!steps[_cbDragIdx] || !steps[targetIdx]) { _cbDragIdx = null; return; }
+  const [moved] = steps.splice(_cbDragIdx, 1);
+  steps.splice(targetIdx, 0, moved);
+  steps.forEach((s, i) => { s.step = i + 1; });
+  _cbDragIdx = null;
+  renderBuilderSteps();
+}
+function moveBuilderStep(idx, dir) {
+  const steps = _campaignBuilder.steps;
+  const target = idx + dir;
+  if (target < 0 || target >= steps.length) return;
+  const tmp = steps[idx];
+  steps[idx] = steps[target];
+  steps[target] = tmp;
+  steps.forEach((s, i) => { s.step = i + 1; });
+  renderBuilderSteps();
+}
+
 function renderBuilderSteps() {
   const wrap = document.getElementById('cb-steps');
   if (!wrap) return;
+  const total = _campaignBuilder.steps.length;
   wrap.innerHTML = _campaignBuilder.steps.map((s, idx) =>
-    '<div class="cb-step-card">' +
+    '<div class="cb-step-card" draggable="true" ondragstart="onBuilderDragStart(' + idx + ')" ' +
+      'ondragover="onBuilderDragOver(event,' + idx + ')" ondragleave="onBuilderDragLeave(event)" ondrop="onBuilderDrop(event,' + idx + ')">' +
       '<div class="cb-step-bar">' +
-        '<span class="cb-step-label">Step ' + (idx + 1) + (idx === 0 ? ' (Initial)' : ' (Follow-up)') + '</span>' +
+        '<span class="cb-step-title">' +
+          (total > 1 ? '<span class="cb-drag-handle" aria-hidden="true" title="Drag to reorder">::</span>' : '') +
+          '<span class="cb-step-label">Step ' + (idx + 1) + (idx === 0 ? ' (Initial)' : ' (Follow-up)') + '</span>' +
+        '</span>' +
         '<div class="inline-action-row">' +
           (_templates.length
             ? '<select class="form-input tpl-picker" aria-label="Insert template" onchange="insertTemplateIntoStep(' + idx + ',this)">' +
@@ -4630,7 +4874,13 @@ function renderBuilderSteps() {
           '<label class="hint muted" style="font-size:12px">Delay (days): ' +
             '<input type="number" min="0" class="form-input cb-delay-input" value="' + escHtml(String(s.delay_days ?? 0)) + '" ' +
               'onchange="updateBuilderStepField(' + idx + ',\'delay_days\',Number(this.value||0))"></label>' +
-          (_campaignBuilder.steps.length > 1
+          (total > 1 && idx > 0
+            ? '<button type="button" class="btn btn-ghost btn-sm" aria-label="Move step ' + (idx + 1) + ' up" onclick="moveBuilderStep(' + idx + ',-1)">&#8593;</button>'
+            : '') +
+          (total > 1 && idx < total - 1
+            ? '<button type="button" class="btn btn-ghost btn-sm" aria-label="Move step ' + (idx + 1) + ' down" onclick="moveBuilderStep(' + idx + ',1)">&#8595;</button>'
+            : '') +
+          (total > 1
             ? '<button type="button" class="btn btn-ghost btn-sm" onclick="removeBuilderStep(' + idx + ')">Remove</button>'
             : '') +
         '</div>' +
