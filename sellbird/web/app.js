@@ -557,6 +557,7 @@ async function loadToday() {
   _todayStats = data.stats || {};
   renderFigures(_todayStats);
   renderTodayAgentic(data.agentic || null);
+  renderTodayWorkflowGuide(_todayStats, data.items || []);
   updateAsciiTelemetry(!!(data.agentic && data.agentic.running));
 
   const items = data.items || [];
@@ -740,6 +741,30 @@ async function loadTodayActivity() {
       '<span class="tl-text">' + actionText(a) + '</span>' +
       '<span class="tl-agent">' + escHtml(a.agent) + '</span>' +
     '</div>').join('') + '</div>';
+}
+
+function renderTodayWorkflowGuide(stats, items) {
+  const guide = document.getElementById('today-workflow-guide');
+  if (!guide) return;
+  const st = stats || {};
+  const needsSetup = (items || []).some(it => String(it.title || '').toLowerCase().includes('placeholder') || String(it.title || '').toLowerCase().includes('company'));
+  const cos = Number(st.companies || 0);
+  const pros = Number(st.prospects || 0);
+  const camps = Number(st.campaigns || 0);
+  const pending = Number(st.outbox_pending || 0);
+  const pill = (n, tab, title, meta, done) =>
+    '<button type="button" class="fg-pill' + (done ? ' done' : '') + '" onclick="goTab(' + jsq(tab) + ')">' +
+      '<span class="step-n">' + (done ? '&#10003;' : n) + '</span>' +
+      '<span>' + title + '</span>' +
+      (meta ? '<span class="fg-meta">' + escHtml(meta) + '</span>' : '') +
+    '</button>';
+  guide.innerHTML =
+    '<span><b>Outreach Workflow:</b></span>' +
+    pill(1, 'company', 'Offer &amp; ICP', needsSetup ? 'Setup' : 'Ready', !needsSetup) +
+    pill(2, 'discover', 'Discover Leads', cos + ' co', cos > 0) +
+    pill(3, 'prospects', 'Tag &amp; Edit Contacts', pros + ' contacts', pros > 0) +
+    pill(4, 'campaigns', 'A/B Campaigns', camps + ' seq', camps > 0) +
+    pill(5, 'outbox', 'Preview &amp; Approve', pending + ' waiting', pending > 0);
 }
 
 function navCount(id, n) {
@@ -2585,13 +2610,18 @@ function renderDesk(items, i) {
       '<button class="btn btn-secondary" onclick="outboxAct(' + jsq(cur.id) + ',\'reject\')">' +
         'Reject <kbd>R</kbd></button>';
 
+  const wordCount = String(cur.body || '').trim().split(/\s+/).filter(Boolean).length;
+  const tagSafety = unrendered.length
+    ? '<span class="mini bad" title="Resolve merge tags before sending">Tag leak</span>'
+    : '<span class="mini good" title="All merge tags resolved">Tags clean</span>';
   return '<div class="desk">' +
     '<div class="desk-list">' + rail + '</div>' +
     '<div class="desk-pane">' +
       '<div class="to-line">To <b>' + escHtml(cur.to_email) + '</b>' +
         '<span class="tag">' + (cur.kind === 'reply' ? 'Reply' : 'Email ' + escHtml(String(cur.step))) + '</span>' +
         (cur.variant === 'B' ? '<span class="mini accent">Variant B</span>' : '') +
-        '<span class="muted">sends ' + formatDate(cur.send_at) + '</span></div>' +
+        tagSafety +
+        '<span class="muted">' + wordCount + ' words &middot; sends ' + formatDate(cur.send_at) + '</span></div>' +
       renderDeskContext(cur.context) +
       tagWarn +
       (heldReason(cur)
@@ -2601,8 +2631,11 @@ function renderDesk(items, i) {
         : '') +
       draft + signoffPreview + footer +
       '<div class="desk-actions">' + actions +
-        '<span class="muted" style="font-size:12px;margin-left:auto">' +
-          (i + 1) + ' of ' + items.length + '</span>' +
+        '<div class="desk-pager" style="margin-left:auto;display:flex;align-items:center;gap:6px">' +
+          '<button type="button" class="btn btn-ghost btn-sm" ' + (i <= 0 ? 'disabled ' : '') + 'onclick="deskGo(' + (i - 1) + ')" title="Previous (K)">&larr; Prev</button>' +
+          '<span class="muted" style="font-size:12px">' + (i + 1) + ' of ' + items.length + '</span>' +
+          '<button type="button" class="btn btn-ghost btn-sm" ' + (i >= items.length - 1 ? 'disabled ' : '') + 'onclick="deskGo(' + (i + 1) + ')" title="Next (J)">Next &rarr;</button>' +
+        '</div>' +
       '</div>' +
     '</div></div>';
 }
@@ -3513,10 +3546,18 @@ function renderContacts() {
       (allVisibleSelected ? ' checked' : '') + ' onchange="toggleSelectAllVisibleContacts(this.checked)"></th>' +
     '<th class="col-name">Name</th><th class="col-company">Company &amp; Tags</th><th class="col-email">Email</th>' +
     '<th>Score</th><th>Status</th><th>Source</th><th></th></tr></thead><tbody>';
+function filterByContactTag(tag) {
+  _contactTag = (_contactTag === tag ? '' : tag);
+  renderContacts();
+}
+
   for (const [p, i] of rows) {
     const tags = parseTags(p.tags);
     const tagPills = tags.length
-      ? '<div class="tag-pills">' + tags.map(t => '<span class="tag-pill">' + escHtml(t) + '</span>').join('') + '</div>'
+      ? '<div class="tag-pills">' + tags.map(t =>
+          '<button type="button" class="tag-pill' + (t === _contactTag ? ' active' : '') +
+          '" onclick="filterByContactTag(' + jsq(t) + ')" title="Filter by #' + escHtml(t) + '">' + escHtml(t) + '</button>'
+        ).join('') + '</div>'
       : '';
     html += '<tr>' +
       '<td class="col-check"><input type="checkbox" aria-label="Select ' + escHtml(p.email || 'contact') + '"' +
@@ -4199,12 +4240,26 @@ function insertTemplateIntoConvo(convoId, selectEl) {
   const id = selectEl?.value;
   if (!id) return;
   const tpl = _templates.find(x => x.id === id);
+  const convo = (_convos || []).find(x => x.id === convoId) || {};
+  const firstName = (convo.first_name || '').trim() || 'there';
+  const company = (convo.company || '').trim() || 'your team';
   const ta = document.getElementById('convo-reply-text-' + convoId);
   if (tpl && ta) {
-    ta.value = tpl.body || '';
+    ta.value = String(tpl.body || '')
+      .replace(/\{\{\s*first_name\s*\}\}/gi, firstName)
+      .replace(/\{\{\s*company\s*\}\}/gi, company);
     ta.focus();
   }
   if (selectEl) selectEl.value = '';
+}
+
+function copyVariantAToB(idx) {
+  const st = _campaignBuilder.steps[idx];
+  if (!st) return;
+  st.subject_b = st.subject || '';
+  st.body_b = st.body || '';
+  st._showB = true;
+  renderBuilderSteps();
 }
 
 function toggleStepAbFields(idx) {
@@ -4293,7 +4348,10 @@ function renderBuilderSteps() {
       '</div>' +
       (s._showB
         ? '<div class="cb-ab-box">' +
-            '<div class="form-label" style="margin-bottom:6px">Variant B (50/50 split on launch)</div>' +
+            '<div class="cb-step-bar" style="margin-bottom:6px">' +
+              '<span class="form-label" style="margin:0">Variant B (50/50 split on launch)</span>' +
+              '<button type="button" class="btn btn-ghost btn-sm" onclick="copyVariantAToB(' + idx + ')">Copy A &rarr; B</button>' +
+            '</div>' +
             '<div class="form-group" style="margin-bottom:8px">' +
               '<input type="text" class="form-input" placeholder="Subject line Variant B (optional)" ' +
                 'value="' + escHtml(s.subject_b || '') + '" oninput="updateBuilderStepField(' + idx + ',\'subject_b\',this.value)">' +
@@ -4505,6 +4563,9 @@ function renderCampaignAnalyticsPanel(c) {
   const va = (an.variants && an.variants.A) || {sent: 0, pending: 0, replies: 0, reply_rate_pct: 0};
   const vb = (an.variants && an.variants.B) || {sent: 0, pending: 0, replies: 0, reply_rate_pct: 0};
   const win = an.winning_variant ? '<span class="mini good">Winner: Variant ' + escHtml(an.winning_variant) + '</span>' : '';
+  const hint = !an.sent
+    ? '<div class="muted" style="margin-top:8px">No emails sent yet — stage drafts with <b>Launch to Outbox</b> and approve in <b>Outbox</b> to collect live reply &amp; A/B winner stats.</div>'
+    : '';
   return '<div class="ca-panel" id="ca-panel-' + escHtml(c.id) + '">' +
     '<div class="campaign-analytics-grid">' +
       '<div class="ca-stat"><div class="v">' + (an.sent || 0) + '</div><div class="k">Emails sent</div></div>' +
@@ -4522,7 +4583,14 @@ function renderCampaignAnalyticsPanel(c) {
           steps.map(s => 'Step ' + s.step + ': ' + s.sent + ' sent, ' + s.pending + ' pending, ' + s.scheduled + ' scheduled').join(' &middot; ') +
         '</div>'
       : '') +
+    hint +
   '</div>';
+}
+
+let _campaignFilter = 'all';
+function setCampaignFilter(f) {
+  _campaignFilter = f || 'all';
+  renderCampaignsList();
 }
 
 async function loadCampaigns() {
@@ -4535,15 +4603,36 @@ async function loadCampaigns() {
   renderCampaignsFunnel(statsData);
   renderFrameworks(fwData);
   const data = await api('/api/campaigns');
-  if (!data) { el.innerHTML = offlineState(); return; }
+  if (!data) { if (el) el.innerHTML = offlineState(); return; }
   _campaigns = data;
+  renderCampaignsList();
+}
+
+function renderCampaignsList() {
+  const el = document.getElementById('campaigns-list');
+  if (!el) return;
+  const data = _campaigns || [];
   if (!data.length) {
     el.innerHTML = emptyState(icon('campaigns'), 'No campaigns yet',
       'Create a sequence with <b>+ New Campaign</b> or click <b>Write Emails Now</b> to let Sellbird draft from your scored prospects.');
     return;
   }
-  let html = '';
-  data.forEach((c, i) => {
+  const filters = ['all', 'active', 'paused', 'draft'];
+  const shown = _campaignFilter === 'all' ? data : data.filter(c => (c.status || 'draft') === _campaignFilter);
+  let html = '<div class="toolbar"><div class="segmented" role="group" aria-label="Filter campaigns by status">' +
+    filters.map(f => {
+      const n = f === 'all' ? data.length : data.filter(c => (c.status || 'draft') === f).length;
+      const lbl = f.charAt(0).toUpperCase() + f.slice(1);
+      return '<button class="' + (f === _campaignFilter ? 'on' : '') + '" aria-pressed="' + (f === _campaignFilter) +
+        '" onclick="setCampaignFilter(' + jsq(f) + ')">' + lbl + ' <span class="n">' + n + '</span></button>';
+    }).join('') +
+    '</div></div>';
+  if (!shown.length) {
+    el.innerHTML = html + emptyState(icon('campaigns'), 'No ' + escHtml(_campaignFilter) + ' campaigns', 'Switch filter or create a new campaign above.');
+    return;
+  }
+  shown.forEach((c) => {
+    const i = data.indexOf(c);
     let stepsHtml = '';
     (c.sequence || []).forEach((step, s) => {
       const sendBtns = (c.recipients || []).map((r, ri) => {

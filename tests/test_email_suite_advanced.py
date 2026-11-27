@@ -434,9 +434,17 @@ vm.runInContext(code, context);
   await context.loadCampaigns();
   const ch = getEl('campaigns-list').innerHTML;
   if (!ch.includes('A/B Split:') || !ch.includes('Winner: Variant B')) throw new Error('Campaign analytics panel missing A/B winner');
+  if (!ch.includes('Filter campaigns by status')) throw new Error('Missing Campaigns status filter bar');
 
-  await context.openCampaignBuilderModal('c1');
+  context.openCampaignBuilderModal('c1');
   if (!getEl('cb-steps').innerHTML.includes('Subject line Variant B')) throw new Error('Campaign builder missing Variant B field');
+  context.copyVariantAToB(0);
+  if (!getEl('cb-steps').innerHTML.includes('Sub A')) throw new Error('Copy A -> B helper failed');
+
+  context.renderTodayWorkflowGuide({ companies: 5, prospects: 3, campaigns: 1, outbox_pending: 2 }, []);
+  if (!getEl('today-workflow-guide').innerHTML.includes('5 co') || !getEl('today-workflow-guide').innerHTML.includes('2 waiting')) {
+    throw new Error('Workflow progress guide did not update counts');
+  }
 
   await context.openTestSendModal('o1');
   if (!getEl('ts-preview').innerHTML.includes('Rendered inbox preview')) throw new Error('Test send modal missing rendered preview');
