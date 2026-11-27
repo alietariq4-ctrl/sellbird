@@ -1016,17 +1016,36 @@ async function setSignals(codes, status) {
 
 let _provider = null;
 let _discoverPoll = null;
+let _discoverFilter = 'all';
+
+function setDiscoverFilter(mode) {
+  _discoverFilter = mode === 'free' ? 'free' : 'all';
+  const a = document.getElementById('disc-filter-all');
+  const f = document.getElementById('disc-filter-free');
+  if (a) a.classList.toggle('on', _discoverFilter === 'all');
+  if (f) f.classList.toggle('on', _discoverFilter === 'free');
+  loadDiscoverProviders();
+}
 
 async function loadDiscoverProviders() {
   const el = document.getElementById('discover-providers');
   const data = await api('/api/discover/providers');
   if (!data || !data.providers) { el.innerHTML = offlineState(); return; }
 
-  _provider = _provider || data.selected || data.default;
-  el.innerHTML = '<div class="prov-grid">' + data.providers.map(p => {
-    const ready = p.configured
-      ? '<span class="badge t-good">ready</span>'
-      : '<span class="badge t-waiting">needs a key</span>';
+  const list = _discoverFilter === 'free'
+    ? data.providers.filter(p => !p.needs_key)
+    : data.providers;
+  if (!_provider || (_discoverFilter === 'free' && !list.some(p => p.key === _provider))) {
+    _provider = list.some(p => p.key === (data.selected || data.default))
+      ? (data.selected || data.default)
+      : (list[0]?.key || data.selected || data.default);
+  }
+  el.innerHTML = '<div class="prov-grid">' + list.map(p => {
+    const ready = !p.needs_key
+      ? '<span class="badge t-good">$0 Free Keyless</span>'
+      : (p.configured
+        ? '<span class="badge t-good">Ready</span>'
+        : '<span class="badge t-waiting">Needs API key</span>');
     return '<div class="prov-card ' + (p.key === _provider ? 'selected' : '') +
       '" onclick="pickProvider(' + jsq(p.key) + ')">' +
       '<div class="prov-head"><h3>' + escHtml(p.label) + '</h3>' + ready + '</div>' +
@@ -1442,6 +1461,10 @@ async function loadSettings() {
   const prov = data.provider || 'instantly';
   const provEl = document.getElementById('active-provider');
   if (provEl) provEl.textContent = prov;
+  ['gmail', 'smtp', 'microsoft', 'instantly'].forEach(p => {
+    const c = document.getElementById('ep-' + p);
+    if (c) c.classList.toggle('on', p === prov);
+  });
 
   // Secret fields never echo a value — show a "saved" placeholder instead.
   const savedPh = (id, isSet, base) => {
@@ -1733,6 +1756,29 @@ function saveGmail() {
   const sec = document.getElementById('gmail-secret').value;
   if (sec) payload.GMAIL_CLIENT_SECRET = sec;
   saveEnv(payload, 'Saved. Now sign in on the Inboxes tab.').then(loadSettings);
+}
+
+function jumpSettings(targetId) {
+  const el = document.getElementById(targetId);
+  if (el && el.scrollIntoView) el.scrollIntoView({ behavior: 'smooth', block: 'start' });
+}
+
+async function switchEmailProvider(provider) {
+  try {
+    const res = await api('/api/settings/email-provider', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ provider }),
+    });
+    if (res && res.success) {
+      showToast('Active email provider switched to ' + res.provider + '.', 'success');
+      loadSettings();
+    } else {
+      showToast(failMsg(res, 'Could not switch email provider.'), 'error');
+    }
+  } catch (e) {
+    showToast('Could not switch email provider.', 'error');
+  }
 }
 
 function fillResendPreset() {

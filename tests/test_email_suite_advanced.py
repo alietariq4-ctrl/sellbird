@@ -402,9 +402,16 @@ const vm = require('vm');
 const code = fs.readFileSync(process.argv[1], 'utf8');
 
 function mkEl(id) {
+  const _cls = new Set();
   return {
     id, value: '', checked: false, innerHTML: '', textContent: '', disabled: false,
-    style: {}, dataset: {}, classList: { add(){}, remove(){}, toggle(){} },
+    style: {}, dataset: {},
+    classList: {
+      add(...xs){ xs.forEach(x => _cls.add(x)); },
+      remove(...xs){ xs.forEach(x => _cls.delete(x)); },
+      toggle(x, f){ if (f === undefined) { if (_cls.has(x)) _cls.delete(x); else _cls.add(x); return _cls.has(x); } if (f) _cls.add(x); else _cls.delete(x); return !!f; },
+      contains(x){ return _cls.has(x); },
+    },
     setAttribute(){}, removeAttribute(){}, getAttribute(){ return null; }, appendChild(){}, focus(){},
     querySelector() { return mkEl('q'); }, querySelectorAll() { return []; },
     showModal(){ this.open = true; }, close(){ this.open = false; },
@@ -517,6 +524,10 @@ vm.runInContext(code, context);
   await context.openCampaignTestSend('c1');
   if (!getEl('ts-preview').innerHTML.includes('Rendered inbox preview')) {
     throw new Error('openCampaignTestSend did not open preview');
+  }
+  context.setDiscoverFilter('free');
+  if (!getEl('disc-filter-free').classList.contains('on')) {
+    throw new Error('setDiscoverFilter(free) did not toggle active filter state');
   }
 
   console.log('VM_ADV_SUITE_OK');

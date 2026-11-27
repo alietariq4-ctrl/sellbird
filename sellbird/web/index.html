@@ -82,7 +82,7 @@
 
   <nav aria-label="Sections">
     <div class="nav-group">
-      <div class="nav-label">Work</div>
+      <div class="nav-label">Core Outreach</div>
       <button class="active" onclick="showTab('today', this)"><svg class="icon" aria-hidden="true"><use href="#i-today"/></svg><span class="label">Today</span><span class="nav-count" id="nav-today"></span></button>
       <button onclick="showTab('company', this)"><svg class="icon" aria-hidden="true"><use href="#i-company"/></svg><span class="label">Your company</span><span class="nav-count" id="nav-company"></span></button>
       <button onclick="showTab('outbox', this)"><svg class="icon" aria-hidden="true"><use href="#i-outbox"/></svg><span class="label">Outbox</span><span class="nav-count" id="nav-outbox"></span></button>
@@ -90,7 +90,7 @@
       <button onclick="showTab('conversations', this)"><svg class="icon" aria-hidden="true"><use href="#i-conversations"/></svg><span class="label">Conversations</span><span class="nav-count" id="nav-conversations"></span></button>
     </div>
     <div class="nav-group">
-      <div class="nav-label">Pipeline</div>
+      <div class="nav-label">Lead Engine</div>
       <button onclick="showTab('signals', this)"><svg class="icon" aria-hidden="true"><use href="#i-signals"/></svg><span class="label">Signals</span><span class="nav-count" id="nav-signals"></span></button>
       <button onclick="showTab('discover', this)"><svg class="icon" aria-hidden="true"><use href="#i-discover"/></svg><span class="label">Discover</span></button>
       <button onclick="showTab('companies', this)"><svg class="icon" aria-hidden="true"><use href="#i-companies"/></svg><span class="label">Companies</span></button>
@@ -98,12 +98,12 @@
       <button onclick="showTab('campaigns', this)"><svg class="icon" aria-hidden="true"><use href="#i-campaigns"/></svg><span class="label">Campaigns</span></button>
     </div>
     <div class="nav-group">
-      <div class="nav-label">System</div>
+      <div class="nav-label">AI &amp; Setup</div>
+      <button onclick="showTab('enrichment', this)"><svg class="icon" aria-hidden="true"><use href="#i-enrichment"/></svg><span class="label">AI Enrichment</span></button>
+      <button onclick="showTab('brain', this)"><svg class="icon" aria-hidden="true"><use href="#i-brain"/></svg><span class="label">AI Models</span></button>
       <button onclick="showTab('activity', this)"><svg class="icon" aria-hidden="true"><use href="#i-activity"/></svg><span class="label">Activity</span></button>
-      <button onclick="showTab('brain', this)"><svg class="icon" aria-hidden="true"><use href="#i-brain"/></svg><span class="label">Brain Studio</span></button>
-      <button onclick="showTab('enrichment', this)"><svg class="icon" aria-hidden="true"><use href="#i-enrichment"/></svg><span class="label">Clay AI</span></button>
-      <button onclick="showTab('usage', this)"><svg class="icon" aria-hidden="true"><use href="#i-usage"/></svg><span class="label">Usage</span></button>
-      <button onclick="showTab('controls', this)"><svg class="icon" aria-hidden="true"><use href="#i-controls"/></svg><span class="label">Controls</span></button>
+      <button onclick="showTab('usage', this)"><svg class="icon" aria-hidden="true"><use href="#i-usage"/></svg><span class="label">Cost &amp; Usage</span></button>
+      <button onclick="showTab('controls', this)"><svg class="icon" aria-hidden="true"><use href="#i-controls"/></svg><span class="label">Agent Loop</span></button>
       <button onclick="showTab('settings', this)"><svg class="icon" aria-hidden="true"><use href="#i-settings"/></svg><span class="label">Settings</span></button>
       <button onclick="showTab('help', this)"><svg class="icon" aria-hidden="true"><use href="#i-help"/></svg><span class="label">Help</span></button>
     </div>
@@ -200,19 +200,21 @@
 <div id="signals" class="section">
   <div class="section-head">
     <div>
-      <h2>Signals</h2>
-      <p>VeloReach proposes what it knows how to look for. You decide what actually
-         defines a good prospect &mdash; nothing is collected until you confirm it.</p>
+      <h2>Lead Qualification Signals</h2>
+      <p>Choose which signals VeloReach collects and uses to score high-intent companies (e.g. website gaps, reviews, hiring). Only confirmed signals are actively tracked.</p>
     </div>
+  </div>
+  <div class="feature-guide">
+    <span><b>How Signals work:</b></span>
+    <span><b>1. Confirm signals</b> below so Discover can score leads</span>
+    <span>&middot; <b>2. Cohort Builder</b> tests filters against your live company database</span>
   </div>
   <div id="signals-summary"></div>
   <div id="signals-groups"></div>
 
-  <div class="subhead">Cohort builder</div>
+  <div class="subhead">Cohort Builder <span class="hint">Test which companies qualify for outreach</span></div>
   <div class="card">
-    <p class="lede">A prospect list is a query, not a file. Pick the signals a
-      good prospect must have &mdash; and any that disqualify them &mdash; and see
-      how many companies match right now.</p>
+    <p class="lede">Pick required signals (must have) and disqualifying signals (exclude) to preview matching companies before drafting outreach.</p>
     <div id="cohort-builder"></div>
     <div id="cohort-result"></div>
   </div>
@@ -228,13 +230,19 @@
   </div>
   <div class="feature-guide">
     <span><b>How to find new leads:</b></span>
-    <span>Type a business query (e.g. <code>dentist</code>, <code>hvac</code>, <code>saas</code>) + city (<code>Austin, TX</code>)</span>
-    <span>&middot; Pick a free or paid source</span>
-    <span>&middot; Click <b>Find New Leads</b> (then website emails are extracted automatically)</span>
+    <span><b>1. Pick a source</b> (free keyless sources cost $0)</span>
+    <span>&middot; <b>2. Enter business type &amp; city</b></span>
+    <span>&middot; <b>3. Click Find New Leads</b> (websites &amp; emails are extracted automatically)</span>
   </div>
   <div id="discover-profile"></div>
 
-  <div class="subhead">1. Source</div>
+  <div class="subhead" style="display:flex;align-items:center;justify-content:space-between;gap:10px;flex-wrap:wrap">
+    <span>1. Source</span>
+    <span class="segmented" role="group" aria-label="Filter discovery sources">
+      <button type="button" class="on" id="disc-filter-all" onclick="setDiscoverFilter('all')">All Sources</button>
+      <button type="button" id="disc-filter-free" onclick="setDiscoverFilter('free')">Free Keyless ($0 Ready)</button>
+    </span>
+  </div>
   <div id="discover-providers"></div>
 
   <div class="subhead">2. Search Query &amp; Run</div>
@@ -275,15 +283,15 @@
     </div>
     <div class="form-row" style="margin-bottom:4px">
       <div class="form-group">
-        <label class="form-label" for="disc-limit">Results per query</label>
+        <label class="form-label" for="disc-limit">Results per query <span class="hint muted">(max leads kept)</span></label>
         <input class="form-input" id="disc-limit" type="number" value="50" min="1" max="1000">
       </div>
       <div class="form-group">
-        <label class="form-label" for="disc-depth">Search depth</label>
+        <label class="form-label" for="disc-depth">Search depth <span class="hint muted">(SERP pages scanned)</span></label>
         <input class="form-input" id="disc-depth" type="number" value="30" min="10" max="100" step="10">
       </div>
       <div class="form-group">
-        <label class="form-label" for="disc-cap">Spend cap ($)</label>
+        <label class="form-label" for="disc-cap">Spend cap ($) <span class="hint muted">($0 on free sources)</span></label>
         <input class="form-input" id="disc-cap" type="number" value="1.00" min="0" step="0.25">
       </div>
     </div>
@@ -300,11 +308,17 @@
 
 <!-- Companies -->
 <div id="companies" class="section">
-  <div class="section-head"><div><h2>Companies</h2><p>Organizations VeloReach has researched, best fit first. Click a row to see its contacts.</p></div>
+  <div class="section-head"><div><h2>Companies</h2><p>Discovered &amp; profiled businesses ranked by ICP fit. Click any row to inspect website signals and contacts.</p></div>
     <div class="page-actions">
       <button class="btn btn-primary btn-sm" id="companies-batch-research-btn" onclick="runBatchResearch(this)">Deep Research (Top 5)</button>
       <button class="btn btn-secondary btn-sm" onclick="downloadCsv('/api/export/companies.csv', 'company-register.csv', this)"><svg class="icon" aria-hidden="true"><use href="#i-download"/></svg>Export register</button>
     </div></div>
+  <div class="feature-guide">
+    <span><b>Company Pipeline:</b></span>
+    <span>Click any company row to inspect signals &amp; contacts</span>
+    <span>&middot; Click <b>Deep Research (Top 5)</b> for live AI buying-trigger briefs</span>
+    <span>&middot; Export register CSV anytime</span>
+  </div>
   <div id="companies-list"></div>
 </div>
 
@@ -388,9 +402,14 @@
   <div class="section-head">
     <div>
       <h2>Inboxes</h2>
-      <p>The email addresses VeloReach sends from. Each one sends a limited number of cold emails a day, so more inboxes means more emails out. Replies stay on the inbox that started the thread.</p>
+      <p>Connect multiple sender mailboxes to scale daily cold outreach safely. Replies automatically route back to the inbox that started the thread.</p>
     </div>
     <div class="page-actions" id="inboxes-actions"></div>
+  </div>
+  <div class="feature-guide">
+    <span><b>Sender Setup:</b></span>
+    <span>Connect Gmail / M365 OAuth inboxes here, <b>or</b> activate <b>Resend SMTP</b> in Settings for fast test sends</span>
+    <span>&middot; Warmup &amp; daily caps protect sender reputation</span>
   </div>
   <div id="inboxes-list"></div>
 </div>
@@ -780,13 +799,19 @@
   </div>
 </div>
 
-<!-- Clay AI Enrichment -->
+<!-- AI Data Enrichment -->
 <div id="enrichment" class="section">
   <div class="section-head">
     <div>
-      <h2>Clay-Style Custom AI Columns</h2>
-      <p>Enrich prospects and companies with custom web research and tailored AI signals.</p>
+      <h2>AI Data Enrichment Matrix</h2>
+      <p>Add custom AI research columns (like a spreadsheet) to extract pricing, tools used, or buying signals for every company.</p>
     </div>
+  </div>
+  <div class="feature-guide">
+    <span><b>How Enrichment works:</b></span>
+    <span><b>1. + Add AI Column</b> (define a custom prompt)</span>
+    <span>&middot; <b>2. Run Batch Enrichment</b> to fill every company row</span>
+    <span>&middot; <b>3. Export CSV</b> with citations</span>
   </div>
 
   <div class="card">
@@ -839,9 +864,19 @@
 
 <!-- Settings -->
 <div id="settings" class="section">
-  <div class="section-head"><div><h2>Settings</h2><p>Credentials are stored locally in <code>.env</code> and never sent anywhere except the services themselves.</p></div></div>
+  <div class="section-head"><div><h2>Settings</h2><p>All keys stay local in <code>.env</code> and config lives in <code>sellbird.local.yaml</code>. Jump directly to any section below.</p></div></div>
 
-  <div class="subhead">Sending</div>
+  <div class="feature-guide" id="settings-jump">
+    <span><b>Quick Jump:</b></span>
+    <button type="button" class="fg-pill" onclick="jumpSettings('sending-mode-card')">1. Email &amp; Resend SMTP</button>
+    <button type="button" class="fg-pill" onclick="jumpSettings('compliance-card')">2. Limits &amp; Warmup</button>
+    <button type="button" class="fg-pill" onclick="jumpSettings('settings-verifiers')">3. Verifiers</button>
+    <button type="button" class="fg-pill" onclick="jumpSettings('settings-ai-providers')">4. AI Models</button>
+    <button type="button" class="fg-pill" onclick="jumpSettings('settings-search-crm')">5. Search &amp; CRM</button>
+    <button type="button" class="fg-pill" onclick="jumpSettings('competitor-watch-card')">6. Competitor Watch</button>
+  </div>
+
+  <div class="subhead">Sending Mode &amp; DNS Check</div>
   <div id="sending-mode-card"></div>
 
   <div class="card" id="dns-card">
@@ -940,7 +975,15 @@
     </div>
   </div>
 
-  <div class="subhead">Email provider <span class="hint">Active: <b id="active-provider">…</b> &middot; set <code>channels.email.provider</code> in <code>sellbird.yaml</code> to gmail, microsoft, smtp or instantly</span></div>
+  <div class="subhead" style="display:flex;align-items:center;justify-content:space-between;gap:10px;flex-wrap:wrap">
+    <span>Email Provider <span class="hint">Active: <b id="active-provider">…</b></span></span>
+    <span class="chip-row" aria-label="Switch active email provider">
+      <button type="button" class="chip" id="ep-gmail" onclick="switchEmailProvider('gmail')">Use Gmail</button>
+      <button type="button" class="chip" id="ep-smtp" onclick="switchEmailProvider('smtp')">Use SMTP / Resend</button>
+      <button type="button" class="chip" id="ep-microsoft" onclick="switchEmailProvider('microsoft')">Use M365</button>
+      <button type="button" class="chip" id="ep-instantly" onclick="switchEmailProvider('instantly')">Use Instantly</button>
+    </span>
+  </div>
   <div class="card">
     <div class="settings-row">
       <div>
@@ -1033,7 +1076,7 @@
     </div>
   </div>
 
-  <div class="subhead">Email verification <span class="hint">Strongly recommended</span></div>
+  <div class="subhead" id="settings-verifiers">Email Verification <span class="hint">Strongly recommended</span></div>
   <div class="card">
     <div class="settings-row">
       <div>
@@ -1091,7 +1134,7 @@
     </div>
   </div>
 
-  <div class="subhead">Universal AI Brain &amp; Providers <span class="hint">OpenAI-compatible &amp; Cloud LLMs</span></div>
+  <div class="subhead" id="settings-ai-providers">Universal AI Brain &amp; Providers <span class="hint">OpenAI-compatible &amp; Cloud LLMs</span></div>
   <div class="card">
     <div class="settings-row">
       <div>
@@ -1135,12 +1178,12 @@
     </div>
   </div>
 
-  <div class="subhead">Search, Scraping &amp; Integrations</div>
+  <div class="subhead" id="settings-search-crm">Search, Scraping &amp; Integrations</div>
   <div class="card">
     <div class="settings-row">
       <div>
         <h3>Web Search &amp; Discovery Engines</h3>
-        <p class="desc">Used by Discover and DeepResearcher. Keyless DuckDuckGo is active by default.</p>
+        <p class="desc">Optional API keys for paid/tiered search sources. Keyless <b>OSM Live Places</b>, <b>YC Startups Directory</b>, and <b>DuckDuckGo</b> work free out of the box.</p>
       </div>
       <div class="fields">
         <div class="key-grid">
@@ -1225,12 +1268,12 @@
   </div>
 </div>
 
-<!-- Controls -->
+<!-- Agent Loop -->
 <div id="controls" class="section">
-  <div class="section-head"><div><h2>Controls</h2><p>Start and stop VeloReach's heartbeat loop, and watch what it's doing.</p></div></div>
+  <div class="section-head"><div><h2>Agent Loop &amp; Live Logs</h2><p>Start or pause VeloReach's automated background cycle and inspect real-time worker logs.</p></div></div>
   <div class="control-panel">
     <div class="card">
-      <h2>Agent</h2>
+      <h2>Autonomous Worker</h2>
       <div class="status-big" id="control-status">
         <div class="dot stopped" id="control-dot"></div>
         <span class="label stopped" id="control-label">Stopped</span>
@@ -1250,21 +1293,21 @@
 
 <!-- Help -->
 <div id="help" class="section">
-  <div class="section-head"><div><h2>Help</h2><p>What VeloReach is, how it works, and how to fix the usual problems.</p></div></div>
+  <div class="section-head"><div><h2>Help &amp; Quick Start</h2><p>What VeloReach does, how every stage connects, and how to run a live demo or campaign.</p></div></div>
 
   <div class="help-section">
     <h2>What is VeloReach?</h2>
-    <p>VeloReach is an open-source outreach platform. Once set up, VeloReach runs on its own: finds people who match your ideal customer, writes personalized cold emails, sends them through your email platform, reads every reply, handles objections, and works toward booking a meeting. You review everything through this dashboard.</p>
-    <p>VeloReach runs on your Claude Max subscription (or, if you opt in, your ChatGPT plan through Codex), so there are no extra AI costs. Everything stays on your machine in one folder.</p>
+    <p>VeloReach is an end-to-end AI sales and email marketing platform: it discovers businesses, crawls their websites for buying signals, extracts &amp; verifies contacts, writes personalized A/B email sequences, stages everything in a safe human-review Outbox, tracks replies, and books meetings.</p>
+    <p>Powered by the universal AI Router (<b>Gemini</b>, <b>DeepSeek</b>, <b>OpenRouter</b>, <b>Groq</b>, <b>OpenAI-compatible / Ollama</b>, or <b>Claude / Codex</b>) with all data stored locally on your machine.</p>
   </div>
 
   <div class="help-section">
-    <h2>Getting started</h2>
-    <p>There are three things to do:</p>
-    <pre>1. Go to the Settings tab and connect an email provider (Gmail recommended)
-2. Train VeloReach on your product (through Claude or the command line)
-3. Go to the Controls tab and click Start</pre>
-    <p>Today shows exactly what's done and what still needs to happen.</p>
+    <h2>Getting started in 4 steps</h2>
+    <pre>1. Your Company: Describe your offer in plain language (or train from URL)
+2. Discover: Pick "OSM Live Places" or "YC Startups Directory" ($0 free keyless) and search leads
+3. Campaigns &amp; Outbox: Build A/B sequences, preview rendered HTML, and approve sends
+4. Settings: Connect Resend SMTP (for demos/testing) or Gmail/M365 OAuth (for full cold + reply inbox)</pre>
+    <p><b>Today</b> shows your live pipeline metrics and next recommended action at a glance.</p>
   </div>
 
   <div class="help-section">
