@@ -276,15 +276,15 @@ vm.runInContext(code, context);
   context.toggleIndustryChip('auto repair');
   if (!getEl('co-i-industries').value.includes('auto repair')) throw new Error('Chip toggle failed to add industry');
 
-  // Verify live ASCII telemetry updater formats active vs ready cleanly
+  // Verify live pipeline status updater formats active vs ready cleanly
   vm.runInContext("_todayStats = { companies: 12, prospects: 4, outbox_pending: 2 };", context);
   context.updateAsciiTelemetry(false);
-  if (!getEl('ascii-state').textContent.includes('READY') || !getEl('ascii-bars').textContent.includes('12CO')) {
-    throw new Error('ASCII telemetry ready render failed: ' + getEl('ascii-bars').textContent);
+  if (!getEl('ascii-state').textContent.toLowerCase().includes('ready') || !getEl('ascii-bars').textContent.includes('12 companies')) {
+    throw new Error('Pipeline status ready render failed: ' + getEl('ascii-bars').textContent);
   }
   context.updateAsciiTelemetry(true);
-  if (!getEl('ascii-state').textContent.includes('ACTIVE')) {
-    throw new Error('ASCII telemetry active render failed');
+  if (!getEl('ascii-state').textContent.toLowerCase().includes('active')) {
+    throw new Error('Pipeline status active render failed');
   }
   context.updateAsciiTelemetry(false);
 

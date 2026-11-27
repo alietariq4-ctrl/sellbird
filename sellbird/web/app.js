@@ -480,12 +480,16 @@ function updateAsciiTelemetry(runningNow) {
   if (!stateEl || !barsEl) return;
   const stats = typeof _todayStats === 'object' && _todayStats ? _todayStats : {};
   const busy = !!(runningNow || _todayLoopRunning);
-  stateEl.textContent = busy ? '[PIPE :: ACTIVE]' : '[PIPE :: READY]';
+  stateEl.textContent = busy ? 'Loop active' : 'Pipeline ready';
   const co = Number(stats.companies_total ?? stats.companies ?? 0) || 0;
   const pr = Number(stats.prospects_total ?? stats.prospects ?? 0) || 0;
   const ob = Number(stats.outbox_pending ?? 0) || 0;
-  const lit = busy ? 5 : Math.min(5, Math.max(1, (co ? 1 : 0) + (pr ? 2 : 0) + (ob ? 2 : 0)));
-  barsEl.textContent = '▓'.repeat(lit) + '░'.repeat(5 - lit) + ' ' + co + 'CO · ' + pr + 'P · ' + ob + 'Q';
+  const parts = [
+    co + (co === 1 ? ' company' : ' companies'),
+    pr + (pr === 1 ? ' contact' : ' contacts'),
+  ];
+  if (ob > 0) parts.push(ob + ' queued');
+  barsEl.textContent = (busy ? 'Active: ' : '') + parts.join(', ');
   if (spinEl) {
     if (busy && !_asciiTimer) {
       _asciiTimer = setInterval(() => {
@@ -494,7 +498,7 @@ function updateAsciiTelemetry(runningNow) {
       }, 180);
     } else if (!busy) {
       if (_asciiTimer) { clearInterval(_asciiTimer); _asciiTimer = null; }
-      spinEl.textContent = '::';
+      spinEl.textContent = '';
     }
   }
 }
@@ -664,10 +668,10 @@ async function loadLiveStatus() {
       '<span class="setup-pct">Cost so far $' + Number(d.cost_usd || 0).toFixed(2) + '</span></div>' +
     stoppedHtml +
     '<div class="steps">' + rows + '</div>' +
-    (d.next ? '<div class="live-next">' + icon('arrow') + '<span><b>Next</b> · ' + escHtml(d.next) + '</span>' +
+    (d.next ? '<div class="live-next">' + icon('arrow') + '<span><b>Next:</b> ' + escHtml(d.next) + '</span>' +
       (d.next_tab ? '<button class="btn btn-secondary btn-sm" onclick="goTab(' + jsq(d.next_tab) + ')">Go</button>' : '') +
       '</div>' : '') +
-    '<div class="live-flag">Updated ' + new Date().toLocaleTimeString() + ' · refreshes every 10 seconds</div>';
+    '<div class="live-flag">Updated ' + new Date().toLocaleTimeString() + ' (refreshes every 10s)</div>';
 }
 
 // KPI cards. Totals come from /api/today; the 14-day bars from /api/trend.
@@ -686,12 +690,12 @@ function renderFigures(stats) {
   const sent = stats.email_provider === 'instantly'
     ? card('Emails sent', '&mdash;', '', 'Instantly tracks sends')
     : card('Emails sent', sum(t.sent), sparkBars(t.sent, 'Emails sent per day, last 14 days'),
-           'last 14 days · <b>' + (stats.outbox_approved || 0) + '</b> scheduled');
+           'Last 14 days, <b>' + (stats.outbox_approved || 0) + '</b> scheduled');
   const waiting = (stats.outbox_pending || 0) + (stats.needs_human || 0);
   const waitNote = [
     stats.outbox_pending ? stats.outbox_pending + ' to approve' : '',
     stats.needs_human ? stats.needs_human + ' handed to you' : '',
-  ].filter(Boolean).join(' · ') || 'nothing to approve';
+  ].filter(Boolean).join(', ') || 'nothing to approve';
   const facts = document.getElementById('today-facts');
   if (facts) facts.innerHTML =
     '<span><b>' + (stats.companies || 0) + '</b> companies</span>' +

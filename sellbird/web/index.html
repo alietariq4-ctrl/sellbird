@@ -7,7 +7,7 @@
 <title>VeloReach</title>
 <!-- First, so the token leaves the address bar before anything else runs. -->
 <script src="/static/auth.js"></script>
-<link rel="stylesheet" href="/static/app.css?v=20261128a">
+<link rel="stylesheet" href="/static/app.css?v=20261128c">
 <link rel="icon" href="/static/sellbird-mark.svg" type="image/svg+xml">
 </head>
 <body>
@@ -77,12 +77,11 @@
       <h1 class="brand-lockup"><a href="#today" onclick="goTab('today');return false" title="VeloReach"><svg viewBox="0 0 1040 640" aria-hidden="true"><path fill="currentColor" d="M83 0C246 47 417 91 562 157C676 209 759 258 744 314C813 257 896 239 954 301L1034 324L944 359C837 473 731 548 563 524C506 516 464 513 427 519L0 631L407 406L224 213L555 300L420 428L663 315L630 281C407 229 264 237 83 0Z"/></svg><span>veloreach</span></a></h1>
       <button class="oled-toggle" onclick="toggleOledTheme()" title="Toggle OLED Dark Theme" aria-label="Toggle OLED Dark Theme"><svg class="icon oled-icon-moon" aria-hidden="true"><use href="#i-moon"/></svg><svg class="icon oled-icon-sun" aria-hidden="true"><use href="#i-sun"/></svg></button>
     </div>
-    <div class="tagline">Autonomous AI Sales &amp; Email Suite.</div>
   </div>
 
   <nav aria-label="Sections">
     <div class="nav-group">
-      <div class="nav-label">Core Outreach</div>
+      <div class="nav-label">Workspace</div>
       <button class="active" onclick="showTab('today', this)"><svg class="icon" aria-hidden="true"><use href="#i-today"/></svg><span class="label">Today</span><span class="nav-count" id="nav-today"></span></button>
       <button onclick="showTab('company', this)"><svg class="icon" aria-hidden="true"><use href="#i-company"/></svg><span class="label">Your company</span><span class="nav-count" id="nav-company"></span></button>
       <button onclick="showTab('outbox', this)"><svg class="icon" aria-hidden="true"><use href="#i-outbox"/></svg><span class="label">Outbox</span><span class="nav-count" id="nav-outbox"></span></button>
@@ -90,7 +89,7 @@
       <button onclick="showTab('conversations', this)"><svg class="icon" aria-hidden="true"><use href="#i-conversations"/></svg><span class="label">Conversations</span><span class="nav-count" id="nav-conversations"></span></button>
     </div>
     <div class="nav-group">
-      <div class="nav-label">Lead Engine</div>
+      <div class="nav-label">Prospecting</div>
       <button onclick="showTab('signals', this)"><svg class="icon" aria-hidden="true"><use href="#i-signals"/></svg><span class="label">Signals</span><span class="nav-count" id="nav-signals"></span></button>
       <button onclick="showTab('discover', this)"><svg class="icon" aria-hidden="true"><use href="#i-discover"/></svg><span class="label">Discover</span></button>
       <button onclick="showTab('companies', this)"><svg class="icon" aria-hidden="true"><use href="#i-companies"/></svg><span class="label">Companies</span></button>
@@ -98,7 +97,7 @@
       <button onclick="showTab('campaigns', this)"><svg class="icon" aria-hidden="true"><use href="#i-campaigns"/></svg><span class="label">Campaigns</span></button>
     </div>
     <div class="nav-group">
-      <div class="nav-label">AI &amp; Setup</div>
+      <div class="nav-label">System</div>
       <button onclick="showTab('enrichment', this)"><svg class="icon" aria-hidden="true"><use href="#i-enrichment"/></svg><span class="label">AI Enrichment</span></button>
       <button onclick="showTab('brain', this)"><svg class="icon" aria-hidden="true"><use href="#i-brain"/></svg><span class="label">AI Models</span></button>
       <button onclick="showTab('activity', this)"><svg class="icon" aria-hidden="true"><use href="#i-activity"/></svg><span class="label">Activity</span></button>
@@ -111,8 +110,8 @@
 
   <div class="sidebar-foot">
     <div class="ascii-telemetry" id="ascii-telemetry" aria-live="polite">
-      <div class="ascii-row"><span class="ascii-spinner" id="ascii-spinner">::</span><span id="ascii-state">[PIPE :: READY]</span></div>
-      <div class="ascii-bars" id="ascii-bars">░░░░░ SYNCED</div>
+      <div class="ascii-row"><span class="ascii-spinner" id="ascii-spinner"></span><span id="ascii-state">Pipeline ready</span></div>
+      <div class="ascii-bars" id="ascii-bars">Workspace synced</div>
     </div>
     <div class="sellbird-status" id="header-status">
       <span class="status-dot stopped" id="header-dot"></span>
@@ -270,7 +269,7 @@
 <div id="discover" class="section">
   <div class="section-head">
     <div>
-      <h2>Lead Finder (Apollo-Style Search)</h2>
+      <h2>Lead Finder</h2>
       <p>Search any business vertical and location, choose a $0 keyless or API source, and extract verified leads straight into Companies &amp; Contacts.</p>
     </div>
   </div>
@@ -1448,6 +1447,6 @@
 </main>
 </div>
 
-<script src="/static/app.js?v=20261128a"></script>
+<script src="/static/app.js?v=20261128b"></script>
 </body>
 </html>
