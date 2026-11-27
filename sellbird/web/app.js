@@ -5691,6 +5691,7 @@ loadToday();
 loadTrend();
 loadFunnel();
 loadSetupStatus();
+loadTodayResendCard();
 loadRuns();
 loadTodayActivity();
 loadSellbirdStatus();
