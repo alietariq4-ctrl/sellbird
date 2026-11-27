@@ -187,15 +187,6 @@ body {
   -moz-osx-font-smoothing: grayscale;
   font-variant-numeric: tabular-nums;
 }
-body::before {
-  content: "";
-  position: fixed;
-  inset: 0;
-  z-index: 0;
-  pointer-events: none;
-  opacity: 0.024;
-  background-image: url("data:image/svg+xml,%3Csvg viewBox='0 0 200 200' xmlns='http://www.w3.org/2000/svg'%3E%3Cfilter id='n'%3E%3CfeTurbulence type='fractalNoise' baseFrequency='0.85' numOctaves='3' stitchTiles='stitch'/%3E%3C/filter%3E%3Crect width='100%25' height='100%25' filter='url(%23n)'/%3E%3C/svg%3E");
-}
 .app { position: relative; z-index: 1; }
 a {
   color: inherit; text-decoration: underline;
@@ -435,7 +426,8 @@ main.content { min-width: 0; padding: var(--sp-6) var(--sp-6) 96px; }
 .legend-val { font-size: var(--fs-h3); font-weight: 600; letter-spacing: -0.01em; }
 .legend-val small { font-size: var(--fs-caption); font-weight: 400; color: var(--text-3); margin-left: 4px; }
 
-.c-accent { background: var(--accent); } .c-accent-soft { background: #64748B; }
+.c-accent { background: var(--accent); } .c-accent-soft { background: #94A3B8; }
+:root[data-theme='dark'] .c-accent-soft { background: #CBD5E1; }
 .c-good { background: var(--good); } .c-wait { background: var(--wait); }
 .c-bad { background: var(--bad); } .c-active { background: var(--active); }
 .c-note { background: var(--note); } .c-idle { background: var(--line-strong); }
@@ -892,7 +884,12 @@ details[open] > summary::before { rotate: 45deg; }
   transition-property: border-color, box-shadow; transition-duration: 120ms; transition-timing-function: ease;
 }
 textarea.form-input { height: auto; padding: 8px 12px; }
-select.form-input { height: 34px; line-height: 1.2; padding: 0 28px 0 10px; vertical-align: middle; }
+select.form-input {
+  height: auto; min-height: 34px; line-height: 1.4; padding: 6px 30px 6px 10px;
+  vertical-align: middle; appearance: none; -webkit-appearance: none;
+  background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='12' height='12' viewBox='0 0 24 24' fill='none' stroke='%2394A3B8' stroke-width='2.2' stroke-linecap='round' stroke-linejoin='round'%3E%3Cpath d='m6 9 6 6 6-6'/%3E%3C/svg%3E");
+  background-repeat: no-repeat; background-position: right 10px center;
+}
 select.form-input, select.form-input option { background-color: var(--surface-solid); color: var(--text); }
 .form-input:focus { outline: none; border-color: var(--accent); box-shadow: 0 0 0 3px var(--accent-soft); }
 .form-input::placeholder { color: var(--text-3); }
@@ -1316,9 +1313,11 @@ dialog.modal::backdrop { background: rgb(0 0 0 / 0.45); }
     radial-gradient(ellipse 52% 36% at 88% 4%, rgba(56, 189, 248, 0.07), transparent 55%);
 }
 
-.card, .kpi, .stat-card, .table-card, .convo-card, dialog.modal, .desk-pane, .desk-list, .agentic-card {
+dialog.modal {
   backdrop-filter: blur(18px) saturate(1.4);
   -webkit-backdrop-filter: blur(18px) saturate(1.4);
+}
+.card, .kpi, .stat-card, .table-card, .convo-card, dialog.modal, .desk-pane, .desk-list, .agentic-card {
   transition: box-shadow 220ms var(--ease-out), border-color 220ms var(--ease-out), background-color 220ms var(--ease-out), transform 220ms var(--ease-out);
 }
 .kpi, .stat-card, .prov-card, .preset-card, .agentic-card {
