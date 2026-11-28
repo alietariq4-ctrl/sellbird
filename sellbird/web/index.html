@@ -8,7 +8,7 @@
 <meta name="description" content="VeloReach B2B outreach workspace for discovering leads, researching websites, managing approvals, and tracking inbox replies.">
 <!-- First, so the token leaves the address bar before anything else runs. -->
 <script src="/static/auth.js"></script>
-<link rel="stylesheet" href="/static/app.css?v=20261128j">
+<link rel="stylesheet" href="/static/app.css?v=20261128k">
 <link rel="icon" href="/static/sellbird-mark.svg" type="image/svg+xml">
 </head>
 <body>
@@ -949,7 +949,31 @@
 
 <!-- Settings -->
 <div id="settings" class="section">
-  <div class="section-head"><div><h2>Settings</h2><p>All keys stay local in <code>.env</code> and runtime config lives in <code>sellbird.local.yaml</code>.</p></div></div>
+  <div class="section-head">
+    <div>
+      <h2>Settings</h2>
+      <p>All keys stay local in <code>.env</code> and runtime config lives in <code>sellbird.local.yaml</code>.</p>
+    </div>
+  </div>
+
+  <div class="settings-summary" aria-label="Workspace configuration overview">
+    <button type="button" class="settings-sum-item" onclick="setSettingsSubtab('email')">
+      <span class="settings-sum-k">Active Mailer</span>
+      <span class="settings-sum-v" id="settings-sum-mailer">Checking…</span>
+    </button>
+    <button type="button" class="settings-sum-item" onclick="setSettingsSubtab('compliance')">
+      <span class="settings-sum-k">Sending Mode</span>
+      <span class="settings-sum-v" id="settings-sum-mode">Checking…</span>
+    </button>
+    <button type="button" class="settings-sum-item" onclick="setSettingsSubtab('ai')">
+      <span class="settings-sum-k">AI Providers</span>
+      <span class="settings-sum-v" id="settings-sum-ai">0 / 10 set</span>
+    </button>
+    <button type="button" class="settings-sum-item" onclick="setSettingsSubtab('watch')">
+      <span class="settings-sum-k">Email Verifiers</span>
+      <span class="settings-sum-v" id="settings-sum-verifiers">0 / 3 ready</span>
+    </button>
+  </div>
 
   <div class="subtabs" id="settings-subtabs" role="tablist" aria-label="Settings categories">
     <button type="button" class="subtab-btn active" role="tab" aria-selected="true" data-settings-tab="email" onclick="setSettingsSubtab('email', this)">Email &amp; Sending</button>
@@ -960,134 +984,196 @@
   </div>
 
   <div class="settings-panel" data-settings-tab="email">
-    <div class="subhead" id="settings-email-providers" style="display:flex;align-items:center;justify-content:space-between;gap:10px;flex-wrap:wrap">
-      <span>Email Provider <span class="hint">Active: <b id="active-provider">…</b></span></span>
-      <span class="chip-row" aria-label="Switch active email provider">
-        <button type="button" class="chip" id="ep-gmail" onclick="switchEmailProvider('gmail')">Use Gmail</button>
-        <button type="button" class="chip" id="ep-smtp" onclick="switchEmailProvider('smtp')">Use SMTP / Resend</button>
-        <button type="button" class="chip" id="ep-microsoft" onclick="switchEmailProvider('microsoft')">Use M365</button>
-        <button type="button" class="chip" id="ep-instantly" onclick="switchEmailProvider('instantly')">Use Instantly</button>
-      </span>
+    <div class="settings-toolbar" id="settings-email-providers">
+      <span class="settings-toolbar-title">Mail Providers <span class="hint">Active sender: <b id="active-provider">…</b></span></span>
+      <span class="hint">Select a provider card below to inspect or update credentials</span>
     </div>
-    <div class="card">
-      <div class="settings-row">
-        <div>
-          <h3>SMTP + IMAP mailbox <span class="tag accent">Resend SMTP Ready</span></h3>
-          <p class="desc">Use <strong>Resend</strong> (3,000 free/mo, ideal for live tests &amp; demos) or any real SMTP+IMAP mailbox (AgentMail, Fastmail, Google Workspace app password). Note: Resend is outbound SMTP only.</p>
-          <div style="margin-top:8px;">
-            <button type="button" class="btn btn-secondary btn-sm" onclick="fillResendPreset()">Use Resend SMTP Preset (smtp.resend.com)</button>
-          </div>
+
+    <div class="ep-grid" role="group" aria-label="Email providers">
+      <div class="ep-tile" data-ep-card="smtp">
+        <button type="button" class="ep-tile-select" onclick="viewEmailProvider('smtp')">
+          <span class="ep-tile-head"><b>SMTP / Resend</b> <span id="smtp-status" class="email-tag guess">not set</span></span>
+          <span class="ep-tile-desc">Resend 3,000 free/mo or custom SMTP+IMAP mailbox.</span>
+        </button>
+        <div class="ep-tile-foot">
+          <button type="button" class="chip" id="ep-smtp" onclick="switchEmailProvider('smtp')">Use SMTP / Resend</button>
         </div>
-        <div class="fields">
-          <div class="form-row">
-            <div class="form-group"><label class="form-label" for="smtp-host">SMTP host</label>
-              <input type="text" class="form-input" id="smtp-host" placeholder="smtp.example.com" autocomplete="off"></div>
-            <div class="form-group" style="max-width:120px"><label class="form-label" for="smtp-port">Port</label>
-              <input type="text" class="form-input" id="smtp-port" placeholder="587" autocomplete="off"></div>
+      </div>
+
+      <div class="ep-tile" data-ep-card="gmail">
+        <button type="button" class="ep-tile-select" onclick="viewEmailProvider('gmail')">
+          <span class="ep-tile-head"><b>Gmail / Workspace</b> <span id="gmail-status" class="email-tag"></span></span>
+          <span class="ep-tile-desc">Google Cloud OAuth for full two-way inbox sync.</span>
+        </button>
+        <div class="ep-tile-foot">
+          <button type="button" class="chip" id="ep-gmail" onclick="switchEmailProvider('gmail')">Use Gmail</button>
+        </div>
+      </div>
+
+      <div class="ep-tile" data-ep-card="microsoft">
+        <button type="button" class="ep-tile-select" onclick="viewEmailProvider('microsoft')">
+          <span class="ep-tile-head"><b>Microsoft 365</b> <span id="m365-status" class="email-tag"></span></span>
+          <span class="ep-tile-desc">Entra OAuth for Outlook and Exchange mailboxes.</span>
+        </button>
+        <div class="ep-tile-foot">
+          <button type="button" class="chip" id="ep-microsoft" onclick="switchEmailProvider('microsoft')">Use M365</button>
+        </div>
+      </div>
+
+      <div class="ep-tile" data-ep-card="instantly">
+        <button type="button" class="ep-tile-select" onclick="viewEmailProvider('instantly')">
+          <span class="ep-tile-head"><b>Instantly</b> <span class="tag">Legacy</span> <span id="instantly-status" class="email-tag guess">not set</span></span>
+          <span class="ep-tile-desc">Legacy external sequencer API integration.</span>
+        </button>
+        <div class="ep-tile-foot">
+          <button type="button" class="chip" id="ep-instantly" onclick="switchEmailProvider('instantly')">Use Instantly</button>
+        </div>
+      </div>
+    </div>
+
+    <div id="email-provider-panels" class="ep-panels">
+      <div class="card settings-card ep-panel" data-ep-panel="smtp">
+        <div class="settings-card-head">
+          <div>
+            <h3>SMTP + IMAP mailbox <span class="tag accent">Resend SMTP Ready</span></h3>
+            <p class="desc">Use <strong>Resend</strong> (3,000 free/mo for live tests &amp; domain sending) or any SMTP+IMAP mailbox (AgentMail, Fastmail, Workspace app password). Resend is outbound SMTP only.</p>
           </div>
+          <button type="button" class="btn btn-secondary btn-sm" onclick="fillResendPreset()">Use Resend SMTP Preset</button>
+        </div>
+        <div class="settings-fields-grid cols-3">
+          <div class="form-group span-2"><label class="form-label" for="smtp-host">SMTP host</label>
+            <input type="text" class="form-input" id="smtp-host" placeholder="smtp.example.com" autocomplete="off"></div>
+          <div class="form-group"><label class="form-label" for="smtp-port">Port</label>
+            <input type="text" class="form-input" id="smtp-port" placeholder="587" autocomplete="off"></div>
+        </div>
+        <div class="settings-fields-grid cols-2">
           <div class="form-group"><label class="form-label" for="smtp-user">Username</label>
             <input type="text" class="form-input" id="smtp-user" placeholder="you@example.com or resend" autocomplete="off"></div>
           <div class="form-group"><label class="form-label" for="smtp-pass">Password / API key</label>
             <div class="with-btn"><input type="password" class="form-input" id="smtp-pass" placeholder="Password or Resend API key (re_...)" autocomplete="off">
-              <button class="btn btn-secondary" onclick="toggleVisibility('smtp-pass')">Show</button></div></div>
-          <div class="form-group"><label class="form-label" for="smtp-from">From address override <span class="hint muted">(e.g. onboarding@resend.dev for test mode)</span></label>
-            <input type="email" class="form-input" id="smtp-from" placeholder="Leave blank to use Your Company email, or onboarding@resend.dev" autocomplete="off"></div>
-          <details class="more-fields">
-            <summary>Reading replies from a different IMAP server or login</summary>
-            <div class="form-row">
-              <div class="form-group"><label class="form-label" for="imap-host">IMAP host</label>
-                <input type="text" class="form-input" id="imap-host" placeholder="Same as SMTP host (blank for Resend)" autocomplete="off"></div>
-              <div class="form-group" style="max-width:120px"><label class="form-label" for="imap-port">Port</label>
-                <input type="text" class="form-input" id="imap-port" placeholder="993" autocomplete="off"></div>
-            </div>
+              <button type="button" class="btn btn-secondary" onclick="toggleVisibility('smtp-pass')">Show</button></div></div>
+        </div>
+        <div class="form-group"><label class="form-label" for="smtp-from">From address override <span class="hint muted">(e.g. onboarding@resend.dev for test mode)</span></label>
+          <input type="email" class="form-input" id="smtp-from" placeholder="Leave blank to use Your Company email, or onboarding@resend.dev" autocomplete="off"></div>
+        <details class="more-fields">
+          <summary>Reading replies from a different IMAP server or login (optional)</summary>
+          <div class="settings-fields-grid cols-3">
+            <div class="form-group span-2"><label class="form-label" for="imap-host">IMAP host</label>
+              <input type="text" class="form-input" id="imap-host" placeholder="Same as SMTP host (blank for Resend)" autocomplete="off"></div>
+            <div class="form-group"><label class="form-label" for="imap-port">Port</label>
+              <input type="text" class="form-input" id="imap-port" placeholder="993" autocomplete="off"></div>
+          </div>
+          <div class="settings-fields-grid cols-2">
             <div class="form-group"><label class="form-label" for="imap-user">IMAP username</label>
               <input type="text" class="form-input" id="imap-user" placeholder="Same as SMTP username" autocomplete="off"></div>
             <div class="form-group"><label class="form-label" for="imap-pass">IMAP password</label>
               <div class="with-btn"><input type="password" class="form-input" id="imap-pass" placeholder="Same as SMTP password" autocomplete="off" oninput="if (this.value) document.getElementById('imap-same-pass').checked = false">
-                <button class="btn btn-secondary" onclick="toggleVisibility('imap-pass')">Show</button></div></div>
-            <label class="check-line"><input type="checkbox" id="imap-same-pass"> Use the SMTP password for IMAP</label>
-          </details>
-          <div style="display:flex;gap:8px;align-items:center;flex-wrap:wrap;margin-top:6px;">
-            <button class="btn btn-primary btn-sm" onclick="saveSmtp(true)">Save &amp; Activate SMTP</button>
-            <button class="btn btn-secondary btn-sm" onclick="saveSmtp(false)">Save Credentials Only</button>
-            <button class="btn btn-secondary btn-sm" id="test-smtp-btn" onclick="testSmtpConnection(this)">Test SMTP / IMAP</button>
-            <span id="smtp-test-result" class="muted" style="font-size:12px;"></span>
+                <button type="button" class="btn btn-secondary" onclick="toggleVisibility('imap-pass')">Show</button></div></div>
           </div>
+          <label class="check-line"><input type="checkbox" id="imap-same-pass"> Use the SMTP password for IMAP</label>
+        </details>
+        <div class="settings-card-foot">
+          <button type="button" class="btn btn-primary btn-sm" onclick="saveSmtp(true)">Save &amp; Activate SMTP</button>
+          <button type="button" class="btn btn-secondary btn-sm" onclick="saveSmtp(false)">Save Credentials Only</button>
+          <button type="button" class="btn btn-secondary btn-sm" id="test-smtp-btn" onclick="testSmtpConnection(this)">Test SMTP / IMAP</button>
+          <span id="smtp-test-result" class="muted" style="font-size:12px;"></span>
         </div>
       </div>
 
-      <div class="settings-row">
-        <div>
-          <h3>Gmail / Google Workspace <span id="gmail-status" class="email-tag"></span></h3>
-          <p class="desc">Connect a Google Workspace mailbox using OAuth ("Desktop app" in Google Cloud Console &rarr; Gmail API), save credentials, then sign in on the Inboxes tab.</p>
+      <div class="card settings-card ep-panel subview-hidden" data-ep-panel="gmail">
+        <div class="settings-card-head">
+          <div>
+            <h3>Gmail / Google Workspace OAuth</h3>
+            <p class="desc">Create a "Desktop app" OAuth client in Google Cloud Console with the Gmail API enabled, save credentials here, then connect your mailbox on the Inboxes tab.</p>
+          </div>
         </div>
-        <div class="fields">
+        <div class="settings-fields-grid cols-2">
           <div class="form-group"><label class="form-label" for="gmail-id">Client ID</label>
             <input type="text" class="form-input" id="gmail-id" placeholder="xxxx.apps.googleusercontent.com" autocomplete="off"></div>
           <div class="form-group"><label class="form-label" for="gmail-secret">Client secret</label>
             <div class="with-btn"><input type="password" class="form-input" id="gmail-secret" placeholder="Enter client secret" autocomplete="off">
-              <button class="btn btn-secondary" onclick="toggleVisibility('gmail-secret')">Show</button></div></div>
-          <button class="btn btn-primary btn-sm" onclick="saveGmail()">Save Gmail</button>
+              <button type="button" class="btn btn-secondary" onclick="toggleVisibility('gmail-secret')">Show</button></div></div>
+        </div>
+        <div class="settings-card-foot">
+          <button type="button" class="btn btn-primary btn-sm" onclick="saveGmail()">Save Gmail</button>
+          <button type="button" class="btn btn-secondary btn-sm" onclick="switchEmailProvider('gmail')">Set Gmail Active</button>
         </div>
       </div>
 
-      <div class="settings-row">
-        <div>
-          <h3>Microsoft 365 / Outlook <span id="m365-status" class="email-tag"></span></h3>
-          <p class="desc">Register a "Public client/native" app in <a href="https://entra.microsoft.com" target="_blank" rel="noopener noreferrer">Entra</a> with redirect URI <code>http://localhost:8766</code>, paste IDs, then sign in on the Inboxes tab.</p>
+      <div class="card settings-card ep-panel subview-hidden" data-ep-panel="microsoft">
+        <div class="settings-card-head">
+          <div>
+            <h3>Microsoft 365 / Outlook OAuth</h3>
+            <p class="desc">Register a "Public client/native" app in <a href="https://entra.microsoft.com" target="_blank" rel="noopener noreferrer">Entra</a> with redirect URI <code>http://localhost:8766</code>, paste IDs, then sign in on Inboxes.</p>
+          </div>
         </div>
-        <div class="fields">
+        <div class="settings-fields-grid cols-2">
           <div class="form-group"><label class="form-label" for="m365-client">Application (client) ID</label>
             <input type="text" class="form-input" id="m365-client" placeholder="00000000-0000-0000-0000-000000000000" autocomplete="off"></div>
           <div class="form-group"><label class="form-label" for="m365-tenant">Directory (tenant) ID</label>
             <input type="text" class="form-input" id="m365-tenant" placeholder="00000000-0000-0000-0000-000000000000" autocomplete="off"></div>
-          <button class="btn btn-primary btn-sm" onclick="saveMicrosoft()">Save Microsoft 365</button>
+        </div>
+        <div class="settings-card-foot">
+          <button type="button" class="btn btn-primary btn-sm" onclick="saveMicrosoft()">Save Microsoft 365</button>
+          <button type="button" class="btn btn-secondary btn-sm" onclick="switchEmailProvider('microsoft')">Set M365 Active</button>
         </div>
       </div>
 
-      <div class="settings-row">
-        <div>
-          <h3>Instantly <span class="tag">Legacy</span></h3>
-          <p class="desc">Get your API key from <a href="https://app.instantly.ai/app/settings/integrations" target="_blank" rel="noopener">Instantly Settings &rarr; Integrations</a>.</p>
+      <div class="card settings-card ep-panel subview-hidden" data-ep-panel="instantly">
+        <div class="settings-card-head">
+          <div>
+            <h3>Instantly <span class="tag">Legacy</span></h3>
+            <p class="desc">Get your API key from <a href="https://app.instantly.ai/app/settings/integrations" target="_blank" rel="noopener">Instantly Settings &rarr; Integrations</a>.</p>
+          </div>
         </div>
-        <div class="fields">
-          <div class="form-group"><label class="form-label" for="instantly-key">API key</label>
-            <div class="with-btn"><input type="password" class="form-input" id="instantly-key" placeholder="Enter your Instantly API key" autocomplete="off">
-              <button class="btn btn-secondary" onclick="toggleVisibility('instantly-key')">Show</button>
-              <button class="btn btn-secondary" onclick="testInstantly()">Test</button></div>
-            <div id="instantly-test-result"></div></div>
-          <button class="btn btn-primary btn-sm" onclick="saveInstantly()">Save Instantly</button>
+        <div class="form-group"><label class="form-label" for="instantly-key">API key</label>
+          <div class="with-btn"><input type="password" class="form-input" id="instantly-key" placeholder="Enter your Instantly API key" autocomplete="off">
+            <button type="button" class="btn btn-secondary" onclick="toggleVisibility('instantly-key')">Show</button>
+            <button type="button" class="btn btn-secondary" onclick="testInstantly()">Test</button></div>
+          <div id="instantly-test-result"></div></div>
+        <div class="settings-card-foot">
+          <button type="button" class="btn btn-primary btn-sm" onclick="saveInstantly()">Save Instantly</button>
+          <button type="button" class="btn btn-secondary btn-sm" onclick="switchEmailProvider('instantly')">Set Instantly Active</button>
         </div>
       </div>
     </div>
 
-    <div class="subhead">Sending Mode &amp; DNS Check</div>
-    <div id="sending-mode-card"></div>
+    <div class="settings-grid-2">
+      <div id="sending-mode-card"></div>
 
-    <div class="card" id="dns-card">
-      <div class="settings-row">
-        <div>
-          <h3>DNS check</h3>
-          <p class="desc">Check MX, SPF, DKIM and DMARC records for your sending domain before live cold email.</p>
+      <div class="card settings-card" id="dns-card">
+        <div class="settings-card-head">
+          <div>
+            <h3>DNS Authentication Check</h3>
+            <p class="desc">Verify MX, SPF, DKIM and DMARC records for your sending domain before live cold email.</p>
+          </div>
         </div>
-        <div class="fields">
-          <div class="form-group"><label class="form-label" for="dns-domain">Domain <span class="optional-tag">blank = your sending domain</span></label>
-            <input type="text" class="form-input" id="dns-domain" placeholder="yourdomain.com" autocomplete="off"></div>
-          <div><button class="btn btn-secondary btn-sm" id="dns-run" onclick="runDnsCheck()">Check DNS</button></div>
-          <div id="dns-results" aria-live="polite"></div>
+        <div class="form-group">
+          <label class="form-label" for="dns-domain">Domain <span class="optional-tag">blank = your sending domain</span></label>
+          <div class="with-btn">
+            <input type="text" class="form-input" id="dns-domain" placeholder="yourdomain.com" autocomplete="off">
+            <button type="button" class="btn btn-secondary" id="dns-run" onclick="runDnsCheck()">Check DNS</button>
+          </div>
         </div>
+        <div id="dns-results" aria-live="polite"></div>
       </div>
     </div>
   </div>
 
   <div class="settings-panel subview-hidden" data-settings-tab="compliance">
-    <div class="card" id="compliance-card">
-      <div class="settings-row">
-        <div>
-          <h3>Compliance &amp; Sending Schedule</h3>
-          <p class="desc">CAN-SPAM footer, daily sending caps, manual approval mode, warmup ramp, recipient send windows, and quiet hours.</p>
-        </div>
-        <div class="fields">
+    <div id="compliance-card" class="settings-comp-shell">
+      <div class="settings-grid-2">
+        <div class="card settings-card">
+          <div class="settings-card-head">
+            <div>
+              <h3>Sender Identity &amp; CAN-SPAM</h3>
+              <p class="desc">Display name and required legal footer lines appended automatically to outbound drafts.</p>
+            </div>
+          </div>
+          <div class="form-group">
+            <label class="form-label" for="comp-from-name">Sender display name</label>
+            <input type="text" class="form-input" id="comp-from-name" placeholder="Ali Tariq" autocomplete="off">
+          </div>
           <div class="form-group">
             <label class="form-label" for="comp-postal">Postal address</label>
             <input type="text" class="form-input" id="comp-postal" placeholder="123 Main St, Suite 400, Austin, TX 78701" autocomplete="off">
@@ -1096,43 +1182,65 @@
             <label class="form-label" for="comp-optout">Opt-out footer line</label>
             <input type="text" class="form-input" id="comp-optout" placeholder="Not interested? Just let me know and I won't email you again." autocomplete="off">
           </div>
-          <div class="form-row">
-            <div class="form-group" style="max-width:180px">
+        </div>
+
+        <div class="card settings-card">
+          <div class="settings-card-head">
+            <div>
+              <h3>Volume Caps &amp; Safety Guardrails</h3>
+              <p class="desc">Global and per-inbox daily limits plus pre-send human verification controls.</p>
+            </div>
+          </div>
+          <div class="settings-fields-grid cols-2">
+            <div class="form-group">
               <label class="form-label" for="comp-daily-limit">Daily email limit</label>
               <input type="number" min="0" max="10000" class="form-input" id="comp-daily-limit" placeholder="50">
             </div>
-            <div class="form-group" style="max-width:180px">
+            <div class="form-group">
               <label class="form-label" for="comp-inbox-cap">Per-inbox daily cap</label>
               <input type="number" min="1" max="1000" class="form-input" id="comp-inbox-cap" placeholder="30">
             </div>
-            <div class="form-group">
-              <label class="form-label" for="comp-from-name">Sender display name</label>
-              <input type="text" class="form-input" id="comp-from-name" placeholder="Ali Tariq" autocomplete="off">
+          </div>
+          <div class="setting-toggle-list">
+            <label class="setting-toggle-row">
+              <input type="checkbox" id="comp-require-approval">
+              <span><b>Require manual approval</b><small class="desc">Queue every generated email in Outbox for review before sending.</small></span>
+            </label>
+            <label class="setting-toggle-row">
+              <input type="checkbox" id="comp-send-risky">
+              <span><b>Send to catch-all (risky) addresses</b><small class="desc">Include catch-all domains instead of restricting to verified recipients.</small></span>
+            </label>
+          </div>
+        </div>
+
+        <div class="card settings-card">
+          <div class="settings-card-head">
+            <div>
+              <h3>Warmup Ramp Guard <span class="tag">Optional</span></h3>
+              <p class="desc">Protect new domains with a gradual cold daily cap progression after domain start.</p>
             </div>
           </div>
-          <div class="form-row" style="margin-bottom:8px">
-            <div class="form-group" style="display:flex;align-items:center;margin-bottom:0">
-              <label class="check-line"><input type="checkbox" id="comp-require-approval"> Require manual approval</label>
-            </div>
-            <div class="form-group" style="display:flex;align-items:center;margin-bottom:0">
-              <label class="check-line"><input type="checkbox" id="comp-send-risky"> Send to catch-all (risky) addresses</label>
+          <div class="compliance-grid">
+            <div class="form-group"><label class="form-label" for="comp-wu-start">Start date (YYYY-MM-DD)</label>
+              <input type="text" class="form-input" id="comp-wu-start" placeholder="Blank = off" autocomplete="off"></div>
+            <div class="form-group"><label class="form-label" for="comp-wu-min">Warmup-only days</label>
+              <input type="number" min="0" max="90" class="form-input" id="comp-wu-min" placeholder="14"></div>
+            <div class="form-group"><label class="form-label" for="comp-wu-initial">Day-1 cold cap</label>
+              <input type="number" min="1" max="100" class="form-input" id="comp-wu-initial" placeholder="5"></div>
+            <div class="form-group"><label class="form-label" for="comp-wu-inc">Daily increase</label>
+              <input type="number" min="1" max="50" class="form-input" id="comp-wu-inc" placeholder="3"></div>
+          </div>
+        </div>
+
+        <div class="card settings-card">
+          <div class="settings-card-head">
+            <div>
+              <h3>Send Window &amp; Quiet Hours</h3>
+              <p class="desc">Control allowed prospect local delivery windows and overnight agent sleep hours.</p>
             </div>
           </div>
           <div class="schedule-group">
-            <div class="form-label" style="margin-bottom:8px;font-weight:600">Warmup Ramp Guard (optional)</div>
-            <div class="compliance-grid">
-              <div class="form-group"><label class="form-label" for="comp-wu-start">Start date (YYYY-MM-DD)</label>
-                <input type="text" class="form-input" id="comp-wu-start" placeholder="Blank = off" autocomplete="off"></div>
-              <div class="form-group"><label class="form-label" for="comp-wu-min">Warmup-only days</label>
-                <input type="number" min="0" max="90" class="form-input" id="comp-wu-min" placeholder="14"></div>
-              <div class="form-group"><label class="form-label" for="comp-wu-initial">Day-1 cold cap</label>
-                <input type="number" min="1" max="100" class="form-input" id="comp-wu-initial" placeholder="5"></div>
-              <div class="form-group"><label class="form-label" for="comp-wu-inc">Daily increase</label>
-                <input type="number" min="1" max="50" class="form-input" id="comp-wu-inc" placeholder="3"></div>
-            </div>
-          </div>
-          <div class="schedule-group">
-            <label class="check-line" style="font-weight:600;margin-bottom:8px"><input type="checkbox" id="comp-sw-enabled"> Enable Send Window</label>
+            <label class="check-line schedule-check"><input type="checkbox" id="comp-sw-enabled"> Enable Send Window</label>
             <div class="compliance-grid">
               <div class="form-group"><label class="form-label" for="comp-sw-start">Start (HH:MM)</label>
                 <input type="text" class="form-input" id="comp-sw-start" placeholder="08:00" autocomplete="off"></div>
@@ -1144,8 +1252,8 @@
                 <input type="text" class="form-input" id="comp-sw-tz" placeholder="America/New_York" autocomplete="off"></div>
             </div>
           </div>
-          <div class="schedule-group">
-            <label class="check-line" style="font-weight:600;margin-bottom:8px"><input type="checkbox" id="comp-qh-enabled"> Enable Quiet Hours</label>
+          <div class="schedule-group" style="margin-bottom:0">
+            <label class="check-line schedule-check"><input type="checkbox" id="comp-qh-enabled"> Enable Quiet Hours</label>
             <div class="compliance-grid">
               <div class="form-group"><label class="form-label" for="comp-qh-start">Start (HH:MM)</label>
                 <input type="text" class="form-input" id="comp-qh-start" placeholder="22:00" autocomplete="off"></div>
@@ -1155,227 +1263,281 @@
                 <input type="text" class="form-input" id="comp-qh-tz" placeholder="America/New_York" autocomplete="off"></div>
             </div>
           </div>
-          <div style="margin-top:12px;">
-            <button class="btn btn-primary btn-sm" id="comp-save-btn" onclick="saveComplianceSettings()">Save Compliance &amp; Schedule</button>
-          </div>
         </div>
+      </div>
+
+      <div class="card settings-save-bar">
+        <span class="hint">Compliance caps and schedule windows apply immediately on save to <code>sellbird.local.yaml</code>.</span>
+        <button type="button" class="btn btn-primary btn-sm" id="comp-save-btn" onclick="saveComplianceSettings()">Save Compliance &amp; Schedule</button>
       </div>
     </div>
   </div>
 
   <div class="settings-panel subview-hidden" data-settings-tab="ai">
-    <div class="subhead" id="settings-ai-providers">Universal AI Brain &amp; Providers <span class="hint">OpenAI-compatible &amp; Cloud LLMs</span></div>
-    <div class="card">
-      <div class="settings-row">
+    <div class="card settings-card" id="settings-ai-providers">
+      <div class="settings-card-head">
         <div>
-          <h3>Universal OpenAI-Compatible Endpoint</h3>
-          <p class="desc">Connect local vLLM, LMStudio, Ollama, DeepSeek, or any OpenAI-compatible API.</p>
+          <h3>Universal OpenAI-Compatible Endpoint <span id="openai-compat-status" class="email-tag guess">not set</span></h3>
+          <p class="desc">Connect local Ollama, vLLM, LM Studio, DeepSeek, or any custom OpenAI-compatible inference gateway.</p>
         </div>
-        <div class="fields">
-          <div class="form-group"><label class="form-label" for="openai-base-url">Base URL</label>
-            <input type="text" class="form-input" id="openai-base-url" placeholder="https://api.deepseek.com/v1 or http://localhost:11434/v1" autocomplete="off"></div>
-          <div class="form-row">
-            <div class="form-group">
-              <label class="form-label" for="openai-model">Default Model</label>
-              <div class="with-btn">
-                <input type="text" class="form-input" id="openai-model" placeholder="deepseek-chat or custom" autocomplete="off">
-                <button type="button" class="btn btn-secondary btn-sm" onclick="fetchSettingsOpenAiModels(this)">Fetch Live Models</button>
-              </div>
-              <div id="openai-model-menu"></div>
-            </div>
-            <div class="form-group"><label class="form-label" for="openai-key">API Key</label>
-              <div class="with-btn"><input type="password" class="form-input" id="openai-key" placeholder="API key (or sk-none)" autocomplete="off">
-                <button class="btn btn-secondary" onclick="toggleVisibility('openai-key')">Show</button></div></div>
-          </div>
-          <button class="btn btn-primary btn-sm" onclick="saveUniversalBrain()">Save OpenAI-Compatible</button>
+        <button type="button" class="btn btn-primary btn-sm" onclick="saveUniversalBrain()">Save OpenAI-Compatible</button>
+      </div>
+      <div class="settings-fields-grid cols-2">
+        <div class="form-group"><label class="form-label" for="openai-base-url">Base URL</label>
+          <input type="text" class="form-input" id="openai-base-url" placeholder="https://api.deepseek.com/v1 or http://localhost:11434/v1" autocomplete="off"></div>
+        <div class="form-group"><label class="form-label" for="openai-key">API Key</label>
+          <div class="with-btn"><input type="password" class="form-input" id="openai-key" placeholder="API key (or sk-none)" autocomplete="off">
+            <button type="button" class="btn btn-secondary" onclick="toggleVisibility('openai-key')">Show</button></div></div>
+      </div>
+      <div class="form-group" style="margin-bottom:0">
+        <label class="form-label" for="openai-model">Default Model</label>
+        <div class="with-btn">
+          <input type="text" class="form-input" id="openai-model" placeholder="deepseek-chat or custom model ID" autocomplete="off">
+          <button type="button" class="btn btn-secondary" onclick="fetchSettingsOpenAiModels(this)">Fetch Live Models</button>
+        </div>
+        <div id="openai-model-menu"></div>
+      </div>
+    </div>
+
+    <div class="card settings-card">
+      <div class="settings-card-head">
+        <div>
+          <h3>Cloud Model API Keys <span id="ai-keys-summary" class="email-tag guess">0 / 10 set</span></h3>
+          <p class="desc">Stored locally in <code>.env</code> for fallback chains, dynamic model discovery, and per-role routing on the AI Models page.</p>
+        </div>
+        <div class="settings-head-actions">
+          <button type="button" class="btn btn-secondary btn-sm" onclick="goTab('brain')">Open AI Models</button>
+          <button type="button" class="btn btn-primary btn-sm" onclick="saveCloudModelKeys()">Save Model Keys</button>
         </div>
       </div>
 
-      <div class="settings-row">
-        <div>
-          <h3>Cloud Model API Keys</h3>
-          <p class="desc">API keys for AI Router fallback chains, dynamic model discovery, and role assignments.</p>
+      <div class="key-tile-grid">
+        <div class="key-tile">
+          <div class="key-tile-head"><label class="form-label" for="openrouter-key">OpenRouter</label><span id="openrouter-status" class="email-tag guess">not set</span></div>
+          <div class="with-btn"><input type="password" class="form-input" id="openrouter-key" placeholder="sk-or-v1-..." autocomplete="off"><button type="button" class="btn btn-secondary" onclick="toggleVisibility('openrouter-key')">Show</button></div>
         </div>
-        <div class="fields">
-          <div class="key-grid">
-            <div class="form-group"><label class="form-label" for="openrouter-key">OpenRouter API Key <span id="openrouter-status" class="email-tag"></span></label>
-              <input type="password" class="form-input" id="openrouter-key" placeholder="sk-or-v1-..." autocomplete="off"></div>
-            <div class="form-group"><label class="form-label" for="deepseek-key">DeepSeek API Key <span id="deepseek-status" class="email-tag"></span></label>
-              <input type="password" class="form-input" id="deepseek-key" placeholder="sk-..." autocomplete="off"></div>
-            <div class="form-group"><label class="form-label" for="gemini-key">Gemini API Key <span id="gemini-status" class="email-tag"></span></label>
-              <input type="password" class="form-input" id="gemini-key" placeholder="AIzaSy..." autocomplete="off"></div>
-            <div class="form-group"><label class="form-label" for="xai-key">xAI Grok API Key <span id="xai-status" class="email-tag"></span></label>
-              <input type="password" class="form-input" id="xai-key" placeholder="xai-..." autocomplete="off"></div>
-            <div class="form-group"><label class="form-label" for="groq-key">Groq API Key <span id="groq-status" class="email-tag"></span></label>
-              <input type="password" class="form-input" id="groq-key" placeholder="gsk_..." autocomplete="off"></div>
-            <div class="form-group"><label class="form-label" for="mistral-key">Mistral API Key <span id="mistral-status" class="email-tag"></span></label>
-              <input type="password" class="form-input" id="mistral-key" placeholder="Mistral API key" autocomplete="off"></div>
-            <div class="form-group"><label class="form-label" for="together-key">Together AI Key <span id="together-status" class="email-tag"></span></label>
-              <input type="password" class="form-input" id="together-key" placeholder="Together API key" autocomplete="off"></div>
-            <div class="form-group"><label class="form-label" for="fireworks-key">Fireworks AI Key <span id="fireworks-status" class="email-tag"></span></label>
-              <input type="password" class="form-input" id="fireworks-key" placeholder="fw_..." autocomplete="off"></div>
-            <div class="form-group"><label class="form-label" for="cerebras-key">Cerebras API Key <span id="cerebras-status" class="email-tag"></span></label>
-              <input type="password" class="form-input" id="cerebras-key" placeholder="csk-..." autocomplete="off"></div>
-            <div class="form-group"><label class="form-label" for="anthropic-key">Anthropic API Key <span id="anthropic-status" class="email-tag"></span></label>
-              <input type="password" class="form-input" id="anthropic-key" placeholder="sk-ant-..." autocomplete="off"></div>
-          </div>
-          <div style="margin-top:12px;">
-            <button class="btn btn-primary btn-sm" onclick="saveCloudModelKeys()">Save Model Keys</button>
-          </div>
+        <div class="key-tile">
+          <div class="key-tile-head"><label class="form-label" for="gemini-key">Google Gemini</label><span id="gemini-status" class="email-tag guess">not set</span></div>
+          <div class="with-btn"><input type="password" class="form-input" id="gemini-key" placeholder="AIzaSy..." autocomplete="off"><button type="button" class="btn btn-secondary" onclick="toggleVisibility('gemini-key')">Show</button></div>
         </div>
+        <div class="key-tile">
+          <div class="key-tile-head"><label class="form-label" for="anthropic-key">Anthropic Claude</label><span id="anthropic-status" class="email-tag guess">not set</span></div>
+          <div class="with-btn"><input type="password" class="form-input" id="anthropic-key" placeholder="sk-ant-..." autocomplete="off"><button type="button" class="btn btn-secondary" onclick="toggleVisibility('anthropic-key')">Show</button></div>
+        </div>
+        <div class="key-tile">
+          <div class="key-tile-head"><label class="form-label" for="deepseek-key">DeepSeek</label><span id="deepseek-status" class="email-tag guess">not set</span></div>
+          <div class="with-btn"><input type="password" class="form-input" id="deepseek-key" placeholder="sk-..." autocomplete="off"><button type="button" class="btn btn-secondary" onclick="toggleVisibility('deepseek-key')">Show</button></div>
+        </div>
+        <div class="key-tile">
+          <div class="key-tile-head"><label class="form-label" for="xai-key">xAI Grok</label><span id="xai-status" class="email-tag guess">not set</span></div>
+          <div class="with-btn"><input type="password" class="form-input" id="xai-key" placeholder="xai-..." autocomplete="off"><button type="button" class="btn btn-secondary" onclick="toggleVisibility('xai-key')">Show</button></div>
+        </div>
+        <div class="key-tile">
+          <div class="key-tile-head"><label class="form-label" for="groq-key">Groq</label><span id="groq-status" class="email-tag guess">not set</span></div>
+          <div class="with-btn"><input type="password" class="form-input" id="groq-key" placeholder="gsk_..." autocomplete="off"><button type="button" class="btn btn-secondary" onclick="toggleVisibility('groq-key')">Show</button></div>
+        </div>
+        <div class="key-tile">
+          <div class="key-tile-head"><label class="form-label" for="mistral-key">Mistral</label><span id="mistral-status" class="email-tag guess">not set</span></div>
+          <div class="with-btn"><input type="password" class="form-input" id="mistral-key" placeholder="Mistral API key" autocomplete="off"><button type="button" class="btn btn-secondary" onclick="toggleVisibility('mistral-key')">Show</button></div>
+        </div>
+        <div class="key-tile">
+          <div class="key-tile-head"><label class="form-label" for="together-key">Together AI</label><span id="together-status" class="email-tag guess">not set</span></div>
+          <div class="with-btn"><input type="password" class="form-input" id="together-key" placeholder="Together API key" autocomplete="off"><button type="button" class="btn btn-secondary" onclick="toggleVisibility('together-key')">Show</button></div>
+        </div>
+        <div class="key-tile">
+          <div class="key-tile-head"><label class="form-label" for="fireworks-key">Fireworks AI</label><span id="fireworks-status" class="email-tag guess">not set</span></div>
+          <div class="with-btn"><input type="password" class="form-input" id="fireworks-key" placeholder="fw_..." autocomplete="off"><button type="button" class="btn btn-secondary" onclick="toggleVisibility('fireworks-key')">Show</button></div>
+        </div>
+        <div class="key-tile">
+          <div class="key-tile-head"><label class="form-label" for="cerebras-key">Cerebras</label><span id="cerebras-status" class="email-tag guess">not set</span></div>
+          <div class="with-btn"><input type="password" class="form-input" id="cerebras-key" placeholder="csk-..." autocomplete="off"><button type="button" class="btn btn-secondary" onclick="toggleVisibility('cerebras-key')">Show</button></div>
+        </div>
+      </div>
+
+      <div class="settings-card-foot">
+        <button type="button" class="btn btn-primary btn-sm" onclick="saveCloudModelKeys()">Save Model Keys</button>
+        <span class="hint">Leave any field blank to keep its currently saved key intact.</span>
       </div>
     </div>
   </div>
 
   <div class="settings-panel subview-hidden" data-settings-tab="integrations">
-    <div class="subhead" id="settings-search-crm">Search, Scraping &amp; Integrations</div>
-    <div class="card">
-      <div class="settings-row">
+    <div class="card settings-card" id="settings-search-crm">
+      <div class="settings-card-head">
         <div>
           <h3>Web Search &amp; Discovery Engines</h3>
-          <p class="desc">Optional API keys for paid/tiered search sources. Keyless <b>OSM Live Places</b>, <b>YC Startups Directory</b>, and <b>DuckDuckGo</b> work free out of the box.</p>
+          <p class="desc">Optional API keys for paid search/crawl sources. Keyless <b>OSM Live Places</b>, <b>YC Startups Directory</b>, and <b>DuckDuckGo</b> work free out of the box.</p>
         </div>
-        <div class="fields">
-          <div class="key-grid">
-            <div class="form-group"><label class="form-label" for="tavily-key">Tavily Search Key</label>
-              <input type="password" class="form-input" id="tavily-key" placeholder="tvly-..." autocomplete="off"></div>
-            <div class="form-group"><label class="form-label" for="firecrawl-key">Firecrawl API Key</label>
-              <input type="password" class="form-input" id="firecrawl-key" placeholder="fc-..." autocomplete="off"></div>
-            <div class="form-group"><label class="form-label" for="serper-key">Serper (Google Search) Key</label>
-              <input type="password" class="form-input" id="serper-key" placeholder="Enter key" autocomplete="off"></div>
-            <div class="form-group"><label class="form-label" for="searxng-url">SearXNG Base URL</label>
-              <input type="text" class="form-input" id="searxng-url" placeholder="https://searx.example.com" autocomplete="off"></div>
-          </div>
-          <button class="btn btn-primary btn-sm" onclick="saveSearchTools()">Save Search Tools</button>
+        <button type="button" class="btn btn-primary btn-sm" onclick="saveSearchTools()">Save Search Tools</button>
+      </div>
+      <div class="key-tile-grid">
+        <div class="key-tile">
+          <div class="key-tile-head"><label class="form-label" for="tavily-key">Tavily Search Key</label><span id="tavily-status" class="email-tag guess">not set</span></div>
+          <div class="with-btn"><input type="password" class="form-input" id="tavily-key" placeholder="tvly-..." autocomplete="off"><button type="button" class="btn btn-secondary" onclick="toggleVisibility('tavily-key')">Show</button></div>
+        </div>
+        <div class="key-tile">
+          <div class="key-tile-head"><label class="form-label" for="firecrawl-key">Firecrawl API Key</label><span id="firecrawl-status" class="email-tag guess">not set</span></div>
+          <div class="with-btn"><input type="password" class="form-input" id="firecrawl-key" placeholder="fc-..." autocomplete="off"><button type="button" class="btn btn-secondary" onclick="toggleVisibility('firecrawl-key')">Show</button></div>
+        </div>
+        <div class="key-tile">
+          <div class="key-tile-head"><label class="form-label" for="serper-key">Serper (Google Search)</label><span id="serper-status" class="email-tag guess">not set</span></div>
+          <div class="with-btn"><input type="password" class="form-input" id="serper-key" placeholder="Enter key" autocomplete="off"><button type="button" class="btn btn-secondary" onclick="toggleVisibility('serper-key')">Show</button></div>
+        </div>
+        <div class="key-tile">
+          <div class="key-tile-head"><label class="form-label" for="searxng-url">SearXNG Base URL</label><span id="searxng-status" class="email-tag guess">not set</span></div>
+          <input type="text" class="form-input" id="searxng-url" placeholder="https://searx.example.com" autocomplete="off">
         </div>
       </div>
+    </div>
 
-      <div class="settings-row">
+    <div class="card settings-card">
+      <div class="settings-card-head">
         <div>
           <h3>Calendar, CRM &amp; Copilot Alerts</h3>
-          <p class="desc">Auto-booking links, Twenty CRM synchronization, and instant Telegram/Slack alerts.</p>
+          <p class="desc">Cal.com auto-booking slots, Twenty CRM synchronization, and live Telegram/Slack notifications.</p>
         </div>
-        <div class="fields">
-          <div class="key-grid">
-            <div class="form-group"><label class="form-label" for="calcom-key">Cal.com API Key</label>
-              <input type="password" class="form-input" id="calcom-key" placeholder="cal_live_..." autocomplete="off"></div>
-            <div class="form-group"><label class="form-label" for="calcom-event-type-id">Cal.com Event Type ID</label>
-              <input type="text" class="form-input" id="calcom-event-type-id" placeholder="e.g. 123456" autocomplete="off"></div>
-            <div class="form-group"><label class="form-label" for="calcom-webhook-secret">Cal.com Webhook Secret</label>
-              <input type="password" class="form-input" id="calcom-webhook-secret" placeholder="Enter webhook signing secret" autocomplete="off"></div>
-            <div class="form-group"><label class="form-label" for="twenty-url">Twenty CRM URL</label>
-              <input type="text" class="form-input" id="twenty-url" placeholder="https://twenty.example.com" autocomplete="off"></div>
-            <div class="form-group"><label class="form-label" for="twenty-key">Twenty CRM API Key</label>
-              <input type="password" class="form-input" id="twenty-key" placeholder="Enter API key" autocomplete="off"></div>
-            <div class="form-group"><label class="form-label" for="telegram-token">Telegram Bot Token</label>
-              <input type="password" class="form-input" id="telegram-token" placeholder="bot123456:ABC-DEF..." autocomplete="off"></div>
-            <div class="form-group"><label class="form-label" for="telegram-chat">Telegram Chat ID</label>
-              <input type="text" class="form-input" id="telegram-chat" placeholder="12345678" autocomplete="off"></div>
-            <div class="form-group"><label class="form-label" for="slack-webhook">Slack Webhook URL</label>
-              <input type="password" class="form-input" id="slack-webhook" placeholder="https://hooks.slack.com/services/..." autocomplete="off"></div>
+        <button type="button" class="btn btn-primary btn-sm" onclick="saveIntegrations()">Save Integrations</button>
+      </div>
+      <div class="key-tile-grid">
+        <div class="key-tile">
+          <div class="key-tile-head"><label class="form-label" for="calcom-key">Cal.com API Key</label><span id="calcom-status" class="email-tag guess">not set</span></div>
+          <div class="with-btn"><input type="password" class="form-input" id="calcom-key" placeholder="cal_live_..." autocomplete="off"><button type="button" class="btn btn-secondary" onclick="toggleVisibility('calcom-key')">Show</button></div>
+        </div>
+        <div class="key-tile">
+          <div class="key-tile-head"><label class="form-label" for="calcom-event-type-id">Cal.com Event Type ID</label></div>
+          <input type="text" class="form-input" id="calcom-event-type-id" placeholder="e.g. 123456" autocomplete="off">
+        </div>
+        <div class="key-tile">
+          <div class="key-tile-head"><label class="form-label" for="calcom-webhook-secret">Cal.com Webhook Secret</label><span id="calcom-webhook-status" class="email-tag guess">not set</span></div>
+          <div class="with-btn"><input type="password" class="form-input" id="calcom-webhook-secret" placeholder="Enter webhook signing secret" autocomplete="off"><button type="button" class="btn btn-secondary" onclick="toggleVisibility('calcom-webhook-secret')">Show</button></div>
+        </div>
+        <div class="key-tile">
+          <div class="key-tile-head"><label class="form-label" for="twenty-url">Twenty CRM URL</label><span id="twenty-status" class="email-tag guess">not set</span></div>
+          <input type="text" class="form-input" id="twenty-url" placeholder="https://twenty.example.com" autocomplete="off">
+        </div>
+        <div class="key-tile">
+          <div class="key-tile-head"><label class="form-label" for="twenty-key">Twenty CRM API Key</label></div>
+          <div class="with-btn"><input type="password" class="form-input" id="twenty-key" placeholder="Enter API key" autocomplete="off"><button type="button" class="btn btn-secondary" onclick="toggleVisibility('twenty-key')">Show</button></div>
+        </div>
+        <div class="key-tile">
+          <div class="key-tile-head"><label class="form-label" for="telegram-token">Telegram Bot Token</label><span id="telegram-status" class="email-tag guess">not set</span></div>
+          <div class="with-btn"><input type="password" class="form-input" id="telegram-token" placeholder="bot123456:ABC-DEF..." autocomplete="off"><button type="button" class="btn btn-secondary" onclick="toggleVisibility('telegram-token')">Show</button></div>
+        </div>
+        <div class="key-tile">
+          <div class="key-tile-head"><label class="form-label" for="telegram-chat">Telegram Chat ID</label></div>
+          <input type="text" class="form-input" id="telegram-chat" placeholder="12345678" autocomplete="off">
+        </div>
+        <div class="key-tile">
+          <div class="key-tile-head"><label class="form-label" for="slack-webhook">Slack Webhook URL</label><span id="slack-status" class="email-tag guess">not set</span></div>
+          <div class="with-btn"><input type="password" class="form-input" id="slack-webhook" placeholder="https://hooks.slack.com/services/..." autocomplete="off"><button type="button" class="btn btn-secondary" onclick="toggleVisibility('slack-webhook')">Show</button></div>
+        </div>
+      </div>
+      <div class="settings-card-foot">
+        <button type="button" class="btn btn-primary btn-sm" onclick="saveIntegrations()">Save Integrations</button>
+        <select class="form-input" id="integration-test-service" style="width:auto;min-width:150px;" aria-label="Integration service to test">
+          <option value="telegram">Telegram Bot</option>
+          <option value="slack">Slack Webhook</option>
+          <option value="calcom">Cal.com</option>
+          <option value="twenty">Twenty CRM</option>
+        </select>
+        <label class="check-line"><input type="checkbox" id="integration-test-ping"> Send Slack test ping</label>
+        <button type="button" class="btn btn-secondary btn-sm" id="integration-test-btn" onclick="testIntegrationConnection(this)">Test Connection</button>
+      </div>
+      <div id="integration-test-result" class="form-hint" aria-live="polite" style="margin-top:8px;"></div>
+    </div>
+
+    <div class="settings-grid-2">
+      <div class="card settings-card">
+        <div class="settings-card-head">
+          <div>
+            <h3>LinkedIn <span id="linkedin-status" class="email-tag guess">not set</span></h3>
+            <p class="desc">Optional credentials for automated LinkedIn prospecting workflows.</p>
           </div>
-          <div class="btn-group" style="display:flex;gap:10px;align-items:center;flex-wrap:wrap;margin-top:8px;">
-            <button class="btn btn-primary btn-sm" onclick="saveIntegrations()">Save Integrations</button>
-            <select class="form-input" id="integration-test-service" style="width:auto;min-width:150px;" aria-label="Integration service to test">
-              <option value="telegram">Telegram Bot</option>
-              <option value="slack">Slack Webhook</option>
-              <option value="calcom">Cal.com</option>
-              <option value="twenty">Twenty CRM</option>
-            </select>
-            <label class="check-line"><input type="checkbox" id="integration-test-ping"> Send Slack test ping</label>
-            <button class="btn btn-secondary btn-sm" id="integration-test-btn" onclick="testIntegrationConnection(this)">Test Connection</button>
-          </div>
-          <div id="integration-test-result" class="form-hint" aria-live="polite" style="margin-top:8px;"></div>
+        </div>
+        <div class="form-group">
+          <label class="form-label" for="linkedin-email">Email or username</label>
+          <input type="text" class="form-input" id="linkedin-email" placeholder="your@email.com" autocomplete="off">
+        </div>
+        <div class="form-group">
+          <label class="form-label" for="linkedin-password">Password</label>
+          <div class="with-btn"><input type="password" class="form-input" id="linkedin-password" placeholder="Enter password" autocomplete="new-password">
+            <button type="button" class="btn btn-secondary" onclick="toggleVisibility('linkedin-password')">Show</button></div>
+        </div>
+        <div class="settings-card-foot">
+          <button type="button" class="btn btn-primary btn-sm" onclick="saveLinkedIn()">Save LinkedIn</button>
         </div>
       </div>
 
-      <div class="settings-row">
-        <div>
-          <h3>LinkedIn</h3>
-          <p class="desc">Optional credentials for automated LinkedIn prospecting.</p>
+      <div class="card settings-card">
+        <div class="settings-card-head">
+          <div>
+            <h3>Cloudflare Browser Rendering <span id="cloudflare-status" class="email-tag guess">not set</span></h3>
+            <p class="desc">Optional headless browser fallback for JS-rendered websites during product training.</p>
+          </div>
         </div>
-        <div class="fields">
-          <div class="form-group">
-            <label class="form-label" for="linkedin-email">Email or username</label>
-            <input type="text" class="form-input" id="linkedin-email" placeholder="your@email.com" autocomplete="off">
-          </div>
-          <div class="form-group">
-            <label class="form-label" for="linkedin-password">Password</label>
-            <div class="with-btn"><input type="password" class="form-input" id="linkedin-password" placeholder="Enter password" autocomplete="new-password">
-              <button class="btn btn-secondary" onclick="toggleVisibility('linkedin-password')">Show</button></div>
-          </div>
-          <button class="btn btn-primary btn-sm" onclick="saveLinkedIn()">Save LinkedIn</button>
+        <div class="form-group">
+          <label class="form-label" for="cf-account-id">Account ID</label>
+          <input type="text" class="form-input" id="cf-account-id" placeholder="Your Cloudflare Account ID" autocomplete="off">
         </div>
-      </div>
-
-      <div class="settings-row">
-        <div>
-          <h3>Cloudflare Browser Rendering</h3>
-          <p class="desc">Optional JS-rendered website crawling during product training.</p>
+        <div class="form-group">
+          <label class="form-label" for="cf-api-token">API token</label>
+          <div class="with-btn"><input type="password" class="form-input" id="cf-api-token" placeholder="Your Cloudflare API Token" autocomplete="off">
+            <button type="button" class="btn btn-secondary" onclick="toggleVisibility('cf-api-token')">Show</button></div>
         </div>
-        <div class="fields">
-          <div class="form-group">
-            <label class="form-label" for="cf-account-id">Account ID</label>
-            <input type="text" class="form-input" id="cf-account-id" placeholder="Your Cloudflare Account ID" autocomplete="off">
-          </div>
-          <div class="form-group">
-            <label class="form-label" for="cf-api-token">API token</label>
-            <div class="with-btn"><input type="password" class="form-input" id="cf-api-token" placeholder="Your Cloudflare API Token" autocomplete="off">
-              <button class="btn btn-secondary" onclick="toggleVisibility('cf-api-token')">Show</button></div>
-          </div>
-          <button class="btn btn-primary btn-sm" onclick="saveCloudflare()">Save Cloudflare</button>
+        <div class="settings-card-foot">
+          <button type="button" class="btn btn-primary btn-sm" onclick="saveCloudflare()">Save Cloudflare</button>
         </div>
       </div>
     </div>
   </div>
 
   <div class="settings-panel subview-hidden" data-settings-tab="watch">
-    <div class="subhead" id="settings-verifiers">Email Verification <span class="hint">Strongly recommended</span></div>
-    <div class="card">
-      <div class="settings-row">
-        <div>
-          <h3>Verifiers</h3>
-          <p class="desc">Add at least one verifier so found emails get validated before sending. Without any, addresses stay <span class="email-tag guess" style="margin:0">guess</span>. Reoon offers 600 free/mo.</p>
+    <div class="settings-grid-2 watch-grid">
+      <div class="card settings-card" id="settings-verifiers">
+        <div class="settings-card-head">
+          <div>
+            <h3>Email Verifiers <span class="tag accent">Strongly recommended</span></h3>
+            <p class="desc">Validate found emails before sending so addresses don't stay <span class="email-tag guess" style="margin:0">guess</span>. Reoon includes 600 free/mo.</p>
+          </div>
         </div>
-        <div class="fields">
-          <div class="form-group"><label class="form-label" for="reoon-key">Reoon API key <span id="reoon-status" class="email-tag"></span></label>
-            <div class="with-btn"><input type="password" class="form-input" id="reoon-key" placeholder="600 free/mo — reoon.com/email-verifier" autocomplete="off">
-              <button class="btn btn-secondary" onclick="toggleVisibility('reoon-key')">Show</button></div></div>
-          <div class="form-group"><label class="form-label" for="zerobounce-key">ZeroBounce API key <span id="zerobounce-status" class="email-tag"></span></label>
-            <div class="with-btn"><input type="password" class="form-input" id="zerobounce-key" placeholder="100 free/mo — best for M365/Workspace catch-alls" autocomplete="off">
-              <button class="btn btn-secondary" onclick="toggleVisibility('zerobounce-key')">Show</button></div></div>
-          <div class="form-group"><label class="form-label" for="hunter-key">Hunter API key <span id="hunter-status" class="email-tag"></span></label>
-            <div class="with-btn"><input type="password" class="form-input" id="hunter-key" placeholder="50 free/mo + email-pattern lookup" autocomplete="off">
-              <button class="btn btn-secondary" onclick="toggleVisibility('hunter-key')">Show</button></div></div>
-          <button class="btn btn-primary btn-sm" onclick="saveVerifiers()">Save verification keys</button>
+        <div class="form-group"><label class="form-label" for="reoon-key">Reoon API key <span id="reoon-status" class="email-tag"></span></label>
+          <div class="with-btn"><input type="password" class="form-input" id="reoon-key" placeholder="600 free/mo at reoon.com/email-verifier" autocomplete="off">
+            <button type="button" class="btn btn-secondary" onclick="toggleVisibility('reoon-key')">Show</button></div></div>
+        <div class="form-group"><label class="form-label" for="zerobounce-key">ZeroBounce API key <span id="zerobounce-status" class="email-tag"></span></label>
+          <div class="with-btn"><input type="password" class="form-input" id="zerobounce-key" placeholder="100 free/mo (best for M365/Workspace)" autocomplete="off">
+            <button type="button" class="btn btn-secondary" onclick="toggleVisibility('zerobounce-key')">Show</button></div></div>
+        <div class="form-group"><label class="form-label" for="hunter-key">Hunter API key <span id="hunter-status" class="email-tag"></span></label>
+          <div class="with-btn"><input type="password" class="form-input" id="hunter-key" placeholder="50 free/mo + email-pattern lookup" autocomplete="off">
+            <button type="button" class="btn btn-secondary" onclick="toggleVisibility('hunter-key')">Show</button></div></div>
+        <div class="settings-card-foot">
+          <button type="button" class="btn btn-primary btn-sm" onclick="saveVerifiers()">Save verification keys</button>
         </div>
       </div>
-    </div>
 
-    <div class="subhead">Competitor watch</div>
-    <div class="card" id="competitor-watch-card">
-      <div class="settings-row">
-        <div>
-          <h3>Pages to watch</h3>
-          <p class="desc">VeloReach reads these pages on idle cycles and alerts you via Telegram/Slack when one changes. Findings never enter cold emails; the first check records a baseline.</p>
+      <div class="card settings-card" id="competitor-watch-card">
+        <div class="settings-card-head">
+          <div>
+            <h3>Competitor Watch</h3>
+            <p class="desc">Monitor rival pages on idle cycles and alert via Telegram/Slack on updates. Findings stay out of cold emails.</p>
+          </div>
           <label class="cw-enabled"><input type="checkbox" id="cw-enabled" onchange="saveCompetitorWatch()"> Watch these pages</label>
         </div>
-        <div class="fields">
-          <div id="cw-watches"></div>
-          <div class="cw-add">
-            <input type="text" class="form-input" id="cw-name" placeholder="e.g. Rival pricing" autocomplete="off">
-            <input type="text" class="form-input" id="cw-url" placeholder="https://rival.example/pricing" autocomplete="off">
-            <select class="form-input" id="cw-kind" aria-label="What kind of page is this">
-              <option value="pricing">pricing</option>
-              <option value="hiring">hiring</option>
-              <option value="homepage">homepage</option>
-            </select>
-            <button class="btn btn-secondary btn-sm" onclick="addCompetitorWatch()">Add</button>
-          </div>
-          <div><button class="btn btn-primary btn-sm" id="cw-save" onclick="saveCompetitorWatch()">Save watches</button>
-            <span id="cw-status" class="hint"></span></div>
-          <div id="cw-changes"></div>
+        <div id="cw-watches"></div>
+        <div class="cw-add">
+          <input type="text" class="form-input" id="cw-name" placeholder="e.g. Rival pricing" autocomplete="off">
+          <input type="text" class="form-input" id="cw-url" placeholder="https://rival.example/pricing" autocomplete="off">
+          <select class="form-input" id="cw-kind" aria-label="What kind of page is this">
+            <option value="pricing">pricing</option>
+            <option value="hiring">hiring</option>
+            <option value="homepage">homepage</option>
+          </select>
+          <button type="button" class="btn btn-secondary btn-sm" onclick="addCompetitorWatch()">Add</button>
         </div>
+        <div class="settings-card-foot">
+          <button type="button" class="btn btn-primary btn-sm" id="cw-save" onclick="saveCompetitorWatch()">Save watches</button>
+          <span id="cw-status" class="hint"></span>
+        </div>
+        <div id="cw-changes"></div>
       </div>
     </div>
   </div>
@@ -1520,6 +1682,6 @@
 <div id="toast-stack" class="toast-stack" aria-live="polite" aria-atomic="false"></div>
 <div id="ui-tooltip" class="ui-tooltip" role="tooltip" aria-hidden="true"></div>
 
-<script src="/static/app.js?v=20261128j"></script>
+<script src="/static/app.js?v=20261128k"></script>
 </body>
 </html>

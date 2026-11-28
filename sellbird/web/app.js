@@ -1952,18 +1952,47 @@ function pageCohort(dir) {
 
 // ── Settings ──
 
+let _inspectedEmailProvider = null;
+
+function viewEmailProvider(provider) {
+  const chosen = ['smtp', 'gmail', 'microsoft', 'instantly'].includes(provider) ? provider : 'smtp';
+  _inspectedEmailProvider = chosen;
+  if (typeof document.querySelectorAll === 'function') {
+    document.querySelectorAll('.ep-tile[data-ep-card]').forEach(tile => {
+      const p = typeof tile.getAttribute === 'function' ? tile.getAttribute('data-ep-card') : '';
+      if (tile.classList && typeof tile.classList.toggle === 'function') tile.classList.toggle('is-inspected', p === chosen);
+    });
+    document.querySelectorAll('.ep-panel[data-ep-panel]').forEach(panel => {
+      const p = typeof panel.getAttribute === 'function' ? panel.getAttribute('data-ep-panel') : '';
+      if (panel.classList && typeof panel.classList.toggle === 'function') panel.classList.toggle('subview-hidden', p !== chosen);
+    });
+  }
+}
+
 async function loadSettings() {
   const data = await api('/api/settings');
   if (!data) return;
 
-  // Active provider indicator
+  // Active provider indicator & interactive tiles
   const prov = data.provider || 'instantly';
   const provEl = document.getElementById('active-provider');
   if (provEl) provEl.textContent = prov;
+  const provLabels = { smtp: 'SMTP / Resend', gmail: 'Gmail', microsoft: 'Microsoft 365', instantly: 'Instantly' };
+  const sumMailer = document.getElementById('settings-sum-mailer');
+  if (sumMailer) sumMailer.textContent = provLabels[prov] || prov;
   ['gmail', 'smtp', 'microsoft', 'instantly'].forEach(p => {
     const c = document.getElementById('ep-' + p);
-    if (c) c.classList.toggle('on', p === prov);
+    if (c && c.classList && typeof c.classList.toggle === 'function') c.classList.toggle('on', p === prov);
+    if (c && typeof c.textContent !== 'undefined') {
+      const defaults = { gmail: 'Use Gmail', smtp: 'Use SMTP / Resend', microsoft: 'Use M365', instantly: 'Use Instantly' };
+      c.textContent = p === prov ? 'Active sender' : (defaults[p] || 'Activate');
+    }
+    if (typeof document.querySelector === 'function') {
+      const tile = document.querySelector('.ep-tile[data-ep-card="' + p + '"]');
+      if (tile && tile.classList && typeof tile.classList.toggle === 'function') tile.classList.toggle('is-active', p === prov);
+    }
   });
+  viewEmailProvider(_inspectedEmailProvider || (provLabels[prov] ? prov : 'smtp'));
 
   // Secret fields never echo a value — show a "saved" placeholder instead.
   const savedPh = (id, isSet, base) => {
@@ -1977,63 +2006,75 @@ async function loadSettings() {
     if (!el) return;
     el.className = 'email-tag ' + (ok ? 'verified' : 'guess');
     el.textContent = ok ? okLabel : 'not set';
+    if (typeof el.closest === 'function') {
+      const tile = el.closest('.key-tile');
+      if (tile && tile.classList && typeof tile.classList.toggle === 'function') tile.classList.toggle('is-set', !!ok);
+    }
   };
 
   // Non-secret values repopulate
-  document.getElementById('gmail-id').value = data.gmail_client_id || '';
-  document.getElementById('smtp-host').value = data.smtp_host || '';
-  document.getElementById('smtp-port').value = data.smtp_port || '';
-  document.getElementById('smtp-user').value = data.smtp_username || '';
-  const smtpFromEl = document.getElementById('smtp-from');
-  if (smtpFromEl) smtpFromEl.value = data.smtp_from || '';
-  document.getElementById('imap-host').value = data.imap_host || '';
-  document.getElementById('imap-port').value = data.imap_port || '';
-  document.getElementById('imap-user').value = data.imap_username || '';
-  document.getElementById('m365-client').value = data.m365_client_id || '';
-  document.getElementById('m365-tenant').value = data.m365_tenant_id || '';
-  document.getElementById('linkedin-email').value = data.linkedin_email || '';
-  document.getElementById('cf-account-id').value = data.cloudflare_account_id || '';
+  const setValSafe = (id, v) => { const el = document.getElementById(id); if (el) el.value = v || ''; };
+  setValSafe('gmail-id', data.gmail_client_id);
+  setValSafe('smtp-host', data.smtp_host);
+  setValSafe('smtp-port', data.smtp_port);
+  setValSafe('smtp-user', data.smtp_username);
+  setValSafe('smtp-from', data.smtp_from);
+  setValSafe('imap-host', data.imap_host);
+  setValSafe('imap-port', data.imap_port);
+  setValSafe('imap-user', data.imap_username);
+  setValSafe('m365-client', data.m365_client_id);
+  setValSafe('m365-tenant', data.m365_tenant_id);
+  setValSafe('linkedin-email', data.linkedin_email);
+  setValSafe('cf-account-id', data.cloudflare_account_id);
 
   savedPh('gmail-secret', data.gmail_client_secret_set, 'Enter client secret');
   savedPh('smtp-pass', data.smtp_password_set, 'Enter password / app password');
   savedPh('imap-pass', data.imap_password_set, 'Same as SMTP password');
-  document.getElementById('imap-same-pass').checked = !data.imap_password_set;
+  const samePassEl = document.getElementById('imap-same-pass');
+  if (samePassEl) samePassEl.checked = !data.imap_password_set;
   savedPh('instantly-key', data.instantly_api_key_set, 'Enter your Instantly API key');
-  savedPh('reoon-key', data.reoon_api_key_set, '600 free/mo — reoon.com/email-verifier');
-  savedPh('zerobounce-key', data.zerobounce_api_key_set, '100 free/mo — best for M365/Workspace catch-alls');
+  savedPh('reoon-key', data.reoon_api_key_set, '600 free/mo at reoon.com/email-verifier');
+  savedPh('zerobounce-key', data.zerobounce_api_key_set, '100 free/mo (best for M365/Workspace)');
   savedPh('hunter-key', data.hunter_api_key_set, '50 free/mo + email-pattern lookup');
   savedPh('linkedin-password', data.linkedin_password_set, 'Enter password');
   savedPh('cf-api-token', data.cloudflare_api_token_set, 'Your Cloudflare API Token');
 
-  // Gmail auth status chip
+  const smtpOk = Boolean((data.smtp_host || '').trim() && data.smtp_password_set);
+  const smtpIsResend = smtpOk && /resend/i.test(data.smtp_host || '');
+  tag('smtp-status', smtpOk, smtpIsResend ? 'Resend Ready' : 'configured');
+  tag('instantly-status', data.instantly_api_key_set, 'set');
+
+  // Gmail & M365 auth status chips
   const g = document.getElementById('gmail-status');
   if (g) {
     const realId = /^\d+-[0-9a-z]+\.apps\.googleusercontent\.com$/.test((data.gmail_client_id || '').trim());
-    if (data.gmail_client_id && !realId) { g.className = 'email-tag invalid'; g.textContent = 'client ID isn\'t real'; }
+    if (data.gmail_client_id && !realId) { g.className = 'email-tag invalid'; g.textContent = 'client ID invalid'; }
     else if (data.gmail_authorized) { g.className = 'email-tag verified'; g.textContent = 'authorized'; }
     else if (data.gmail_client_secret_set) { g.className = 'email-tag risky'; g.textContent = 'sign in on Inboxes'; }
-    else { g.className = 'email-tag guess'; g.textContent = 'not set up'; }
+    else { g.className = 'email-tag guess'; g.textContent = 'not set'; }
   }
   const m = document.getElementById('m365-status');
   if (m) {
     const realM = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test((data.m365_client_id || '').trim());
-    if (data.m365_client_id && !realM) { m.className = 'email-tag invalid'; m.textContent = 'client ID isn\'t real'; }
+    if (data.m365_client_id && !realM) { m.className = 'email-tag invalid'; m.textContent = 'client ID invalid'; }
     else if (data.m365_authorized) { m.className = 'email-tag verified'; m.textContent = 'authorized'; }
     else if (data.m365_client_id) { m.className = 'email-tag risky'; m.textContent = 'sign in on Inboxes'; }
-    else { m.className = 'email-tag guess'; m.textContent = 'not set up'; }
+    else { m.className = 'email-tag guess'; m.textContent = 'not set'; }
   }
   tag('reoon-status', data.reoon_api_key_set, 'set');
   tag('zerobounce-status', data.zerobounce_api_key_set, 'set');
   tag('hunter-status', data.hunter_api_key_set, 'set');
+  const verifierCount = [data.reoon_api_key_set, data.zerobounce_api_key_set, data.hunter_api_key_set].filter(Boolean).length;
+  const sumVer = document.getElementById('settings-sum-verifiers');
+  if (sumVer) sumVer.textContent = verifierCount + ' / 3 ready';
 
   // AI & Universal endpoints
-  const setVal = (id, val) => { const el = document.getElementById(id); if (el) el.value = val || ''; };
-  setVal('openai-base-url', data.openai_base_url);
-  setVal('openai-model', data.openai_model);
-  setVal('searxng-url', data.searxng_url);
-  setVal('twenty-url', data.twenty_base_url);
-  setVal('telegram-chat', data.telegram_chat_id);
-  setVal('calcom-event-type-id', data.calcom_event_type_id);
+  setValSafe('openai-base-url', data.openai_base_url);
+  setValSafe('openai-model', data.openai_model);
+  setValSafe('searxng-url', data.searxng_url);
+  setValSafe('twenty-url', data.twenty_base_url);
+  setValSafe('telegram-chat', data.telegram_chat_id);
+  setValSafe('calcom-event-type-id', data.calcom_event_type_id);
 
   savedPh('openai-key', data.openai_api_key_set, 'API key (or sk-none)');
   savedPh('openrouter-key', data.openrouter_api_key_set, 'sk-or-v1-...');
@@ -2041,6 +2082,10 @@ async function loadSettings() {
   savedPh('gemini-key', data.gemini_api_key_set, 'AIzaSy...');
   savedPh('xai-key', data.xai_api_key_set, 'xai-...');
   savedPh('groq-key', data.groq_api_key_set, 'gsk_...');
+  savedPh('mistral-key', data.mistral_api_key_set, 'Mistral API key');
+  savedPh('together-key', data.together_api_key_set, 'Together API key');
+  savedPh('fireworks-key', data.fireworks_api_key_set, 'fw_...');
+  savedPh('cerebras-key', data.cerebras_api_key_set, 'csk-...');
   savedPh('anthropic-key', data.anthropic_api_key_set, 'sk-ant-...');
 
   savedPh('tavily-key', data.tavily_api_key_set, 'tvly-...');
@@ -2052,12 +2097,39 @@ async function loadSettings() {
   savedPh('telegram-token', data.telegram_bot_token_set, 'bot123456:ABC-DEF...');
   savedPh('slack-webhook', data.slack_webhook_url_set, 'https://hooks.slack.com/services/...');
 
+  tag('openai-compat-status', Boolean((data.openai_base_url || '').trim() || data.openai_api_key_set), 'configured');
   tag('openrouter-status', data.openrouter_api_key_set, 'set');
   tag('deepseek-status', data.deepseek_api_key_set, 'set');
   tag('gemini-status', data.gemini_api_key_set, 'set');
   tag('xai-status', data.xai_api_key_set, 'set');
   tag('groq-status', data.groq_api_key_set, 'set');
+  tag('mistral-status', data.mistral_api_key_set, 'set');
+  tag('together-status', data.together_api_key_set, 'set');
+  tag('fireworks-status', data.fireworks_api_key_set, 'set');
+  tag('cerebras-status', data.cerebras_api_key_set, 'set');
   tag('anthropic-status', data.anthropic_api_key_set, 'set');
+
+  const aiKeyCount = [
+    data.openrouter_api_key_set, data.gemini_api_key_set, data.anthropic_api_key_set,
+    data.deepseek_api_key_set, data.xai_api_key_set, data.groq_api_key_set,
+    data.mistral_api_key_set, data.together_api_key_set, data.fireworks_api_key_set,
+    data.cerebras_api_key_set,
+  ].filter(Boolean).length;
+  tag('ai-keys-summary', aiKeyCount > 0, aiKeyCount + ' / 10 set');
+  const sumAi = document.getElementById('settings-sum-ai');
+  if (sumAi) sumAi.textContent = aiKeyCount + ' / 10 set';
+
+  tag('tavily-status', data.tavily_api_key_set, 'set');
+  tag('firecrawl-status', data.firecrawl_api_key_set, 'set');
+  tag('serper-status', data.serper_api_key_set, 'set');
+  tag('searxng-status', Boolean((data.searxng_url || '').trim()), 'set');
+  tag('calcom-status', data.calcom_api_key_set, 'set');
+  tag('calcom-webhook-status', data.calcom_webhook_secret_set, 'set');
+  tag('twenty-status', Boolean(data.twenty_api_key_set || (data.twenty_base_url || '').trim()), 'set');
+  tag('telegram-status', Boolean(data.telegram_bot_token_set && (data.telegram_chat_id || '').trim()), 'set');
+  tag('slack-status', data.slack_webhook_url_set, 'set');
+  tag('linkedin-status', Boolean((data.linkedin_email || '').trim() && data.linkedin_password_set), 'set');
+  tag('cloudflare-status', Boolean((data.cloudflare_account_id || '').trim() && data.cloudflare_api_token_set), 'configured');
   await loadComplianceSettings();
 }
 
@@ -2326,6 +2398,7 @@ function jumpSettings(targetId) {
 }
 
 async function switchEmailProvider(provider) {
+  viewEmailProvider(provider);
   try {
     const res = await api('/api/settings/email-provider', {
       method: 'POST',
@@ -2344,6 +2417,7 @@ async function switchEmailProvider(provider) {
 }
 
 function fillResendPreset() {
+  viewEmailProvider('smtp');
   const hostEl = document.getElementById('smtp-host');
   const portEl = document.getElementById('smtp-port');
   const userEl = document.getElementById('smtp-user');
@@ -3184,6 +3258,8 @@ function sendingModeCard(m) {
 function renderSendingModeCard() {
   const el = document.getElementById('sending-mode-card');
   if (el) el.innerHTML = sendingModeCard(_sendingMode);
+  const sumMode = document.getElementById('settings-sum-mode');
+  if (sumMode && _sendingMode) sumMode.textContent = _sendingMode.mode === 'autopilot' ? 'Autopilot' : 'Approval';
   const input = document.getElementById('autopilot-confirm');
   if (input) input.focus();
 }
