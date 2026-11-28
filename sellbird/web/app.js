@@ -460,6 +460,37 @@ function topbarQuickSearch(q) {
   }, 120);
 }
 
+function toggleSidebarRail() {
+  const app = document.querySelector('.app');
+  if (!app) return;
+  const next = !app.classList.contains('rail-collapsed');
+  app.classList.toggle('rail-collapsed', next);
+  const btn = document.getElementById('sidebar-rail-btn');
+  if (btn) {
+    btn.setAttribute('aria-expanded', next ? 'false' : 'true');
+    btn.setAttribute('aria-label', next ? 'Expand sidebar' : 'Collapse sidebar');
+    btn.setAttribute('title', next ? 'Expand sidebar ([)' : 'Collapse sidebar ([)');
+  }
+  try {
+    if (typeof localStorage !== 'undefined') localStorage.setItem('vr_rail_collapsed', next ? '1' : '0');
+  } catch {}
+}
+
+(function restoreSidebarRail() {
+  try {
+    if (typeof localStorage === 'undefined' || !document.querySelector) return;
+    if (localStorage.getItem('vr_rail_collapsed') === '1') {
+      const app = document.querySelector('.app');
+      if (app) app.classList.add('rail-collapsed');
+      const btn = document.getElementById('sidebar-rail-btn');
+      if (btn) {
+        btn.setAttribute('aria-expanded', 'false');
+        btn.setAttribute('aria-label', 'Expand sidebar');
+      }
+    }
+  } catch {}
+})();
+
 function toggleNavGroup(btn) {
   const grp = btn && typeof btn.closest === 'function' ? btn.closest('.nav-group') : null;
   if (!grp) return;
@@ -623,6 +654,16 @@ function runCmdkIdx(idx) {
     if ((e.ctrlKey || e.metaKey) && String(e.key || '').toLowerCase() === 'k') {
       e.preventDefault();
       openCmdk();
+      return;
+    }
+    if (!e.ctrlKey && !e.metaKey && !e.altKey && e.key === '[') {
+      const t = e.target;
+      const tag = t && t.tagName ? t.tagName.toLowerCase() : '';
+      if (tag === 'input' || tag === 'textarea' || tag === 'select' || (t && t.isContentEditable)) return;
+      if (window.innerWidth > 1000 && typeof toggleSidebarRail === 'function') {
+        e.preventDefault();
+        toggleSidebarRail();
+      }
     }
   });
   const dlg = document.getElementById('cmdk-dialog');

@@ -5,9 +5,10 @@
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
 <meta name="referrer" content="same-origin">
 <title>VeloReach</title>
+<meta name="description" content="VeloReach B2B outreach workspace for discovering leads, researching websites, managing approvals, and tracking inbox replies.">
 <!-- First, so the token leaves the address bar before anything else runs. -->
 <script src="/static/auth.js"></script>
-<link rel="stylesheet" href="/static/app.css?v=20261128i">
+<link rel="stylesheet" href="/static/app.css?v=20261128j">
 <link rel="icon" href="/static/sellbird-mark.svg" type="image/svg+xml">
 </head>
 <body>
@@ -47,6 +48,7 @@
     <symbol id="i-flag" viewBox="0 0 24 24"><path d="M5 21V4M5 4h11l-2 4 2 4H5"/></symbol>
     <symbol id="i-brain" viewBox="0 0 24 24"><path d="M12 2a4 4 0 0 0-4 4v1a4 4 0 0 0-2 7.46V16a4 4 0 0 0 4 4h1V2zm0 0a4 4 0 0 1 4 4v1a4 4 0 0 1 2 7.46V16a4 4 0 0 1-4 4h-1V2z"/><path d="M8 8h8M6 12h12M8 16h8"/></symbol>
     <symbol id="i-enrichment" viewBox="0 0 24 24"><path d="M12 3v18M3 9h18M3 15h18"/><rect x="3" y="3" width="18" height="18" rx="2"/></symbol>
+    <symbol id="i-panel" viewBox="0 0 24 24"><rect x="3" y="4" width="18" height="16" rx="2"/><path d="M9 4v16"/></symbol>
   </defs>
 </svg>
 
@@ -64,7 +66,7 @@
         <label class="form-label" for="lock-token">Dashboard token</label>
         <input type="password" class="form-input" id="lock-token" autocomplete="off" spellcheck="false">
       </div>
-      <button class="btn btn-primary" type="submit">Unlock</button>
+      <button class="btn btn-primary" type="submit">Sign in</button>
     </form>
   </div>
 </div>
@@ -73,69 +75,69 @@
 
 <aside class="sidebar">
   <div class="brand">
-    <div class="brand-top">
-      <h1 class="brand-lockup"><a href="#today" onclick="goTab('today');return false" title="VeloReach"><svg viewBox="0 0 1040 640" aria-hidden="true"><path fill="currentColor" d="M83 0C246 47 417 91 562 157C676 209 759 258 744 314C813 257 896 239 954 301L1034 324L944 359C837 473 731 548 563 524C506 516 464 513 427 519L0 631L407 406L224 213L555 300L420 428L663 315L630 281C407 229 264 237 83 0Z"/></svg><span>veloreach</span></a></h1>
-      <button class="oled-toggle" onclick="toggleOledTheme()" title="Toggle OLED Dark Theme" aria-label="Toggle OLED Dark Theme"><svg class="icon oled-icon-moon" aria-hidden="true"><use href="#i-moon"/></svg><svg class="icon oled-icon-sun" aria-hidden="true"><use href="#i-sun"/></svg></button>
-    </div>
+    <h1 class="brand-lockup"><a href="#today" onclick="goTab('today');return false" title="VeloReach" aria-label="VeloReach Home"><svg viewBox="0 0 1040 640" aria-hidden="true"><path fill="currentColor" d="M83 0C246 47 417 91 562 157C676 209 759 258 744 314C813 257 896 239 954 301L1034 324L944 359C837 473 731 548 563 524C506 516 464 513 427 519L0 631L407 406L224 213L555 300L420 428L663 315L630 281C407 229 264 237 83 0Z"/></svg><span class="brand-name">veloreach</span></a></h1>
+    <button type="button" class="rail-toggle" id="sidebar-rail-btn" onclick="toggleSidebarRail()" title="Collapse sidebar ([)" aria-label="Collapse sidebar" aria-expanded="true"><svg class="icon" aria-hidden="true"><use href="#i-panel"/></svg></button>
   </div>
 
   <nav aria-label="Sections">
     <div class="nav-group" data-nav-group="outreach">
       <button type="button" class="nav-group-toggle" aria-expanded="true" onclick="toggleNavGroup(this)"><span>Outreach</span><svg class="icon nav-chev" aria-hidden="true"><use href="#i-chevron"/></svg></button>
       <div class="nav-items">
-        <button class="active" data-tab="today" onclick="showTab('today', this)"><svg class="icon" aria-hidden="true"><use href="#i-today"/></svg><span class="label">Today</span><span class="nav-count" id="nav-today"></span></button>
-        <button data-tab="outbox" onclick="showTab('outbox', this)"><svg class="icon" aria-hidden="true"><use href="#i-outbox"/></svg><span class="label">Outbox</span><span class="nav-count" id="nav-outbox"></span></button>
-        <button data-tab="conversations" onclick="showTab('conversations', this)"><svg class="icon" aria-hidden="true"><use href="#i-conversations"/></svg><span class="label">Conversations</span><span class="nav-count" id="nav-conversations"></span></button>
-        <button data-tab="campaigns" onclick="showTab('campaigns', this)"><svg class="icon" aria-hidden="true"><use href="#i-campaigns"/></svg><span class="label">Campaigns</span></button>
+        <button type="button" class="active" data-tab="today" title="Today" onclick="showTab('today', this)"><svg class="icon" aria-hidden="true"><use href="#i-today"/></svg><span class="label">Today</span><span class="nav-count" id="nav-today"></span></button>
+        <button type="button" data-tab="outbox" title="Outbox" onclick="showTab('outbox', this)"><svg class="icon" aria-hidden="true"><use href="#i-outbox"/></svg><span class="label">Outbox</span><span class="nav-count" id="nav-outbox"></span></button>
+        <button type="button" data-tab="conversations" title="Conversations" onclick="showTab('conversations', this)"><svg class="icon" aria-hidden="true"><use href="#i-conversations"/></svg><span class="label">Conversations</span><span class="nav-count" id="nav-conversations"></span></button>
+        <button type="button" data-tab="campaigns" title="Campaigns" onclick="showTab('campaigns', this)"><svg class="icon" aria-hidden="true"><use href="#i-campaigns"/></svg><span class="label">Campaigns</span></button>
       </div>
     </div>
     <div class="nav-group" data-nav-group="prospecting">
       <button type="button" class="nav-group-toggle" aria-expanded="true" onclick="toggleNavGroup(this)"><span>Prospecting &amp; CRM</span><svg class="icon nav-chev" aria-hidden="true"><use href="#i-chevron"/></svg></button>
       <div class="nav-items">
-        <button data-tab="discover" onclick="showTab('discover', this)"><svg class="icon" aria-hidden="true"><use href="#i-discover"/></svg><span class="label">Discover</span></button>
-        <button data-tab="companies" onclick="showTab('companies', this)"><svg class="icon" aria-hidden="true"><use href="#i-companies"/></svg><span class="label">Companies</span></button>
-        <button data-tab="prospects" onclick="showTab('prospects', this)"><svg class="icon" aria-hidden="true"><use href="#i-contacts"/></svg><span class="label">Contacts</span></button>
-        <button data-tab="signals" onclick="showTab('signals', this)"><svg class="icon" aria-hidden="true"><use href="#i-signals"/></svg><span class="label">Signals</span><span class="nav-count" id="nav-signals"></span></button>
-        <button data-tab="enrichment" onclick="showTab('enrichment', this)"><svg class="icon" aria-hidden="true"><use href="#i-enrichment"/></svg><span class="label">AI Enrichment</span></button>
+        <button type="button" data-tab="discover" title="Discover" onclick="showTab('discover', this)"><svg class="icon" aria-hidden="true"><use href="#i-discover"/></svg><span class="label">Discover</span></button>
+        <button type="button" data-tab="companies" title="Companies" onclick="showTab('companies', this)"><svg class="icon" aria-hidden="true"><use href="#i-companies"/></svg><span class="label">Companies</span></button>
+        <button type="button" data-tab="prospects" title="Contacts" onclick="showTab('prospects', this)"><svg class="icon" aria-hidden="true"><use href="#i-contacts"/></svg><span class="label">Contacts</span></button>
+        <button type="button" data-tab="signals" title="Signals" onclick="showTab('signals', this)"><svg class="icon" aria-hidden="true"><use href="#i-signals"/></svg><span class="label">Signals</span><span class="nav-count" id="nav-signals"></span></button>
+        <button type="button" data-tab="enrichment" title="AI Enrichment" onclick="showTab('enrichment', this)"><svg class="icon" aria-hidden="true"><use href="#i-enrichment"/></svg><span class="label">AI Enrichment</span></button>
       </div>
     </div>
     <div class="nav-group" data-nav-group="infrastructure">
       <button type="button" class="nav-group-toggle" aria-expanded="true" onclick="toggleNavGroup(this)"><span>Infrastructure &amp; AI</span><svg class="icon nav-chev" aria-hidden="true"><use href="#i-chevron"/></svg></button>
       <div class="nav-items">
-        <button data-tab="inboxes" onclick="showTab('inboxes', this)"><svg class="icon" aria-hidden="true"><use href="#i-inboxes"/></svg><span class="label">Inboxes</span></button>
-        <button data-tab="brain" onclick="showTab('brain', this)"><svg class="icon" aria-hidden="true"><use href="#i-brain"/></svg><span class="label">AI Models</span></button>
-        <button data-tab="controls" onclick="showTab('controls', this)"><svg class="icon" aria-hidden="true"><use href="#i-controls"/></svg><span class="label">Agent Loop</span></button>
-        <button data-tab="activity" onclick="showTab('activity', this)"><svg class="icon" aria-hidden="true"><use href="#i-activity"/></svg><span class="label">Activity</span></button>
-        <button data-tab="usage" onclick="showTab('usage', this)"><svg class="icon" aria-hidden="true"><use href="#i-usage"/></svg><span class="label">Cost &amp; Usage</span></button>
+        <button type="button" data-tab="inboxes" title="Inboxes" onclick="showTab('inboxes', this)"><svg class="icon" aria-hidden="true"><use href="#i-inboxes"/></svg><span class="label">Inboxes</span></button>
+        <button type="button" data-tab="brain" title="AI Models" onclick="showTab('brain', this)"><svg class="icon" aria-hidden="true"><use href="#i-brain"/></svg><span class="label">AI Models</span></button>
+        <button type="button" data-tab="controls" title="Agent Loop" onclick="showTab('controls', this)"><svg class="icon" aria-hidden="true"><use href="#i-controls"/></svg><span class="label">Agent Loop</span></button>
+        <button type="button" data-tab="activity" title="Activity" onclick="showTab('activity', this)"><svg class="icon" aria-hidden="true"><use href="#i-activity"/></svg><span class="label">Activity</span></button>
+        <button type="button" data-tab="usage" title="Cost &amp; Usage" onclick="showTab('usage', this)"><svg class="icon" aria-hidden="true"><use href="#i-usage"/></svg><span class="label">Cost &amp; Usage</span></button>
       </div>
     </div>
     <div class="nav-group" data-nav-group="workspace">
       <button type="button" class="nav-group-toggle" aria-expanded="true" onclick="toggleNavGroup(this)"><span>Workspace</span><svg class="icon nav-chev" aria-hidden="true"><use href="#i-chevron"/></svg></button>
       <div class="nav-items">
-        <button data-tab="company" onclick="showTab('company', this)"><svg class="icon" aria-hidden="true"><use href="#i-company"/></svg><span class="label">Your company</span><span class="nav-count" id="nav-company"></span></button>
-        <button data-tab="settings" onclick="showTab('settings', this)"><svg class="icon" aria-hidden="true"><use href="#i-settings"/></svg><span class="label">Settings</span></button>
-        <button data-tab="help" onclick="showTab('help', this)"><svg class="icon" aria-hidden="true"><use href="#i-help"/></svg><span class="label">Help</span></button>
+        <button type="button" data-tab="company" title="Your company" onclick="showTab('company', this)"><svg class="icon" aria-hidden="true"><use href="#i-company"/></svg><span class="label">Your company</span><span class="nav-count" id="nav-company"></span></button>
+        <button type="button" data-tab="settings" title="Settings" onclick="showTab('settings', this)"><svg class="icon" aria-hidden="true"><use href="#i-settings"/></svg><span class="label">Settings</span></button>
+        <button type="button" data-tab="help" title="Help" onclick="showTab('help', this)"><svg class="icon" aria-hidden="true"><use href="#i-help"/></svg><span class="label">Help</span></button>
       </div>
     </div>
   </nav>
 
   <div class="sidebar-foot">
-    <div class="ascii-telemetry" id="ascii-telemetry" aria-live="polite">
-      <div class="ascii-row"><span class="ascii-spinner" id="ascii-spinner"></span><span id="ascii-state">Pipeline ready</span></div>
-      <div class="ascii-bars" id="ascii-bars">Workspace synced</div>
-    </div>
-    <div class="sellbird-status" id="header-status">
-      <span class="status-dot stopped" id="header-dot"></span>
-      <span id="header-status-text">Checking…</span>
+    <div class="foot-meta">
+      <div class="sellbird-status" id="header-status">
+        <span class="status-dot stopped" id="header-dot"></span>
+        <span id="header-status-text">Checking…</span>
+      </div>
+      <div class="ascii-telemetry" id="ascii-telemetry" aria-live="polite">
+        <div class="ascii-row"><span class="ascii-spinner" id="ascii-spinner"></span><span id="ascii-state">Pipeline ready</span></div>
+        <div class="ascii-bars" id="ascii-bars">Workspace synced</div>
+      </div>
     </div>
     <div class="foot-actions">
       <div class="theme-switch" role="group" aria-label="Appearance">
-        <button data-theme-opt="auto" onclick="setTheme('auto')" title="Match your computer" aria-label="Match your computer"><svg class="icon" aria-hidden="true"><use href="#i-monitor"/></svg></button>
-        <button data-theme-opt="light" onclick="setTheme('light')" title="Light" aria-label="Light"><svg class="icon" aria-hidden="true"><use href="#i-sun"/></svg></button>
-        <button data-theme-opt="dark" onclick="setTheme('dark')" title="Dark" aria-label="Dark"><svg class="icon" aria-hidden="true"><use href="#i-moon"/></svg></button>
+        <button type="button" data-theme-opt="auto" onclick="setTheme('auto')" title="Match your computer" aria-label="Match your computer"><svg class="icon" aria-hidden="true"><use href="#i-monitor"/></svg></button>
+        <button type="button" data-theme-opt="light" onclick="setTheme('light')" title="Light" aria-label="Light"><svg id="oled-icon-sun" class="icon" aria-hidden="true"><use href="#i-sun"/></svg></button>
+        <button type="button" data-theme-opt="dark" onclick="setTheme('dark')" title="Dark" aria-label="Dark"><svg id="oled-icon-moon" class="icon" aria-hidden="true"><use href="#i-moon"/></svg></button>
       </div>
-      <button class="refresh-btn" onclick="loadCurrentTab()" title="Refresh this page">
-        <svg class="icon" style="width:13px;height:13px"><use href="#i-refresh"/></svg>Refresh</button>
+      <button type="button" class="refresh-btn" onclick="loadCurrentTab()" title="Refresh this page">
+        <svg class="icon" style="width:13px;height:13px" aria-hidden="true"><use href="#i-refresh"/></svg><span class="refresh-label">Refresh</span></button>
     </div>
   </div>
 </aside>
@@ -440,7 +442,7 @@
   <div class="section-head">
     <div>
       <h2>Outbox</h2>
-      <p>Review personalized drafts, preview rendered HTML, and approve or queue sends &mdash;
+      <p>Review personalized drafts, preview rendered HTML, and approve or queue sends:
          <kbd>A</kbd> approve, <kbd>R</kbd> reject, <kbd>E</kbd> edit, <kbd>J</kbd>/<kbd>K</kbd> move.</p>
     </div>
     <div class="page-actions" id="outbox-actions"></div>
@@ -1457,7 +1459,7 @@
       <summary>Resend SMTP &amp; Live Email Testing</summary>
       <div class="faq-body">
         <p>Open <b>Today &rarr; Quick Setup</b> or <b>Settings &rarr; Email &amp; Sending</b> and apply the Resend SMTP preset (<code>smtp.resend.com</code>, port <code>587</code>, user <code>resend</code>, password <code>re_...</code>).</p>
-        <p>For sandbox testing without DNS verification, use <code>onboarding@resend.dev</code> as the From address and test delivery with <code>delivered@resend.dev</code>, <code>bounced@resend.dev</code>, or <code>complained@resend.dev</code> in the Test Lab. Remember Resend is outbound SMTP only &mdash; connect Gmail or Microsoft 365 OAuth for full two-way reply sync.</p>
+        <p>For sandbox testing without DNS verification, use <code>onboarding@resend.dev</code> as the From address and test delivery with <code>delivered@resend.dev</code>, <code>bounced@resend.dev</code>, or <code>complained@resend.dev</code> in the Test Lab. Resend is outbound SMTP only: connect Gmail or Microsoft 365 OAuth for full two-way reply sync.</p>
       </div>
     </details>
 
@@ -1518,6 +1520,6 @@
 <div id="toast-stack" class="toast-stack" aria-live="polite" aria-atomic="false"></div>
 <div id="ui-tooltip" class="ui-tooltip" role="tooltip" aria-hidden="true"></div>
 
-<script src="/static/app.js?v=20261128h"></script>
+<script src="/static/app.js?v=20261128j"></script>
 </body>
 </html>
