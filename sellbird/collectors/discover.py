@@ -1829,14 +1829,36 @@ class OsmPlacesProvider(DiscoveryProvider):
         q = query.keyword() or query.term or query.location
         limit = max(1, min(query.limit or 20, 50))
         out: list[Business] = []
-        seen_keys: set[str] = set()
+        by_key: dict[str, Business] = {}
 
         def _append_biz(b: Business) -> None:
-            dedupe = b.domain or b.external_id or b.name.lower()
-            if not b.name or dedupe in seen_keys:
+            if not b.name:
                 return
-            seen_keys.add(dedupe)
+            keys = [k for k in (b.domain, b.external_id) if k] or [b.name.lower()]
+            existing = next((by_key[k] for k in keys if k in by_key), None)
+            if existing is not None:
+                if b.domain and not existing.domain:
+                    existing.domain = b.domain
+                if b.website and not existing.website:
+                    existing.website = b.website
+                    existing.has_website = True
+                if b.phone and not existing.phone:
+                    existing.phone = b.phone
+                if b.address and not existing.address:
+                    existing.address = b.address
+                if b.location and not existing.location:
+                    existing.location = b.location
+                if b.category and not existing.category:
+                    existing.category = b.category
+                if b.external_id and not existing.external_id:
+                    existing.external_id = b.external_id
+                for k in (existing.domain, existing.external_id):
+                    if k:
+                        by_key[k] = existing
+                return
             out.append(b)
+            for k in keys:
+                by_key[k] = b
 
         # 1. Primary fast geo-search: Photon (Komoot)
         try:
@@ -2021,8 +2043,117 @@ class YcDirectoryProvider(DiscoveryProvider):
         return out
 
 
+class FreeMultiSourceProvider(DiscoveryProvider):
+    """Combines Overpass maps, OSM Places, and DuckDuckGo web search for $0."""
+
+    key = "free_auto"
+    label = "Smart Free Discovery (Maps + Web)"
+    kind = "serp"
+    needs_coordinates = True
+    rank_codes = ()
+    blurb = ("Combines OpenStreetMap Overpass, OSM Live Places, and DuckDuckGo web search "
+             "at $0 so local trades, contractors, and B2B companies come back with live websites.")
+    cost_note = "free ($0 keyless multi-source)"
+    free_tier = "unlimited keyless searches across Overpass, Photon/Nominatim & DuckDuckGo"
+    signup_url = "https://www.openstreetmap.org"
+    env_keys = ()
+    caveat = ("Uses free public Overpass, Nominatim, and DuckDuckGo endpoints — volume may "
+              "pace or throttle under rapid bursts.")
+
+    def estimate(self, queries: list[DiscoveryQuery]) -> float:
+        return 0.0
+
+    async def fetch(self, client: httpx.AsyncClient, env: dict,
+                    query: DiscoveryQuery) -> list[Business]:
+        limit = max(1, min(query.limit or 50, 100))
+        merged: list[Business] = []
+        by_key: dict[str, Business] = {}
+
+        def _merge(items: list[Business]) -> None:
+            for b in items:
+                if not b.name and not b.domain:
+                    continue
+                if is_junk(b.domain, b.raw_title or b.name):
+                    continue
+                keys = [k for k in (b.domain, b.external_id) if k] or [b.name.lower()]
+                existing = next((by_key[k] for k in keys if k in by_key), None)
+                if existing is not None:
+                    if b.domain and not existing.domain:
+                        existing.domain = b.domain
+                    if b.website and not existing.website:
+                        existing.website = b.website
+                        existing.has_website = True
+                    if b.phone and not existing.phone:
+                        existing.phone = b.phone
+                    if b.address and not existing.address:
+                        existing.address = b.address
+                    if b.location and not existing.location:
+                        existing.location = b.location
+                    if b.category and not existing.category:
+                        existing.category = b.category
+                    for k in (existing.domain, existing.external_id):
+                        if k:
+                            by_key[k] = existing
+                    continue
+                merged.append(b)
+                for k in keys:
+                    by_key[k] = b
+
+        # Presets (yc, accelerator, funding, hiring) use web search (+ yc-oss when preset=='yc')
+        if query.preset:
+            if query.preset == "yc":
+                try:
+                    _merge(await YcDirectoryProvider().fetch(client, env, query))
+                except Exception as exc:
+                    logger.debug("free_auto yc_oss failed: %s", exc)
+            try:
+                _merge(await DuckDuckGoSearch().fetch(client, env, query))
+            except Exception as exc:
+                logger.debug("free_auto ddgs preset failed: %s", exc)
+            return merged[:limit]
+
+        async def _run_osm():
+            osm = OpenStreetMap()
+            if query.coordinate and osm._tags(query.term):
+                return await asyncio.wait_for(osm.fetch(client, env, query), timeout=20.0)
+            return []
+
+        async def _run_places():
+            return await asyncio.wait_for(OsmPlacesProvider().fetch(client, env, query), timeout=15.0)
+
+        async def _run_ddg(q: DiscoveryQuery):
+            return await asyncio.wait_for(DuckDuckGoSearch().fetch(client, env, q), timeout=15.0)
+
+        r_osm, r_places, r_ddg = await asyncio.gather(
+            _run_osm(),
+            _run_places(),
+            _run_ddg(query),
+            return_exceptions=True,
+        )
+        for label, res in (("osm", r_osm), ("osm_places", r_places), ("ddgs", r_ddg)):
+            if isinstance(res, Exception):
+                logger.debug("free_auto %s failed for %r: %s", label, query.keyword(), res)
+            elif res:
+                _merge(res)
+
+        with_domains = sum(1 for b in merged if b.domain)
+        if with_domains < min(limit, 15) and query.term and query.location:
+            alt = replace(query, term=f"{query.term} services", depth=min(query.depth or 30, 25))
+            try:
+                _merge(await _run_ddg(alt))
+            except Exception as exc:
+                logger.debug("free_auto ddgs secondary failed for %r: %s", alt.keyword(), exc)
+
+        # Put domain-bearing businesses ahead of domainless map pins
+        merged.sort(key=lambda b: (0 if b.domain else 1))
+        for b in merged:
+            b.provider = self.key
+        return merged[:limit]
+
+
 PROVIDERS: dict[str, DiscoveryProvider] = {
     p.key: p for p in (
+        FreeMultiSourceProvider(),
         OpenStreetMap(),
         OsmPlacesProvider(),
         YcDirectoryProvider(),
@@ -2040,7 +2171,7 @@ PROVIDERS: dict[str, DiscoveryProvider] = {
     )
 }
 
-DEFAULT_PROVIDER = "osm"
+DEFAULT_PROVIDER = "free_auto"
 
 
 NO_SEARCH_RESULTS = 40102
@@ -2520,6 +2651,15 @@ async def _upsert(state, biz: Business, query: DiscoveryQuery) -> tuple[str, boo
         if existing is None and external:
             existing = await state.get_company_by_external_id(external)
     if existing:
+        fill_fn = getattr(state, "fill_company_fields", None)
+        if callable(fill_fn):
+            await fill_fn(
+                existing.id,
+                domain=biz.domain,
+                website=biz.website,
+                phone=biz.phone,
+                location=biz.location or query.location,
+            )
         return existing.id, False
 
     company = Company(

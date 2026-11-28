@@ -33,6 +33,8 @@ class PipelineReport:
     profiled_companies: int = 0
     profile_observations: int = 0
     profile_run_id: str = ""
+    contacts_added: int = 0
+    companies_with_contacts: int = 0
     skipped: str = ""
     errors: list[str] = field(default_factory=list)
 
@@ -42,6 +44,8 @@ class PipelineReport:
             "profiled_companies": self.profiled_companies,
             "profile_observations": self.profile_observations,
             "profile_run_id": self.profile_run_id,
+            "contacts_added": self.contacts_added,
+            "companies_with_contacts": self.companies_with_contacts,
             "skipped": self.skipped,
             "errors": self.errors,
         }
@@ -53,7 +57,99 @@ class PipelineReport:
         if self.profiled_companies:
             parts.append(f"{self.profiled_companies} profiled "
                          f"({self.profile_observations} observations)")
+        if self.contacts_added:
+            parts.append(f"{self.contacts_added} contacts extracted")
         return ", ".join(parts) or "nothing to do"
+
+
+async def run_contact_extraction_stage(
+    state,
+    config,
+    *,
+    limit: int = 25,
+    newest_first: bool = True,
+    concurrency: int = 3,
+    timeout_per_company: float = 18.0,
+    progress_cb=None,
+) -> tuple[int, int]:
+    """Extract decision-maker contacts & published inbox emails for uncontacted companies.
+
+    Runs strictly on companies that already have a website/domain in the DB,
+    using Scout's $0 team/about/contact page scraper and email verifier.
+    Returns (contacts_added, companies_with_contacts).
+    """
+    import asyncio
+    from sellbird.agents.scout import MAX_PROSPECTS_PER_CYCLE, Scout
+    from sellbird.config import load_env
+
+    try:
+        companies = await state.companies_needing_prospects(
+            limit=limit, stale_days=14, newest_first=newest_first,
+        )
+    except TypeError:
+        companies = await state.companies_needing_prospects(limit=limit, stale_days=14)
+    if not companies:
+        return 0, 0
+
+    scout = Scout(None, state, config, load_env())
+    scout._failed_search_engines = set()
+    default_industry = config.icp.industries[0] if getattr(config, "icp", None) and config.icp.industries else ""
+    total = len(companies)
+    contacts_added = 0
+    companies_with_contacts = 0
+    done = 0
+    sem = asyncio.Semaphore(max(1, int(concurrency)))
+
+    async def _extract_one(company: dict) -> None:
+        nonlocal contacts_added, companies_with_contacts, done
+        async with sem:
+            if contacts_added >= MAX_PROSPECTS_PER_CYCLE or await state.get_setting("discovery_paused"):
+                return
+            domain = (company.get("domain") or "").strip()
+            if not domain:
+                done += 1
+                return
+            if await scout._skip_listed_company(company, domain):
+                done += 1
+                return
+            try:
+                contacts = await asyncio.wait_for(
+                    scout._contacts_from_company(
+                        company_id=company["id"],
+                        domain=domain,
+                        company_name=company.get("name") or scout._domain_to_name(domain),
+                        industry=company.get("industry") or default_industry,
+                        source="discover_website_extract",
+                    ),
+                    timeout=timeout_per_company,
+                )
+            except Exception as exc:
+                logger.debug("contact extraction failed/timed out for %s: %s", domain, exc)
+                contacts = []
+            try:
+                await state.mark_prospects_checked(company["id"])
+            except Exception as exc:
+                logger.debug("mark_prospects_checked failed for %s: %s", domain, exc)
+
+            if contacts and contacts_added < MAX_PROSPECTS_PER_CYCLE:
+                added_here = 0
+                for prospect in contacts:
+                    if contacts_added >= MAX_PROSPECTS_PER_CYCLE:
+                        break
+                    await state.add_prospect(prospect)
+                    contacts_added += 1
+                    added_here += 1
+                if added_here:
+                    companies_with_contacts += 1
+            done += 1
+            if progress_cb is not None:
+                try:
+                    progress_cb(done, total, contacts_added)
+                except Exception:
+                    pass
+
+    await asyncio.gather(*(_extract_one(c) for c in companies), return_exceptions=True)
+    return contacts_added, companies_with_contacts
 
 
 async def run_profile_stage(
@@ -61,6 +157,10 @@ async def run_profile_stage(
     limit: int = 100,
     stale_days: int = PROFILE_STALE_DAYS,
     config=None,
+    *,
+    newest_first: bool = False,
+    concurrency: int = 1,
+    progress_cb=None,
 ) -> tuple[int, int, str]:
     """Profile whatever currently needs it.
 
@@ -71,13 +171,22 @@ async def run_profile_stage(
     """
     from sellbird.collectors.profile import profile_companies
 
-    pending = await state.companies_needing_profile(limit=limit,
-                                                    stale_days=stale_days)
+    try:
+        pending = await state.companies_needing_profile(
+            limit=limit, stale_days=stale_days, newest_first=newest_first,
+        )
+    except TypeError:
+        pending = await state.companies_needing_profile(limit=limit, stale_days=stale_days)
     if not pending:
         return 0, 0, ""
 
     logger.info("profile: %d companies need a look", len(pending))
-    observations, run_id = await profile_companies(state, pending, config=config)
+    if concurrency > 1 or progress_cb is not None:
+        observations, run_id = await profile_companies(
+            state, pending, config=config, progress_cb=progress_cb, concurrency=concurrency,
+        )
+    else:
+        observations, run_id = await profile_companies(state, pending, config=config)
     return len(pending), observations, run_id
 
 

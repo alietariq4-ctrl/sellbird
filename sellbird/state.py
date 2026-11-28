@@ -2466,7 +2466,7 @@ class StateManager:
                 await db.rollback()
 
     async def companies_needing_profile(
-        self, limit: int = 100, stale_days: int = 90
+        self, limit: int = 100, stale_days: int = 90, *, newest_first: bool = False
     ) -> list[dict]:
         """Companies a profile run should visit next.
 
@@ -2481,6 +2481,11 @@ class StateManager:
         Businesses with no domain are excluded — there is no site to read.
         They are not a failure, they are the NO_WEBSITE cohort.
         """
+        order = (
+            f"({_LAST_PROFILED} IS NOT NULL), c.updated_at DESC, c.created_at DESC"
+            if newest_first
+            else f"{_LAST_PROFILED} IS NOT NULL, {_LAST_PROFILED}"
+        )
         async with self._connect() as db:
             db.row_factory = aiosqlite.Row
             async with db.execute(
@@ -2490,7 +2495,7 @@ class StateManager:
                    WHERE c.domain != ''
                      AND ({_LAST_PROFILED} IS NULL
                           OR {_LAST_PROFILED} < datetime('now', ?))
-                   ORDER BY {_LAST_PROFILED} IS NOT NULL, {_LAST_PROFILED}
+                   ORDER BY {order}
                    LIMIT ?""",
                 (f"-{int(stale_days)} days", int(limit)),
             ) as cursor:
@@ -2534,8 +2539,57 @@ class StateManager:
             )
             await db.commit()
 
+    async def fill_company_fields(
+        self,
+        company_id: str,
+        *,
+        domain: str = "",
+        website: str = "",
+        phone: str = "",
+        location: str = "",
+    ) -> bool:
+        """Populate empty metadata fields on an existing company without overwriting present values."""
+        if not company_id:
+            return False
+        norm_dom = _norm(domain)
+        async with self._connect() as db:
+            db.row_factory = aiosqlite.Row
+            async with db.execute(
+                "SELECT domain, website, phone, location FROM companies WHERE id = ?",
+                (company_id,),
+            ) as cursor:
+                row = await cursor.fetchone()
+            if not row:
+                return False
+            updates: dict[str, str] = {}
+            if norm_dom and not (row["domain"] or "").strip():
+                async with db.execute(
+                    "SELECT id FROM companies WHERE domain = ? AND id != ?",
+                    (norm_dom, company_id),
+                ) as dcur:
+                    if not await dcur.fetchone():
+                        updates["domain"] = norm_dom
+            if website and not (row["website"] or "").strip():
+                updates["website"] = website.strip()
+            if phone and not (row["phone"] or "").strip():
+                updates["phone"] = phone.strip()
+            if location and not (row["location"] or "").strip():
+                updates["location"] = location.strip()
+            if not updates:
+                return False
+            set_clause = ", ".join(f"{col} = ?" for col in updates)
+            try:
+                await db.execute(
+                    f"UPDATE companies SET {set_clause}, updated_at = CURRENT_TIMESTAMP WHERE id = ?",
+                    (*updates.values(), company_id),
+                )
+                await db.commit()
+                return True
+            except sqlite3.IntegrityError:
+                return False
+
     async def companies_needing_prospects(
-        self, limit: int = 10, stale_days: int = 14
+        self, limit: int = 10, stale_days: int = 14, *, newest_first: bool = False
     ) -> list[dict]:
         """Companies with a domain, zero prospects, and no recent check.
 
@@ -2550,10 +2604,15 @@ class StateManager:
         cycle — a company a team page didn't exist for last time is worth
         another look after ``stale_days``, not a permanent skip.
         """
+        order = (
+            "c.prospects_checked_at IS NOT NULL, c.updated_at DESC, c.created_at DESC"
+            if newest_first
+            else "c.prospects_checked_at IS NOT NULL, c.prospects_checked_at"
+        )
         async with self._connect() as db:
             db.row_factory = aiosqlite.Row
             async with db.execute(
-                """SELECT c.id, c.name, c.domain, c.industry
+                f"""SELECT c.id, c.name, c.domain, c.industry
                    FROM companies c
                    LEFT JOIN prospects p ON p.company_id = c.id
                    WHERE c.domain != ''
@@ -2561,7 +2620,7 @@ class StateManager:
                           OR c.prospects_checked_at < datetime('now', ?))
                    GROUP BY c.id
                    HAVING COUNT(p.id) = 0
-                   ORDER BY c.prospects_checked_at IS NOT NULL, c.prospects_checked_at
+                   ORDER BY {order}
                    LIMIT ?""",
                 (f"-{int(stale_days)} days", int(limit)),
             ) as cursor:

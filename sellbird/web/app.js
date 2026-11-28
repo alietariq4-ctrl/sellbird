@@ -492,6 +492,7 @@ function toggleNavGroup(btn) {
 })();
 
 function showTab(id, btn, skipLoad) {
+  currentTab = id;
   const apply = () => {
     currentTab = id;
     if (id === 'companies') companyDrill = false;
@@ -513,13 +514,22 @@ function showTab(id, btn, skipLoad) {
     syncTopbar(id);
     if (!skipLoad && typeof window.scrollTo === 'function') window.scrollTo(0, 0);
   };
+  const finishLoad = () => { if (!skipLoad) loadCurrentTab(); };
   const reduced = window.matchMedia && window.matchMedia('(prefers-reduced-motion: reduce)').matches;
   if (!skipLoad && typeof document.startViewTransition === 'function' && !reduced) {
-    try { document.startViewTransition(apply); } catch { apply(); }
+    try {
+      const vt = document.startViewTransition(apply);
+      if (vt && vt.updateCallbackDone && typeof vt.updateCallbackDone.then === 'function') {
+        vt.updateCallbackDone.then(finishLoad, finishLoad);
+      } else {
+        finishLoad();
+      }
+      return;
+    } catch { apply(); }
   } else {
     apply();
   }
-  if (!skipLoad) loadCurrentTab();
+  finishLoad();
 }
 
 function goToTab(id) { showTab(id, null); }
@@ -1496,7 +1506,7 @@ async function loadDiscoverProviders() {
   document.getElementById('disc-stop').style.display = running && data.running_kind !== 'profile' ? '' : 'none';
   renderProfileCard(data.unprofiled || 0, running);
   if (running && !_discoverPoll) {
-    _discoverPoll = setInterval(loadDiscoverProviders, 4000);
+    _discoverPoll = setInterval(loadDiscoverProviders, 2000);
   } else if (!running && _discoverPoll) {
     clearInterval(_discoverPoll);
     _discoverPoll = null;
@@ -1506,9 +1516,16 @@ async function loadDiscoverProviders() {
       btn.disabled = false;
       btn.textContent = 'Find New Leads';
     }
-    showToast(data.running_kind === 'profile' ? 'Finished reading websites.' : 'Discovery finished.', 'success');
+    const rep = data.last_report || {};
+    showToast(
+      data.running_kind === 'profile'
+        ? 'Finished reading websites.'
+        : ('Discovery finished — ' + (rep.new_companies || 0) + ' new companies, ' + (rep.contacts_added || 0) + ' contacts added.'),
+      'success'
+    );
+    if (typeof loadToday === 'function') loadToday().catch(() => {});
   }
-  renderDiscoverResult(data.last_report, running);
+  renderDiscoverResult(data.last_report, running, data.progress);
 }
 
 function pickProvider(key) {
@@ -1655,12 +1672,19 @@ async function runProfile(btn) {
   loadDiscoverProviders();
 }
 
-function renderDiscoverResult(report, running) {
+function renderDiscoverResult(report, running, progress) {
   const el = document.getElementById('discover-result');
   if (running) {
-    el.innerHTML = '<div class="card"><h2>Running…</h2>' +
-      '<p class="muted" style="font-size:13px">VeloReach is working through the ' +
-      'queries. Results land in Companies, and the run log is on Today.</p></div>';
+    const p = progress || {};
+    const stepText = p.step ? ('Step ' + p.step + '/' + (p.total_steps || 3) + ' · ') : '';
+    const msg = p.message || 'VeloReach is working through discovery, website research, and contact extraction…';
+    const meta = (p.companies_found || p.profiled || p.contacts_added)
+      ? '<div class="muted" style="font-size:12.5px;margin-top:8px">Companies: <b>' + (p.companies_found || 0) +
+        '</b> · Websites read: <b>' + (p.profiled || 0) +
+        '</b> · Contacts extracted: <b>' + (p.contacts_added || 0) + '</b></div>'
+      : '';
+    el.innerHTML = '<div class="card"><h2>' + escHtml(stepText + 'Running deep lead research…') + '</h2>' +
+      '<p class="muted" style="font-size:13px">' + escHtml(msg) + '</p>' + meta + '</div>';
     return;
   }
   if (!report) { el.innerHTML = ''; return; }
@@ -1678,13 +1702,20 @@ function renderDiscoverResult(report, running) {
       (report.stopped ? '<div class="test-result error" style="margin-top:14px">Stopped early: ' + escHtml(report.stopped) + '</div>' : '');
     return;
   }
-  el.innerHTML = '<div class="subhead">Last run</div>' +
+  el.innerHTML = '<div class="subhead" style="display:flex;align-items:center;justify-content:space-between;gap:10px;flex-wrap:wrap">' +
+      '<span>Last run</span>' +
+      '<span class="btn-group">' +
+        '<button type="button" class="btn btn-secondary btn-sm" onclick="goTab(\'companies\')">View Companies</button>' +
+        '<button type="button" class="btn btn-secondary btn-sm" onclick="goTab(\'prospects\')">View Contacts</button>' +
+      '</span>' +
+    '</div>' +
     '<div class="stats-grid">' +
       stat('New companies', report.new_companies || 0, 'accent') +
       stat('Already known', report.known_companies || 0) +
-      stat('Observations', report.observations || 0) +
+      stat('Websites read', report.profiled_companies || 0) +
+      stat('Contacts added', report.contacts_added || 0, (report.contacts_added || 0) ? 'good' : '') +
+      stat('Observations', (report.observations || 0) + (report.profile_observations || 0)) +
       stat('Filtered as junk', report.junk || 0) +
-      (report.profiled_companies ? stat('Websites read', report.profiled_companies) : '') +
       stat('Actual cost', report.actual_cost ? '$' + report.actual_cost.toFixed(4) : 'free') +
     '</div>' +
     (report.stopped ? '<div class="test-result error" style="margin-top:14px">' +

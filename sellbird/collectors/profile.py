@@ -1383,36 +1383,78 @@ class ProfileCollector:
         except Exception as e:
             logger.debug(f"mark_company_profiled failed for {company_id}: {e}")
 
-    async def run(self, companies: list[dict], run_id: str = "") -> int:
+    async def run(
+        self,
+        companies: list[dict],
+        run_id: str = "",
+        *,
+        progress_cb=None,
+        concurrency: int = 1,
+        timeout_per_company: float = 18.0,
+    ) -> int:
         """Profile many businesses, flushing observations after each one.
 
         Flush-per-item is deliberate: the observations are the asset, and a
         long run that dies must not take them with it.
         """
+        valid = [c for c in companies if (c.get("domain") or "").strip()]
+        total_companies = len(valid)
         total = 0
-        for company in companies:
+        done = 0
+
+        async def _one(company: dict) -> None:
+            nonlocal total, done
             domain = (company.get("domain") or "").strip()
-            if not domain:
-                continue
             try:
-                obs = await self.profile_company(company["id"], domain)
+                obs = await asyncio.wait_for(
+                    self.profile_company(company["id"], domain),
+                    timeout=timeout_per_company,
+                )
             except Exception as e:
                 logger.warning(f"profile failed for {domain}: {e}")
                 await self._mark_checked(company["id"])
-                continue
-            # Marked regardless of outcome — an unreachable site still counts
-            # as checked, or the same handful gets retried every cycle
-            # forever instead of rotating through the rest of the backlog.
-            await self._mark_checked(company["id"])
-            await self._improve_name(company, domain)
-            if obs:
-                total += await self.state.add_observations(obs, run_id=run_id)
-                logger.info(f"profile: {domain} → {len(obs)} observation(s)")
-            await asyncio.sleep(random.uniform(0.4, 1.2))
+                obs = []
+            else:
+                # Marked regardless of outcome — an unreachable site still counts
+                # as checked, or the same handful gets retried every cycle
+                # forever instead of rotating through the rest of the backlog.
+                await self._mark_checked(company["id"])
+                await self._improve_name(company, domain)
+                if obs:
+                    total += await self.state.add_observations(obs, run_id=run_id)
+                    logger.info(f"profile: {domain} → {len(obs)} observation(s)")
+            done += 1
+            if progress_cb is not None:
+                try:
+                    progress_cb(done, total_companies, total)
+                except Exception:
+                    pass
+
+        if concurrency <= 1:
+            for i, company in enumerate(valid):
+                await _one(company)
+                if i + 1 < len(valid):
+                    await asyncio.sleep(random.uniform(0.2, 0.6))
+            return total
+
+        sem = asyncio.Semaphore(max(1, int(concurrency)))
+
+        async def _bounded(company: dict) -> None:
+            async with sem:
+                await _one(company)
+
+        await asyncio.gather(*(_bounded(c) for c in valid), return_exceptions=True)
         return total
 
 
-async def profile_companies(state, companies: list[dict], config=None) -> tuple[int, str]:
+async def profile_companies(
+    state,
+    companies: list[dict],
+    config=None,
+    *,
+    progress_cb=None,
+    concurrency: int = 1,
+) -> tuple[int, str]:
     """Convenience entry point: opens a run, profiles, closes the run.
 
     ``config`` supplies the roles that count as hiring intent
@@ -1432,7 +1474,9 @@ async def profile_companies(state, companies: list[dict], config=None) -> tuple[
     try:
         keywords = role_keywords(getattr(config, "icp", None))
         async with ProfileCollector(state, confirmed, role_keywords=keywords) as collector:
-            n = await collector.run(companies, run_id=run_id)
+            n = await collector.run(
+                companies, run_id=run_id, progress_cb=progress_cb, concurrency=concurrency,
+            )
         await state.finish_run(run_id, records=n, cost_usd=0.0)
         return n, run_id
     except Exception as e:

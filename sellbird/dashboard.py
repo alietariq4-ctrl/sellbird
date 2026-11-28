@@ -3635,10 +3635,14 @@ def _sellbird_can_send() -> bool:
     config can't be read, the answer is yes (the safe side: no hand sends).
     """
     try:
-        from sellbird.config import load_config, load_env
+        from sellbird.config import EnvConfig, legacy_sending_held, load_env
         from sellbird.integrations.mail_provider import NATIVE_PROVIDERS, get_mail_provider
-        config, env = load_config(), load_env()
-        from sellbird.config import legacy_sending_held
+        config = _load_active_sellbird_config()
+        if Path(_env_file()).resolve() != (PROJECT_ROOT / ".env").resolve():
+            raw_env = {k.lower(): v for k, v in _read_env_file().items()}
+            env = EnvConfig(**{k: v for k, v in raw_env.items() if k in EnvConfig.model_fields})
+        else:
+            env = load_env()
         email = config.channels.email
         if not email.enabled or legacy_sending_held(config):
             return False
@@ -5320,6 +5324,7 @@ async def get_activity():
 
 _discovery_task: asyncio.Task | None = None
 _discovery_report: dict | None = None
+_discovery_progress: dict | None = None
 _discovery_kind = "discover"   # or "profile": reading sites has no stop switch
 
 
@@ -5360,6 +5365,7 @@ async def get_discovery_providers():
             "paused": await state.get_setting("discovery_paused"),
             "running": bool(_discovery_task and not _discovery_task.done()),
             "running_kind": _discovery_kind,
+            "progress": _discovery_progress if (_discovery_task and not _discovery_task.done()) else None,
             "unprofiled": await state.count_companies_needing_profile(),
             "last_report": _discovery_report,
         }
@@ -5431,25 +5437,129 @@ async def start_discovery(request: Request):
         await state.set_setting("discovery_provider", provider)
         await state.set_setting("discovery_paused", "")
 
-        global _discovery_kind
+        global _discovery_kind, _discovery_progress
         _discovery_kind = "discover"
+        _discovery_progress = {
+            "step": 1, "total_steps": 3, "phase": "discover",
+            "message": f"Searching lead directories & web sources ({PROVIDERS[provider].label})…",
+            "companies_found": 0, "profiled": 0, "contacts_added": 0,
+        }
 
         async def _go():
-            global _discovery_report
+            global _discovery_report, _discovery_progress
             try:
-                # Discovery chains straight into profiling: reading the sites
-                # is free, and it is what makes the results worth anything.
+                from sellbird.collectors.discover import run_discovery
+                from sellbird.pipeline import run_contact_extraction_stage, run_profile_stage
+
+                # Step 1: Discover companies across selected sources (without blocking Step 2 progress reporting)
                 result = await run_prospecting(state, config, provider, queries,
-                                               max_spend=max_spend)
+                                               max_spend=max_spend, profile=False)
+                disc = dict(result.discover or {})
+                errors = list(result.errors or [])
+
+                # If osm_places geocoding yielded very few companies, automatically
+                # supplement via free_auto (Overpass + DuckDuckGo) so local service
+                # searches come back with real business websites.
+                if (
+                    provider == "osm_places"
+                    and not disc.get("stopped")
+                    and (disc.get("found", 0) or 0) < 5
+                    and not await state.get_setting("discovery_paused")
+                ):
+                    _discovery_progress = {
+                        "step": 1, "total_steps": 3, "phase": "discover",
+                        "message": "Geocoder found few matches — expanding search across Overpass & DuckDuckGo…",
+                        "companies_found": (disc.get("new_companies", 0) + disc.get("known_companies", 0)),
+                        "profiled": 0, "contacts_added": 0,
+                    }
+                    supp = await run_discovery(state, config, "free_auto", queries, max_spend=max_spend)
+                    disc["found"] = (disc.get("found", 0) or 0) + supp.found
+                    disc["junk"] = (disc.get("junk", 0) or 0) + supp.junk
+                    disc["excluded"] = (disc.get("excluded", 0) or 0) + supp.excluded
+                    disc["new_companies"] = (disc.get("new_companies", 0) or 0) + supp.new_companies
+                    disc["known_companies"] = (disc.get("known_companies", 0) or 0) + supp.known_companies
+                    disc["observations"] = (disc.get("observations", 0) or 0) + supp.observations
+                    disc["queries_ran"] = (disc.get("queries_ran", 0) or 0) + supp.queries_ran
+                    disc["queries_succeeded"] = (disc.get("queries_succeeded", 0) or 0) + supp.queries_succeeded
+                    errors.extend(supp.errors)
+
+                total_co = (disc.get("new_companies", 0) or 0) + (disc.get("known_companies", 0) or 0)
+
+                # Step 2: Live HTTP website research & signal detection (newest first, bounded concurrency)
+                profiled_co = 0
+                profile_obs = 0
+                if not await state.get_setting("discovery_paused"):
+                    _discovery_progress = {
+                        "step": 2, "total_steps": 3, "phase": "profile",
+                        "message": "Reading websites & scanning tech stack / hiring signals…",
+                        "companies_found": total_co, "profiled": 0, "contacts_added": 0,
+                    }
+
+                    def _on_profile_progress(idx: int, total: int, obs_cnt: int) -> None:
+                        global _discovery_progress
+                        _discovery_progress = {
+                            "step": 2, "total_steps": 3, "phase": "profile",
+                            "message": f"Reading websites & scanning signals ({idx}/{total} sites, {obs_cnt} facts)…",
+                            "companies_found": total_co, "profiled": idx, "contacts_added": 0,
+                        }
+
+                    try:
+                        profiled_co, profile_obs, _ = await run_profile_stage(
+                            state,
+                            limit=20,
+                            config=config,
+                            newest_first=True,
+                            concurrency=4,
+                            progress_cb=_on_profile_progress,
+                        )
+                    except Exception as pexc:
+                        logger.warning("discovery profile stage failed: %s", pexc)
+                        errors.append(f"profile: {pexc}")
+
+                # Step 3: Extract decision-maker contacts & verified emails directly from company websites
+                contacts_added = 0
+                companies_with_contacts = 0
+                if not await state.get_setting("discovery_paused"):
+                    _discovery_progress = {
+                        "step": 3, "total_steps": 3, "phase": "contacts",
+                        "message": "Researching team & contact pages to extract verified emails into Contacts…",
+                        "companies_found": total_co, "profiled": profiled_co, "contacts_added": 0,
+                    }
+
+                    def _on_contact_progress(idx: int, total: int, added: int) -> None:
+                        global _discovery_progress
+                        _discovery_progress = {
+                            "step": 3, "total_steps": 3, "phase": "contacts",
+                            "message": f"Extracting contacts from websites ({idx}/{total} companies, {added} contacts found)…",
+                            "companies_found": total_co, "profiled": profiled_co, "contacts_added": added,
+                        }
+
+                    try:
+                        contacts_added, companies_with_contacts = await run_contact_extraction_stage(
+                            state,
+                            config,
+                            limit=20,
+                            newest_first=True,
+                            concurrency=3,
+                            progress_cb=_on_contact_progress,
+                        )
+                    except Exception as cexc:
+                        logger.warning("discovery contact extraction failed: %s", cexc)
+                        errors.append(f"contacts: {cexc}")
+
                 _discovery_report = {
-                    **(result.discover or {}),
-                    "profiled_companies": result.profiled_companies,
-                    "profile_observations": result.profile_observations,
-                    "errors": result.errors,
+                    **disc,
+                    "profiled_companies": profiled_co,
+                    "profile_observations": profile_obs,
+                    "contacts_added": contacts_added,
+                    "companies_with_contacts": companies_with_contacts,
+                    "errors": errors,
                 }
             except Exception as exc:
                 logger.exception("discovery run failed")
                 _discovery_report = {"errors": [str(exc)], "stopped": "failed"}
+            finally:
+                _discovery_progress = None
 
         _discovery_report = None
         _discovery_task = asyncio.create_task(_go())
