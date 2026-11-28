@@ -38,7 +38,7 @@
   --r-md: 9px;   /* nested panels, step cards */
   --r-lg: 12px;  /* top-level cards, modals */
 
-  --sidebar-w: 236px;
+  --sidebar-w: 248px;
   --content-w: 1280px;
 
   --ease-out: cubic-bezier(0.23, 1, 0.32, 1);
@@ -247,8 +247,8 @@ svg.icon { width: 16px; height: 16px; flex: none; stroke: currentColor; fill: no
 
 .sidebar {
   position: sticky; top: 0; height: 100dvh;
-  display: flex; flex-direction: column; gap: 8px;
-  padding: 12px 12px 10px;
+  display: flex; flex-direction: column; gap: 14px;
+  padding: 16px 14px 12px;
   border-right: 1px solid var(--line);
   background: var(--glass-rail);
   overflow-y: auto; overscroll-behavior: contain;
@@ -263,37 +263,39 @@ svg.icon { width: 16px; height: 16px; flex: none; stroke: currentColor; fill: no
 }
 .ascii-row { display: none; }
 .ascii-spinner { display: none; }
-.ascii-bars { color: var(--text-3); font-size: var(--fs-caption); line-height: 1.35; white-space: normal; font-variant-numeric: tabular-nums; }
+.ascii-bars { color: var(--text-3); font-size: 11.5px; line-height: 1.35; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; font-variant-numeric: tabular-nums; }
 @media (max-width: 1000px) { .ascii-telemetry { display: none; } }
-.brand { display: flex; flex-direction: column; gap: 2px; padding: 2px 8px 4px; }
+.brand { display: flex; flex-direction: column; gap: 2px; padding: 2px 10px 6px; }
 .brand h1 { font-size: 17px; font-weight: 650; letter-spacing: -0.025em; line-height: 1.15; }
 .brand-lockup { display: inline-flex; align-items: center; gap: 8px; font-size: 18px; font-weight: 600; letter-spacing: -0.025em; line-height: 1; }
 .brand-lockup a { display: inline-flex; align-items: center; gap: 8px; color: var(--text); text-decoration: none; border-radius: var(--r-sm); }
 .brand-lockup svg { width: 24px; height: 15px; flex: none; }
 .brand .tagline { display: none; }
 
-nav { display: flex; flex-direction: column; gap: 6px; }
-.nav-group { display: flex; flex-direction: column; gap: 2px; }
-.nav-group + .nav-group { border-top: 1px solid var(--line); padding-top: 6px; margin-top: 2px; }
+nav { display: flex; flex-direction: column; gap: 16px; }
+.nav-group { display: flex; flex-direction: column; gap: 5px; }
 .nav-group-toggle {
   display: flex; align-items: center; justify-content: space-between; width: 100%;
-  height: 22px; padding: 0 8px; border: none; border-radius: var(--r-xs);
+  height: 22px; padding: 2px 10px; border: none; border-radius: var(--r-xs);
   background: transparent; color: var(--text-3);
-  font: 500 11.5px/1 var(--sans); text-align: left; cursor: pointer;
-  transition: color 140ms ease, background-color 140ms ease;
+  font: 500 11.5px/1.2 var(--sans); letter-spacing: 0.015em; text-align: left; cursor: pointer;
+  transition: color 140ms ease;
 }
-.nav-group-toggle:hover { color: var(--text-2); background: var(--surface-2); }
+.nav-group-toggle:hover { color: var(--text-2); background: transparent; }
 .nav-group-toggle .nav-chev {
-  width: 12px; height: 12px; color: var(--text-3);
-  transform: rotate(90deg); transition: transform 150ms var(--ease-out);
+  width: 12px; height: 12px; color: var(--text-3); opacity: 0;
+  transform: rotate(90deg); transition: opacity 140ms ease, transform 150ms var(--ease-out);
 }
+.nav-group-toggle:hover .nav-chev,
+.nav-group-toggle:focus-visible .nav-chev,
+.nav-group.collapsed .nav-group-toggle .nav-chev { opacity: 0.85; }
 .nav-group.collapsed .nav-group-toggle .nav-chev { transform: rotate(0deg); }
 .nav-group.collapsed .nav-items { display: none; }
-.nav-items { display: flex; flex-direction: column; gap: 1px; }
+.nav-items { display: flex; flex-direction: column; gap: 2px; }
 .nav-items button {
   position: relative;
-  display: flex; align-items: center; gap: 9px; width: 100%;
-  height: 26px; padding: 0 10px; border: none; border-radius: var(--r-sm);
+  display: flex; align-items: center; gap: 10px; width: 100%;
+  height: 30px; padding: 0 10px; border: none; border-radius: var(--r-sm);
   background: transparent; color: var(--text-2);
   font: 500 13px/1 var(--sans); text-align: left; cursor: pointer;
   transition: background-color 140ms ease, color 140ms ease;
@@ -312,7 +314,7 @@ nav { display: flex; flex-direction: column; gap: 6px; }
 .nav-items button.active::before {
   content: "";
   position: absolute;
-  left: 0; top: 5px; bottom: 5px; width: 2.5px; border-radius: 99px;
+  left: 0; top: 7px; bottom: 7px; width: 2.5px; border-radius: 99px;
   background: var(--accent);
 }
 .nav-items button.active .icon { color: var(--accent); }
@@ -324,9 +326,18 @@ nav { display: flex; flex-direction: column; gap: 6px; }
 }
 .nav-count.on { display: inline-flex; }
 
+@media (max-height: 860px) and (min-width: 1001px) {
+  .sidebar { padding: 12px 14px 10px; gap: 10px; }
+  .brand { padding: 2px 10px 4px; }
+  nav { gap: 12px; }
+  .nav-group { gap: 4px; }
+  .nav-items button { height: 27px; }
+  .nav-items button.active::before { top: 6px; bottom: 6px; }
+}
+
 .sidebar-foot {
-  margin-top: auto; display: flex; flex-direction: column; gap: 6px;
-  padding: 8px 6px 2px; border-top: 1px solid var(--line);
+  margin-top: auto; display: flex; flex-direction: column; gap: 7px;
+  padding: 10px 4px 2px; border-top: 1px solid var(--line);
 }
 .sellbird-status { display: flex; align-items: center; gap: 8px; font-size: var(--fs-ui); color: var(--text-2); }
 /* The status text wraps the top bar into a third row on phones; the dot
@@ -1206,16 +1217,16 @@ select.form-input, select.form-input option { background-color: var(--surface-so
   .brand .tagline { display: none; }
   nav {
     order: 3; flex: 1 0 100%; width: 100%; max-width: 100%; min-width: 0;
-    flex-direction: row; flex-wrap: nowrap; justify-content: flex-start; align-items: center; gap: 6px;
+    flex-direction: row; flex-wrap: nowrap; justify-content: flex-start; align-items: center; gap: 10px;
     overflow-x: auto; overflow-y: hidden; scrollbar-width: none; -webkit-overflow-scrolling: touch;
-    margin: 0; padding: 3px 0;
+    margin: 0; padding: 6px 0 4px;
   }
   nav::-webkit-scrollbar { display: none; }
-  .nav-group { flex-direction: row; flex-wrap: nowrap; gap: 3px; flex-shrink: 0; border-top: none !important; padding-top: 0 !important; margin-top: 0 !important; }
+  .nav-group { flex-direction: row; flex-wrap: nowrap; gap: 4px; flex-shrink: 0; border-top: none !important; padding-top: 0 !important; margin-top: 0 !important; }
   .nav-group.collapsed .nav-items { display: flex; }
-  .nav-items { flex-direction: row; flex-wrap: nowrap; gap: 3px; }
+  .nav-items { flex-direction: row; flex-wrap: nowrap; gap: 4px; }
   .nav-group-toggle, .nav-label { display: none; }
-  .nav-items button { width: auto; height: 30px; padding: 0 9px; flex: none; white-space: nowrap; font-size: 12px; }
+  .nav-items button { width: auto; height: 32px; padding: 0 11px; gap: 7px; flex: none; white-space: nowrap; font-size: 12.5px; }
   .nav-items button.active::before { left: 8px; right: 8px; top: auto; bottom: 0; width: auto; height: 2px; }
   .sidebar-foot { margin: 0 0 0 auto; flex-direction: row; align-items: center; flex-wrap: wrap; border-top: none; padding: 0; }
   .app-topbar { position: static; padding: 10px 16px; }
