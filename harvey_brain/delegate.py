@@ -170,6 +170,9 @@ class DelegateTransport:
             return ""
         except Exception as exc:
             self.last_error = f"{type(exc).__name__}: {exc}"[:200]
+            kind = str(getattr(exc, "kind", "") or "").lower()
+            if kind in ("setup", "auth", "isolation", "usage_limit") or "not logged in" in str(exc).lower():
+                self.paused_reason = f"{self.name} unavailable: {self.last_error}"
             logger.warning("%s call failed: %s", self.name, self.last_error)
             return ""
 
@@ -177,7 +180,7 @@ class DelegateTransport:
                            budget: float, started: float) -> str:
         from sellbird import claude_runtime
 
-        exe = claude_runtime.check_cli()
+        exe = await asyncio.to_thread(claude_runtime.check_cli)
         argv = claude_runtime.build_command(exe, model=self.model)
         isolated_ctx = getattr(claude_runtime, "isolated_cwd", None)
         if self.cwd:

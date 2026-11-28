@@ -55,6 +55,11 @@ _SPA_MOUNT_ID_RE = re.compile(
 
 REDIRECT_STATUSES = frozenset({301, 302, 303, 307, 308})
 FIRECRAWL_SCRAPE_COST_USD = 0.001
+DNS_RESOLVE_TIMEOUT = 5.0
+
+
+class _RedirectLimitError(RuntimeError):
+    """Internal HTTP redirect ceiling error (escalatable to browser/cloud tiers)."""
 
 
 @dataclass
@@ -154,7 +159,12 @@ async def validate_public_url(url: str) -> None:
     port = parts.port or (443 if parts.scheme.lower() == "https" else 80)
     loop = asyncio.get_running_loop()
     try:
-        infos = await loop.getaddrinfo(host, port, type=socket.SOCK_STREAM)
+        infos = await asyncio.wait_for(
+            loop.getaddrinfo(host, port, type=socket.SOCK_STREAM),
+            timeout=DNS_RESOLVE_TIMEOUT,
+        )
+    except asyncio.TimeoutError as exc:
+        raise ValueError(f"DNS resolution timed out for {host}") from exc
     except OSError as exc:
         raise ValueError(f"DNS resolution failed for {host}: {exc}") from exc
 
@@ -244,30 +254,57 @@ async def _fetch_tier1_curl_cffi(
     except ImportError:
         return None
 
-    current_url = url
-    async with AsyncSession(impersonate="chrome", timeout=timeout) as session:
-        for _ in range(max_redirects + 1):
-            await validate_public_url(current_url)
-            resp = await session.get(
-                current_url,
-                allow_redirects=False,
-                headers={
-                    "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
-                    "Accept-Language": "en-US,en;q=0.9",
-                },
-            )
-            status = int(resp.status_code)
-            if status in REDIRECT_STATUSES:
-                location = (resp.headers.get("location") or resp.headers.get("Location") or "").strip()
-                if not location:
+    profiles = ("chrome", "chrome124")
+    last_tuple: tuple[str, int, str, str] | None = None
+    last_exc: Exception | None = None
+    for idx, profile in enumerate(profiles):
+        current_url = url
+        try:
+            async with AsyncSession(impersonate=profile, timeout=timeout) as session:
+                redirected_out = True
+                for _ in range(max_redirects + 1):
+                    await validate_public_url(current_url)
+                    resp = await session.get(
+                        current_url,
+                        allow_redirects=False,
+                        headers={
+                            "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
+                            "Accept-Language": "en-US,en;q=0.9",
+                        },
+                    )
+                    status = int(resp.status_code)
+                    if status in REDIRECT_STATUSES:
+                        location = (resp.headers.get("location") or resp.headers.get("Location") or "").strip()
+                        if not location:
+                            redirected_out = False
+                            break
+                        current_url = urljoin(current_url, location)
+                        await validate_public_url(current_url)
+                        continue
+                    ctype = (resp.headers.get("content-type") or resp.headers.get("Content-Type") or "").lower()
+                    text = resp.text if (not ctype or any(t in ctype for t in ("html", "xml", "text", "json"))) else ""
+                    res_tuple = (current_url, status, text or "", "curl_cffi")
+                    last_tuple = res_tuple
+                    # Only retry alternate TLS profile on soft edge blocks/throttles.
+                    if status not in (403, 429, 503) or idx + 1 >= len(profiles):
+                        return res_tuple
+                    redirected_out = False
                     break
-                current_url = urljoin(current_url, location)
-                await validate_public_url(current_url)
-                continue
-            ctype = (resp.headers.get("content-type") or resp.headers.get("Content-Type") or "").lower()
-            text = resp.text if (not ctype or any(t in ctype for t in ("html", "xml", "text", "json"))) else ""
-            return current_url, status, text or "", "curl_cffi"
-        raise ValueError(f"Too many redirects fetching {url}")
+                if redirected_out:
+                    raise _RedirectLimitError(f"Too many redirects fetching {url}")
+        except (ValueError, _RedirectLimitError):
+            raise
+        except Exception as exc:
+            last_exc = exc
+            if idx + 1 >= len(profiles):
+                if last_tuple is not None:
+                    return last_tuple
+                raise
+    if last_tuple is not None:
+        return last_tuple
+    if last_exc is not None:
+        raise last_exc
+    return None
 
 
 async def _fetch_tier1_public_http(
@@ -322,21 +359,35 @@ async def _fetch_tier2_playwright(url: str, *, timeout: float) -> FetchPageResul
 
     try:
         async with async_playwright() as pw:
-            browser = await pw.chromium.launch(headless=True)
+            browser = await pw.chromium.launch(
+                headless=True,
+                args=[
+                    "--disable-blink-features=AutomationControlled",
+                    "--no-first-run",
+                ],
+            )
             try:
                 context = await browser.new_context(
                     user_agent=(
                         "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
                         "(KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36"
-                    )
+                    ),
+                    viewport={"width": 1366, "height": 900},
+                    locale="en-US",
+                )
+                await context.add_init_script(
+                    "Object.defineProperty(navigator, 'webdriver', {get: () => undefined});"
                 )
                 page = await context.new_page()
                 await page.route("**/*", _guard_route)
                 ms = max(3000, int(timeout * 1000))
+                resp = await page.goto(url, wait_until="domcontentloaded", timeout=ms)
+                if ssrf_Abort:
+                    raise ValueError(ssrf_Abort[0])
                 try:
-                    resp = await page.goto(url, wait_until="networkidle", timeout=ms)
+                    await page.wait_for_load_state("networkidle", timeout=min(4000, max(1200, ms // 3)))
                 except Exception:
-                    resp = await page.goto(url, wait_until="domcontentloaded", timeout=ms)
+                    pass
                 if ssrf_Abort:
                     raise ValueError(ssrf_Abort[0])
                 final_url = page.url or url
@@ -532,7 +583,7 @@ async def fetch_page(
         t2_result = await _fetch_tier2_playwright(url, timeout=timeout)
         if t2_result is not None and t2_result.ok and not is_spa_shell(t2_result.html):
             return t2_result
-        if t2_result is not None and (t1_result is None or not t2_result.challenged):
+        if t2_result is not None and (t1_result is None or (not t1_result.ok and not t2_result.challenged)):
             t1_result = t2_result
 
     # ── Tier 3: Cloud Firecrawl v2 Fallback ──

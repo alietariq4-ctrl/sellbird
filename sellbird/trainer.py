@@ -212,17 +212,16 @@ class CloudflareCrawler:
                 print()  # newline after progress
                 if status != "completed":
                     logger.warning(f"Crawl ended with status: {status}")
-                break
+                pages = await self._collect_results(client, job_id)
+                return pages
 
             if status == "errored":
                 logger.error("Crawl job errored")
                 print()
-                break
+                return pages
 
             await asyncio.sleep(POLL_INTERVAL)
 
-        # 3. Collect all results with pagination
-        pages = await self._collect_results(client, job_id)
         return pages
 
     async def _collect_results(
@@ -303,16 +302,21 @@ class FallbackCrawler:
                 visited.add(clean_url)
 
                 # Fetch the page
-                html, text = await self._fetch_page(client, url)
+                final_url, html, text = await self._fetch_page_with_url(client, url)
                 if not text:
                     continue
+                if final_url:
+                    redirected_domain = urlparse(final_url).netloc
+                    if redirected_domain and domain == urlparse(base_url).netloc:
+                        domain = redirected_domain
+                        base_url = f"{urlparse(final_url).scheme}://{redirected_domain}"
 
-                pages[url] = text
+                pages[final_url or url] = text
                 print(f"\r      Scraped {len(pages)} pages...", end="", flush=True)
 
                 # Discover new links from this page and add to queue
                 if html:
-                    new_links = self._extract_links(html, base_url, domain)
+                    new_links = self._extract_links(html, final_url or base_url, domain)
                     for link in new_links:
                         norm = self._normalize_url(link)
                         if norm not in visited and link not in queue:
@@ -325,14 +329,21 @@ class FallbackCrawler:
         self, client: httpx.AsyncClient, url: str
     ) -> tuple[str, str]:
         """Fetch a page. Returns (raw_html, clean_text)."""
+        _, html, text = await self._fetch_page_with_url(client, url)
+        return html, text
+
+    async def _fetch_page_with_url(
+        self, client: httpx.AsyncClient, url: str
+    ) -> tuple[str, str, str]:
+        """Fetch a page. Returns (final_url, raw_html, clean_text)."""
         try:
             resp = await client.get(url)
             if resp.status_code != 200:
-                return "", ""
+                return "", "", ""
 
             content_type = resp.headers.get("content-type", "")
             if "text/html" not in content_type:
-                return "", ""
+                return "", "", ""
 
             raw_html = resp.text
             soup = BeautifulSoup(raw_html, "html.parser")
@@ -343,14 +354,14 @@ class FallbackCrawler:
 
             text = soup.get_text(separator="\n", strip=True)
             lines = [line.strip() for line in text.splitlines() if line.strip()]
-            return raw_html, "\n".join(lines)
+            return str(resp.url or url), raw_html, "\n".join(lines)
 
         except UnsafeURLError:
             self.blocked = True
-            return "", ""
+            return "", "", ""
         except Exception as e:
             logger.debug(f"Failed to fetch {url}: {e}")
-            return "", ""
+            return "", "", ""
 
     def _extract_links(self, html: str, base_url: str, domain: str) -> list[str]:
         """Extract all internal links from an HTML page."""

@@ -859,8 +859,9 @@ class Brain:
         session_id: str | None = None,
         agent: str = "",
         task: str = "",
+        retry_on_invalid: bool = True,
     ) -> dict | list | None:
-        """Send a prompt and parse the response as JSON."""
+        """Send a prompt and parse the response as JSON (with 1 repair retry)."""
         full_prompt = (
             prompt
             + "\n\nRespond ONLY with valid JSON. No markdown, no explanation."
@@ -877,14 +878,74 @@ class Brain:
         if not response:
             return None
         parsed = self._extract_json(response)
+        if parsed is None and retry_on_invalid and not self.paused_reason:
+            repair_prompt = (
+                f"{prompt}\n\n"
+                "PREVIOUS OUTPUT FAILED JSON PARSING:\n"
+                f"{response[:600]}\n\n"
+                "Respond ONLY with valid raw JSON (a JSON object or array). "
+                "Do not include prose, explanations, or markdown commentary."
+            )
+            retry_resp = await self.think(
+                repair_prompt, session_id=session_id, expect_json=True,
+                agent=agent, task=task,
+            )
+            if retry_resp:
+                parsed = self._extract_json(retry_resp)
+                response = retry_resp
         if parsed is None:
             logger.error(f"Failed to parse JSON from brain: {response[:200]}")
         return parsed
 
+    async def think_model(
+        self,
+        prompt: str,
+        model_cls,
+        *,
+        session_id: str | None = None,
+        agent: str = "",
+        task: str = "",
+        max_validation_retries: int = 1,
+    ):
+        """Instructor-style validated extraction into a Pydantic model class."""
+        from pydantic import ValidationError
+
+        schema_json = json.dumps(model_cls.model_json_schema(), indent=2)
+        current_prompt = (
+            f"{prompt}\n\n"
+            "Match this exact JSON Schema:\n"
+            f"{schema_json}"
+        )
+        for attempt in range(max(1, int(max_validation_retries) + 1)):
+            parsed = await self.think_json(
+                current_prompt,
+                session_id=session_id,
+                agent=agent,
+                task=task,
+                retry_on_invalid=(attempt == 0),
+            )
+            if parsed is None:
+                return None
+            try:
+                return model_cls.model_validate(parsed)
+            except ValidationError as exc:
+                if attempt >= max_validation_retries or self.paused_reason:
+                    logger.warning("Pydantic validation failed for %s: %s", model_cls.__name__, exc)
+                    return None
+                err_summary = json.dumps(exc.errors()[:5], default=str)
+                current_prompt = (
+                    f"{prompt}\n\n"
+                    f"Schema validation failed with errors: {err_summary}\n"
+                    f"Previous invalid JSON: {json.dumps(parsed, default=str)[:800]}\n"
+                    f"Return a corrected JSON object matching:\n{schema_json}"
+                )
+        return None
+
     @staticmethod
     def _extract_json(text: str) -> dict | list | None:
         """Best-effort JSON extraction: strips code fences anywhere in prose,
-        then falls back to scanning `{`/`[` candidates with raw_decode."""
+        then falls back to scanning `{`/`[` candidates, preferring structured
+        objects or lists-of-objects over stray footnote brackets like `[1]`."""
         if not text:
             return None
         stripped = text.strip()
@@ -907,15 +968,33 @@ class Brain:
                 pass
 
         decoder = json.JSONDecoder()
-        for idx, ch in enumerate(stripped):
+        candidates: list[tuple[int, int, dict | list]] = []
+        idx = 0
+        n = len(stripped)
+        while idx < n:
+            ch = stripped[idx]
             if ch not in ("{", "["):
+                idx += 1
                 continue
             try:
-                parsed, _ = decoder.raw_decode(stripped, idx)
-                if isinstance(parsed, (dict, list)):
-                    return parsed
+                parsed, end_idx = decoder.raw_decode(stripped, idx)
+                if isinstance(parsed, dict) or (
+                    isinstance(parsed, list)
+                    and not (len(parsed) <= 2 and all(isinstance(x, (int, float)) for x in parsed))
+                ):
+                    is_rich = 1 if (
+                        isinstance(parsed, dict)
+                        or (isinstance(parsed, list) and any(isinstance(x, dict) for x in parsed))
+                    ) else 0
+                    candidates.append((is_rich, end_idx - idx, parsed))
+                    idx = max(idx + 1, end_idx)
+                    continue
             except json.JSONDecodeError:
-                continue
+                pass
+            idx += 1
+        if candidates:
+            candidates.sort(key=lambda item: (item[0], item[1]), reverse=True)
+            return candidates[0][2]
         return None
 
     async def check_usage(self) -> float:
@@ -961,24 +1040,35 @@ class Brain:
             # not be mistaken for room to spend.
             logger.info(f"{self.paused_reason}; waiting for it to reset.")
             return False
-        if self.transport is not None and max_usd is not None:
+        if self.transport is not None:
             try:
                 spent = await self.state.spend_today_usd()
             except Exception as e:
-                # An unreadable ledger must not be mistaken for room to
-                # spend: a per-token provider would keep billing.
-                logger.warning(f"Could not read today's spend ({e}); "
-                               "holding the dollar budget closed.")
-                return False
-            within = spent < max_usd
-            if not within:
-                logger.info(
-                    f"AI budget gate: ${spent:.2f} spent today >= "
-                    f"${max_usd:.2f} limit (usage.max_daily_usd). "
-                    "Spend resets at midnight."
-                )
-            return within
-        if max_percent is not None:
+                if max_usd is not None:
+                    # An unreadable ledger must not be mistaken for room to
+                    # spend: a per-token provider would keep billing.
+                    logger.warning(f"Could not read today's spend ({e}); "
+                                   "holding the dollar budget closed.")
+                    return False
+                spent = 0.0
+            if hasattr(self.transport, "spend_usd"):
+                try:
+                    self.transport.spend_usd = max(
+                        float(getattr(self.transport, "spend_usd", 0.0) or 0.0),
+                        float(spent or 0.0),
+                    )
+                except (TypeError, ValueError):
+                    pass
+            if max_usd is not None:
+                within = spent < max_usd
+                if not within:
+                    logger.info(
+                        f"AI budget gate: ${spent:.2f} spent today >= "
+                        f"${max_usd:.2f} limit (usage.max_daily_usd). "
+                        "Spend resets at midnight."
+                    )
+                return within
+        if max_percent is not None and self.quota is not None:
             try:
                 windows = await self.quota.get_utilization()
             except Exception as e:

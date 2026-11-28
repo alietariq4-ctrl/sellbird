@@ -293,10 +293,29 @@ Return ONLY valid JSON:
             if not known_urls:
                 source_url = ""
             else:
-                parsed_hosts = {urlparse(u).netloc.lower().removeprefix("www.") for u in known_urls if u}
-                cand_host = urlparse(source_url).netloc.lower().removeprefix("www.")
-                if source_url not in known_urls and cand_host not in parsed_hosts:
+                def _host_of(raw_u: str) -> str:
+                    u = (raw_u or "").strip()
+                    if not u:
+                        return ""
+                    if "://" not in u:
+                        u = "https://" + u
+                    return (urlparse(u).hostname or "").lower().removeprefix("www.")
+
+                parsed_hosts = {h for h in (_host_of(u) for u in known_urls) if h}
+                cand_host = _host_of(source_url)
+                if source_url not in known_urls and (
+                    not cand_host or not any(cand_host == h or cand_host.endswith("." + h) for h in parsed_hosts)
+                ):
                     source_url = ""
+
+        if not value:
+            return {
+                "company_id": company_id,
+                "column_id": col_id,
+                "value": "",
+                "source_url": "",
+                "saved": False,
+            }
 
         saved = await self._save_value(
             column_id=col_id,

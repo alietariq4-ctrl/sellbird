@@ -311,7 +311,8 @@ class Writer:
                         if p.email.strip().lower() not in suppressed_map
                     ]
             except Exception as e:
-                logger.debug(f"Writer: suppressed_among check failed: {e}")
+                logger.warning(f"Writer: suppressed_among check failed ({e}); holding send/draft batch fail-closed.")
+                return
         elif callable(is_suppressed) and prospects_with_email:
             kept = []
             for p in prospects_with_email:
@@ -321,8 +322,8 @@ class Writer:
                         res = await res
                     if not res:
                         kept.append(p)
-                except Exception:
-                    kept.append(p)
+                except Exception as e:
+                    logger.warning(f"Writer: is_suppressed failed for {p.email} ({e}); skipping fail-closed.")
             prospects_with_email = kept
         if not prospects_with_email:
             logger.info(
@@ -539,8 +540,9 @@ class Writer:
                         res = await res
                     if res:
                         continue
-                except Exception:
-                    pass
+                except Exception as e:
+                    logger.warning(f"Writer: is_suppressed check failed for {prospect.email} ({e}); skipping fail-closed.")
+                    continue
             try:
                 draft = await self._write_personal_email(prospect)
             except Exception as e:

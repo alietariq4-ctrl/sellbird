@@ -123,8 +123,9 @@ class CopyCritic:
                 offer_entry,
             ]).lower()
 
-            if FUNDING_CLAIM_RE.search(combined) and not any(
-                w in evidence_blob for w in ("raised", "funding", "series ", "seed", "round", "combinator")
+            if FUNDING_CLAIM_RE.search(combined) and not re.search(
+                r"\b(?:raised|funding|series\s+[a-f]|seed\s+round|funding\s+round|y\s*combinator)\b",
+                evidence_blob,
             ):
                 issues.append("mentions a funding round not grounded in prospect facts")
 
@@ -134,8 +135,9 @@ class CopyCritic:
                     issues.append(f"mentions unverified monetary figure '{money}' not in facts")
                     break
 
-            if RANK_CLAIM_RE.search(combined) and not any(
-                w in evidence_blob for w in ("rank", "google", "maps", "local pack", "serp", "search")
+            if RANK_CLAIM_RE.search(combined) and not re.search(
+                r"\b(?:ranked|rank\s*#?\d*|top\s*#?\d*|page\s+\d+|local\s+pack|serp|search\s+result|ranking|on\s+google)\b",
+                evidence_blob,
             ):
                 issues.append("claims a Google search rank not grounded in prospect facts")
 

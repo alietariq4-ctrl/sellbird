@@ -2950,7 +2950,12 @@ def _load_active_sellbird_config():
     if cfg is not None:
         return cfg
     path = _active_config_path()
-    return load_config(str(path)) if path.exists() else load_config()
+    if path.exists():
+        try:
+            return load_config(str(path))
+        except TypeError:
+            return load_config()
+    return load_config()
 
 
 def _compliance_settings_payload(config) -> dict:
@@ -3417,7 +3422,7 @@ async def _validate_outbox_draft(state, item: dict, subject: str, text: str) -> 
 
     leaks = MERGE_TAG_RE.findall(f"{subject}\n{text}")
     if leaks:
-        return f"Draft still contains unrendered template placeholder(s): {', '.join(dict.fromkeys(leaks))}"
+        return f"The sender would have blocked this: draft still contains unrendered template placeholder(s): {', '.join(dict.fromkeys(leaks))}"
 
     checked = text
     footer = _compliance_view()["footer"]

@@ -91,13 +91,13 @@ async def run_contact_extraction_stage(
     if not companies:
         return 0, 0
 
-    scout = Scout(None, state, config, load_env())
-    scout._failed_search_engines = set()
+    env = load_env()
     default_industry = config.icp.industries[0] if getattr(config, "icp", None) and config.icp.industries else ""
     total = len(companies)
     contacts_added = 0
     companies_with_contacts = 0
     done = 0
+    cap_lock = asyncio.Lock()
     sem = asyncio.Semaphore(max(1, int(concurrency)))
 
     async def _extract_one(company: dict) -> None:
@@ -105,12 +105,16 @@ async def run_contact_extraction_stage(
         async with sem:
             if contacts_added >= MAX_PROSPECTS_PER_CYCLE or await state.get_setting("discovery_paused"):
                 return
+            scout = Scout(None, state, config, env)
+            scout._failed_search_engines = set()
             domain = (company.get("domain") or "").strip()
             if not domain:
-                done += 1
+                async with cap_lock:
+                    done += 1
                 return
             if await scout._skip_listed_company(company, domain):
-                done += 1
+                async with cap_lock:
+                    done += 1
                 return
             try:
                 contacts = await asyncio.wait_for(
@@ -131,22 +135,23 @@ async def run_contact_extraction_stage(
             except Exception as exc:
                 logger.debug("mark_prospects_checked failed for %s: %s", domain, exc)
 
-            if contacts and contacts_added < MAX_PROSPECTS_PER_CYCLE:
-                added_here = 0
-                for prospect in contacts:
-                    if contacts_added >= MAX_PROSPECTS_PER_CYCLE:
-                        break
-                    await state.add_prospect(prospect)
-                    contacts_added += 1
-                    added_here += 1
-                if added_here:
-                    companies_with_contacts += 1
-            done += 1
-            if progress_cb is not None:
-                try:
-                    progress_cb(done, total, contacts_added)
-                except Exception:
-                    pass
+            async with cap_lock:
+                if contacts and contacts_added < MAX_PROSPECTS_PER_CYCLE:
+                    added_here = 0
+                    for prospect in contacts:
+                        if contacts_added >= MAX_PROSPECTS_PER_CYCLE:
+                            break
+                        await state.add_prospect(prospect)
+                        contacts_added += 1
+                        added_here += 1
+                    if added_here:
+                        companies_with_contacts += 1
+                done += 1
+                if progress_cb is not None:
+                    try:
+                        progress_cb(done, total, contacts_added)
+                    except Exception:
+                        pass
 
     await asyncio.gather(*(_extract_one(c) for c in companies), return_exceptions=True)
     return contacts_added, companies_with_contacts

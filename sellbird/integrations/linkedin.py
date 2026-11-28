@@ -17,6 +17,14 @@ from urllib.parse import quote_plus
 logger = logging.getLogger("sellbird.linkedin")
 
 from sellbird.paths import PROJECT_ROOT
+from sellbird.workspace_home import current_home
+
+
+def _linkedin_paths() -> tuple[Path, Path]:
+    """Resolve cookies & activity files inside active workspace home."""
+    data_dir = current_home().data_dir
+    return data_dir / "linkedin_cookies.json", data_dir / "linkedin_activity.json"
+
 
 DATA_DIR = PROJECT_ROOT / "data"
 COOKIES_PATH = DATA_DIR / "linkedin_cookies.json"
@@ -51,9 +59,10 @@ class LinkedInAutomation:
     def _load_activity() -> dict:
         """Load today's activity counters (persisted so restarts don't reset caps)."""
         today = date.today().isoformat()
+        _, activity_path = _linkedin_paths()
         try:
-            if ACTIVITY_PATH.exists():
-                data = json.loads(ACTIVITY_PATH.read_text(encoding="utf-8"))
+            if activity_path.exists():
+                data = json.loads(activity_path.read_text(encoding="utf-8"))
                 if isinstance(data, dict) and data.get("date") == today:
                     return {
                         "date": today,
@@ -66,9 +75,10 @@ class LinkedInAutomation:
         return {"date": today, "search_pages": 0, "profile_views": 0, "connections": 0}
 
     def _save_activity(self):
+        _, activity_path = _linkedin_paths()
         try:
-            ACTIVITY_PATH.parent.mkdir(parents=True, exist_ok=True)
-            ACTIVITY_PATH.write_text(json.dumps(self._activity), encoding="utf-8")
+            activity_path.parent.mkdir(parents=True, exist_ok=True)
+            activity_path.write_text(json.dumps(self._activity), encoding="utf-8")
         except OSError as e:
             logger.debug(f"Could not save LinkedIn activity log: {e}")
 
@@ -140,9 +150,10 @@ class LinkedInAutomation:
         )
 
         # Load cookies if we have them (avoids re-login)
-        if COOKIES_PATH.exists():
+        cookies_path, _ = _linkedin_paths()
+        if cookies_path.exists():
             try:
-                cookies = json.loads(COOKIES_PATH.read_text(encoding="utf-8"))
+                cookies = json.loads(cookies_path.read_text(encoding="utf-8"))
                 if isinstance(cookies, list):
                     await self.context.add_cookies(cookies)
                     logger.info("Loaded saved LinkedIn cookies.")
@@ -152,11 +163,12 @@ class LinkedInAutomation:
         self.page = await self.context.new_page()
 
     def _save_cookies_sync(self, cookies: list):
+        cookies_path, _ = _linkedin_paths()
         try:
-            COOKIES_PATH.parent.mkdir(parents=True, exist_ok=True)
-            COOKIES_PATH.write_text(json.dumps(cookies), encoding="utf-8")
+            cookies_path.parent.mkdir(parents=True, exist_ok=True)
+            cookies_path.write_text(json.dumps(cookies), encoding="utf-8")
             try:
-                COOKIES_PATH.chmod(0o600)  # session cookies are credentials
+                cookies_path.chmod(0o600)  # session cookies are credentials
             except OSError:
                 pass
         except OSError as e:
@@ -396,7 +408,6 @@ class LinkedInAutomation:
             logger.warning(f"Failed to load profile {linkedin_url}: {e}")
             return None
 
-        self._record("profile_views")
         await self._random_delay(3, 5)
         await self._wait_settled()
         await self._humanlike_scroll()
@@ -421,6 +432,7 @@ class LinkedInAutomation:
             about = await about_el.inner_text() if about_el else ""
 
             parts = name.strip().split(" ", 1)
+            self._record("profile_views")
 
             return {
                 "first_name": parts[0] if parts else "",
@@ -461,7 +473,6 @@ class LinkedInAutomation:
             logger.warning(f"Failed to load profile for connect: {e}")
             return False
 
-        self._record("connections")
         await self._random_delay(3, 5)
         await self._wait_settled()
         await self._humanlike_scroll()
@@ -493,6 +504,7 @@ class LinkedInAutomation:
                 if confirm:
                     await confirm.click()
             await self._wait_settled(8000)
+            self._record("connections")
             return True
         except Exception as e:
             logger.warning(f"Connection request to {linkedin_url} failed: {e}")

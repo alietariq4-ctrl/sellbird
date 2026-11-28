@@ -1722,8 +1722,12 @@ Respond with ONLY the category label, nothing else."""
         if cleaned in INTENT_LABELS:
             return cleaned
         for label in sorted(INTENT_LABELS, key=len, reverse=True):
-            if label in cleaned:
+            if re.search(rf"\b{re.escape(label)}\b", cleaned):
                 return label
+        if re.search(r"\bnot[\s_-]+interested\b", cleaned):
+            return "not_interested"
+        if re.search(r"\bout[\s_-]+of[\s_-]+office\b", cleaned):
+            return "ooo"
 
         logger.warning(f"Handler: Unknown intent '{cleaned[:80]}'. Defaulting to 'question'.")
         return "question"

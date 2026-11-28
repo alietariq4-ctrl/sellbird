@@ -243,8 +243,9 @@ class Scout:
                 if inspect.isawaitable(res):
                     res = await res
                 return str(res or "")
-            except Exception:
-                return ""
+            except Exception as e:
+                logger.warning(f"Scout: is_suppressed check failed for {email} ({e}); failing closed.")
+                return "suppression_check_failed"
         batch_fn = getattr(state, "suppressed_among", None)
         if callable(batch_fn):
             try:
@@ -252,8 +253,9 @@ class Scout:
                 if inspect.isawaitable(res):
                     res = await res
                 return str((res or {}).get(email) or "")
-            except Exception:
-                return ""
+            except Exception as e:
+                logger.warning(f"Scout: suppressed_among check failed for {email} ({e}); failing closed.")
+                return "suppression_check_failed"
         return ""
 
     async def _is_domain_suppressed(self, domain: str) -> str:
@@ -437,12 +439,6 @@ class Scout:
             logger.info("Scout: Query limit reached for this cycle. Will continue next cycle.")
             return []
 
-        self._queries_this_cycle += 1
-
-        # Add a random delay between searches to be polite / avoid throttling.
-        if self._queries_this_cycle > 1:
-            await asyncio.sleep(random.uniform(*SEARCH_DELAY))
-
         serper_key = getattr(self.env, "serper_api_key", "") or ""
         tinyfish_key = getattr(self.env, "tinyfish_api_key", "") or ""
         failed = self.__dict__.setdefault("_failed_search_engines", set())
@@ -457,9 +453,15 @@ class Scout:
             ("google", lambda: self._search_google(query)),
         ])
 
-        for engine, backend in backends:
-            if engine in failed:
-                continue
+        active_backends = [(eng, fn) for eng, fn in backends if eng not in failed]
+        if not active_backends:
+            return []
+
+        if self._queries_this_cycle > 0:
+            await asyncio.sleep(random.uniform(*SEARCH_DELAY))
+        self._queries_this_cycle += 1
+
+        for engine, backend in active_backends:
             try:
                 results = await backend()
             except Exception as e:
@@ -731,6 +733,8 @@ class Scout:
                         continue
                     if await self._is_duplicate_prospect(prospect):
                         continue
+                    if not prospect.score:
+                        prospect.score = self._heuristic_score(prospect)
 
                     await self.state.add_prospect(prospect)
                     await self._observe_email_signals(
@@ -746,7 +750,10 @@ class Scout:
                     if count >= MAX_PROSPECTS_PER_CYCLE:
                         return count
             finally:
-                if people is not None:
+                # Mark checked whenever Hunter responded cleanly (even with []) or we
+                # already saved a prospect, so zero-hit domains don't re-burn credits;
+                # skip only on transient API/network failures (people is None).
+                if people is not None or saved_for_company > 0:
                     try:
                         await self.state.mark_prospects_checked(company["id"])
                     except Exception as e:
@@ -1224,7 +1231,13 @@ class Scout:
                 if domain == page_domain or domain in seen_here:
                     continue
 
-                link_text = link.get_text().strip()
+                link_text = re.sub(r"\s+", " ", link.get_text()).strip()
+                low_text = link_text.lower()
+                if low_text in {
+                    "learn more", "read more", "click here", "view site",
+                    "privacy policy", "terms of service", "contact us", "sign in", "log in",
+                }:
+                    continue
                 if 3 < len(link_text) < 60:
                     seen_here.add(domain)
                     companies.append({
@@ -1900,6 +1913,9 @@ Respond ONLY with the JSON array."""
             )
             if inbox:
                 contacts.append(inbox)
+        for c in contacts:
+            if not c.score:
+                c.score = self._heuristic_score(c)
         return contacts
 
     async def _observe_likely_owner(self, company_id: str, member: dict):

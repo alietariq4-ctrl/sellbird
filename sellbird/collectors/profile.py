@@ -840,6 +840,7 @@ class ProfileCollector:
         # icp.hiring_signals (or icp.titles): which open roles are worth a row.
         self.role_keywords = list(role_keywords or [])
         self._client: httpx.AsyncClient | None = None
+        self._owns_real_client: bool = False
         self.site_names: dict[str, str] = {}
         # Hosts that answered with a bot challenge (SiteGround's 202,
         # Cloudflare's "Just a moment...") rather than a page.
@@ -849,11 +850,13 @@ class ProfileCollector:
         return code in self.confirmed
 
     async def __aenter__(self):
+        t = float(self.timeout or 12.0)
         self._client = public_http_client(
-            timeout=TIMEOUT,
+            timeout=httpx.Timeout(t, connect=min(8.0, t), read=t, write=min(8.0, t), pool=min(8.0, t)),
             headers={"User-Agent": random.choice(USER_AGENTS),
                      "Accept": "text/html,application/xhtml+xml,*/*;q=0.8"},
         )
+        self._owns_real_client = True
         return self
 
     async def __aexit__(self, *exc):
@@ -893,6 +896,19 @@ class ProfileCollector:
                 return base, html
             if domain.lower().removeprefix("www.") in self.challenged:
                 break       # every variant lands on the same challenge
+        clean_dom = domain.lower().removeprefix("www.")
+        if clean_dom in self.challenged and getattr(self, "_owns_real_client", False):
+            try:
+                from sellbird.integrations.stealth_fetch import fetch_page
+                t = min(12.0, float(self.timeout or 12.0))
+                res = await fetch_page(f"https://{clean_dom}", render_js=False, timeout=t)
+                if res.ok and res.html:
+                    self.challenged.discard(clean_dom)
+                    parsed = urlparse(res.final_url or f"https://{clean_dom}")
+                    site_base = f"{parsed.scheme}://{parsed.netloc}".rstrip("/")
+                    return site_base or f"https://{clean_dom}", res.html
+            except Exception as exc:
+                logger.debug("stealth_fetch fallback skipped for %s: %s", clean_dom, exc)
         return "", ""
 
     async def _first_present(self, site: str, paths) -> tuple[str, str]:
@@ -1114,9 +1130,33 @@ class ProfileCollector:
 
     # ── the stage itself ──
 
-    async def profile_company(self, company_id: str, domain: str) -> list[dict]:
+    @staticmethod
+    def _extract_sitemap_locs(xml_text: str) -> list[str]:
+        out: list[str] = []
+        for raw in re.findall(r"<loc>\s*([\s\S]*?)\s*</loc>", xml_text or "", re.IGNORECASE):
+            cleaned = re.sub(r"^<!\[CDATA\[([\s\S]*?)\]\]>$", r"\1", raw.strip(), flags=re.IGNORECASE).strip()
+            if cleaned and "<" not in cleaned:
+                out.append(cleaned)
+        return out
+
+    @staticmethod
+    def _has_contact_form(html: str) -> bool:
+        stripped = _strip_code(html or "")
+        for m in re.finditer(r"(?is)<form\b([^>]*)>([\s\S]*?)</form>", stripped):
+            attrs, body = m.group(1), m.group(2)
+            blob = f"{attrs} {body}"
+            if re.search(r'(?is)\b(?:role|type)=["\']search["\']|\baction=["\'][^"\']*\bsearch\b', attrs + " " + body):
+                continue
+            if re.search(r'(?is)<input\b[^>]*\btype=["\']password["\']', body) and not re.search(r"(?is)<textarea\b", body):
+                continue
+            return True
+        return False
+
+    async def profile_company(
+        self, company_id: str, domain: str, *, _out_obs: list[dict] | None = None
+    ) -> list[dict]:
         """Collect every confirmed profile signal for one business."""
-        obs: list[dict] = []
+        obs: list[dict] = _out_obs if _out_obs is not None else []
         domain = domain.lower().replace("www.", "").strip("/")
         if any(domain == d or domain.endswith("." + d) for d in YC_OWNED_DOMAINS):
             # YC's own sites forbid scraping; they're never a prospect anyway.
@@ -1234,19 +1274,22 @@ class ProfileCollector:
         if self.wants("BLOCKS_AI_CRAWLERS"):
             robots = (await self._get(f"{site}/robots.txt")).lower()
             blocked = any(
-                re.search(rf"user-agent:\s*{re.escape(bot)}[\s\S]{{0,200}}?disallow:\s*/",
-                          robots)
+                re.search(
+                    rf"user-agent:\s*{re.escape(bot)}[\s\S]{{0,200}}?disallow:\s*/\s*(?:#|$)",
+                    robots,
+                    re.MULTILINE,
+                )
                 for bot in AI_CRAWLERS
             )
             add("BLOCKS_AI_CRAWLERS", num=1 if blocked else 0,
                 url=f"{site}/robots.txt")
 
-        # sitemap.xml → size + content freshness (handles <sitemapindex> cleanly)
+        # sitemap.xml → size + content freshness (handles <sitemapindex> & CDATA cleanly)
         if self.wants("SITE_PAGE_COUNT") or self.wants("BLOG_STALE"):
             sm = await self._get(f"{site}/sitemap.xml")
             if sm:
                 is_index = "<sitemapindex" in sm.lower()
-                raw_locs = [u.strip() for u in re.findall(r"<loc>\s*([^<]+)\s*</loc>", sm) if u.strip()]
+                raw_locs = self._extract_sitemap_locs(sm)
                 dates = list(re.findall(r"<lastmod>\s*(\d{4}-\d{2}-\d{2})", sm))
                 if is_index:
                     page_locs: list[str] = []
@@ -1261,9 +1304,7 @@ class ProfileCollector:
                             continue
                         child_sm = await self._get(child_url)
                         if child_sm and "<sitemapindex" not in child_sm.lower():
-                            page_locs.extend(
-                                u.strip() for u in re.findall(r"<loc>\s*([^<]+)\s*</loc>", child_sm) if u.strip()
-                            )
+                            page_locs.extend(self._extract_sitemap_locs(child_sm))
                             dates.extend(re.findall(r"<lastmod>\s*(\d{4}-\d{2}-\d{2})", child_sm))
                     # Never emit a false-positive thin-site count (<= 5) from a partial/gzipped sitemap index.
                     if self.wants("SITE_PAGE_COUNT") and len(page_locs) > 5:
@@ -1283,11 +1324,11 @@ class ProfileCollector:
 
         # contact form — reaches the business without needing an email at all
         if self.wants("CONTACT_FORM_URL"):
-            if re.search(r"(?is)<form\b", _strip_code(home)):
+            if self._has_contact_form(home):
                 add("CONTACT_FORM_URL", text=site, url=site)
             else:
                 curl, chtml = await self._first_present(site, CONTACT_PATHS)
-                if chtml and re.search(r"(?is)<form\b", _strip_code(chtml)):
+                if chtml and self._has_contact_form(chtml):
                     add("CONTACT_FORM_URL", text=curl, url=curl)
 
         # open roles → hiring intent. The job-board feed when their site
@@ -1405,15 +1446,30 @@ class ProfileCollector:
         async def _one(company: dict) -> None:
             nonlocal total, done
             domain = (company.get("domain") or "").strip()
+            partial_obs: list[dict] = []
             try:
                 obs = await asyncio.wait_for(
-                    self.profile_company(company["id"], domain),
+                    self.profile_company(company["id"], domain, _out_obs=partial_obs),
                     timeout=timeout_per_company,
                 )
+            except TypeError:
+                try:
+                    obs = await asyncio.wait_for(
+                        self.profile_company(company["id"], domain),
+                        timeout=timeout_per_company,
+                    )
+                except Exception as e:
+                    logger.warning(f"profile failed for {domain}: {type(e).__name__}: {e}")
+                    await self._mark_checked(company["id"])
+                    obs = partial_obs
             except Exception as e:
-                logger.warning(f"profile failed for {domain}: {e}")
+                logger.warning(f"profile failed for {domain}: {type(e).__name__}: {e}")
                 await self._mark_checked(company["id"])
-                obs = []
+                obs = partial_obs
+                if obs:
+                    total += await self.state.add_observations(obs, run_id=run_id)
+                    await self._sync_company_signals(company["id"], obs)
+                    logger.info(f"profile: {domain} partial → {len(obs)} observation(s)")
             else:
                 # Marked regardless of outcome — an unreachable site still counts
                 # as checked, or the same handful gets retried every cycle
@@ -1474,9 +1530,12 @@ async def profile_companies(
     try:
         keywords = role_keywords(getattr(config, "icp", None))
         async with ProfileCollector(state, confirmed, role_keywords=keywords) as collector:
-            n = await collector.run(
-                companies, run_id=run_id, progress_cb=progress_cb, concurrency=concurrency,
-            )
+            if concurrency > 1 or progress_cb is not None:
+                n = await collector.run(
+                    companies, run_id=run_id, progress_cb=progress_cb, concurrency=concurrency,
+                )
+            else:
+                n = await collector.run(companies, run_id=run_id)
         await state.finish_run(run_id, records=n, cost_usd=0.0)
         return n, run_id
     except Exception as e:

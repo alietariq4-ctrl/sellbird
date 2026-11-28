@@ -1171,11 +1171,19 @@ class OpenStreetMap(DiscoveryProvider):
                 f"OpenStreetMap has no category for {query.term!r}. It can only "
                 f"search mapped trades ({', '.join(sorted(self.TAG_MAP))}). Use a "
                 f"listings or SERP provider for this one.")
-        lat, lng, radius_km = (query.coordinate.split(",") + ["", "", ""])[:3]
-        radius_m = int(float(radius_km or 25) * 1000)
+        lat_s, lng_s, radius_km_s = (query.coordinate.split(",") + ["", "", ""])[:3]
+        try:
+            lat_f = float(lat_s)
+            lng_f = float(lng_s)
+            radius_f = float(radius_km_s or 25)
+        except (TypeError, ValueError) as exc:
+            raise ValueError(f"Invalid coordinate for OpenStreetMap: {query.coordinate!r}") from exc
+        if not (-90.0 <= lat_f <= 90.0 and -180.0 <= lng_f <= 180.0 and 0.1 <= radius_f <= 500.0):
+            raise ValueError(f"Out-of-range coordinate for OpenStreetMap: {query.coordinate!r}")
+        radius_m = int(radius_f * 1000)
         clauses = "".join(
-            f'node[{tag.split("=")[0]}={tag.split("=")[1]}](around:{radius_m},{lat},{lng});'
-            f'way[{tag.split("=")[0]}={tag.split("=")[1]}](around:{radius_m},{lat},{lng});'
+            f'node[{tag.split("=")[0]}={tag.split("=")[1]}](around:{radius_m},{lat_f:.6f},{lng_f:.6f});'
+            f'way[{tag.split("=")[0]}={tag.split("=")[1]}](around:{radius_m},{lat_f:.6f},{lng_f:.6f});'
             for tag in tags
         )
         body = (f"[out:json][timeout:{self.SERVER_TIMEOUT}];({clauses});"
@@ -2110,12 +2118,14 @@ class FreeMultiSourceProvider(DiscoveryProvider):
                 _merge(await DuckDuckGoSearch().fetch(client, env, query))
             except Exception as exc:
                 logger.debug("free_auto ddgs preset failed: %s", exc)
+            for b in merged:
+                b.provider = self.key
             return merged[:limit]
 
         async def _run_osm():
             osm = OpenStreetMap()
             if query.coordinate and osm._tags(query.term):
-                return await asyncio.wait_for(osm.fetch(client, env, query), timeout=20.0)
+                return await asyncio.wait_for(osm.fetch(client, env, query), timeout=38.0)
             return []
 
         async def _run_places():
@@ -2419,7 +2429,8 @@ async def run_discovery(
     if provider is None:
         raise ValueError(f"unknown discovery provider: {provider_key!r}")
 
-    queries = queries or build_queries(config)
+    if queries is None:
+        queries = build_queries(config)
     if provider.needs_coordinates:
         queries = await resolve_coordinates(state, queries)
     report = DiscoveryReport(provider=provider_key, queries=len(queries))

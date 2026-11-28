@@ -182,7 +182,9 @@ class DeepResearcher:
     async def _check_public_osint(self, name: str, domain: str) -> list[dict]:
         """Check free public registries (GitHub orgs, Wikipedia, UK Companies House)."""
         findings: list[dict] = []
-        stem = normalize_domain(domain).split(".")[0] if domain else ""
+        clean_dom = normalize_domain(domain)
+        dom_parts = [p for p in clean_dom.split(".") if p and p not in ("www", "app", "mail", "api", "portal")]
+        stem = dom_parts[0] if dom_parts else (clean_dom.split(".")[0] if clean_dom else "")
 
         async with public_http_client(timeout=httpx.Timeout(8.0)) as client:
             # 1. GitHub Organization API
@@ -400,7 +402,8 @@ Return ONLY valid JSON matching this schema:
             agent="researcher",
             task="company_research",
         )
-        if not isinstance(raw_synthesis, dict):
+        synthesis_failed = not isinstance(raw_synthesis, dict)
+        if synthesis_failed:
             raw_synthesis = {}
 
         def _verify_citation(candidate_url: str) -> str:
@@ -516,7 +519,8 @@ Return ONLY valid JSON matching this schema:
             await self.state.update_company_signals(company_id, new_signals=new_signals)
 
         return {
-            "ok": True,
+            "ok": not synthesis_failed,
+            **({"error": "AI synthesis failed"} if synthesis_failed else {}),
             "company_id": company_id,
             "domain": domain,
             "summary": str(raw_synthesis.get("summary") or "").strip(),
@@ -567,7 +571,7 @@ Return ONLY valid JSON matching this schema:
                 logger.warning("DeepResearcher failed on company_id %r: %s", company_id, exc)
                 return []
         if companies is None:
-            getter = getattr(self.state, "companies_needing_prospects", None) or getattr(self.state, "list_companies", None)
+            getter = getattr(self.state, "companies_needing_profile", None) or getattr(self.state, "companies_needing_prospects", None)
             companies = await getter(limit=limit) if getter else []
         results = []
         for comp in list(companies)[:limit]:

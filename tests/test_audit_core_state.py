@@ -190,7 +190,7 @@ async def test_concurrent_init_db_and_v21_upgrade(tmp_path):
 
     async with aiosqlite.connect(db_path) as db:
         version = (await (await db.execute("PRAGMA user_version")).fetchone())[0]
-        assert version == 21
+        assert version == len(MIGRATIONS) and version >= 21
         indexes = {
             r[0]
             for r in await (await db.execute("SELECT name FROM sqlite_master WHERE type='index'")).fetchall()
@@ -463,7 +463,8 @@ def test_cli_companies_uses_state_manager_and_inits_db(tmp_path, monkeypatch, ca
     assert "Home Co" in text
     assert "1 companies" in capsys.readouterr().out
     with sqlite3.connect(home.db_path) as conn:
-        assert conn.execute("PRAGMA user_version").fetchone()[0] == 21
+        ver = conn.execute("PRAGMA user_version").fetchone()[0]
+        assert ver == len(MIGRATIONS) and ver >= 21
 
 
 def test_cli_suppressions_rejects_empty_value(tmp_path, monkeypatch):
