@@ -174,11 +174,12 @@ class TelegramCopilot:
     messages and button taps from any other chat are read and dropped.
     """
 
-    def __init__(self, state, config=None, env=None, *, transport=None):
+    def __init__(self, state, config=None, env=None, *, transport=None, brain=None):
         self.state = state
         self.config = config
         self.env = env
         self._transport = transport
+        self.brain = brain
         # Telegram confirms updates only when a higher offset is sent, and a
         # new instance is built every cycle — so the offset persists in
         # settings. Without that, every poll replays the last unconfirmed
@@ -285,8 +286,24 @@ class TelegramCopilot:
         if not self._allowed(chat):
             return False  # read and dropped: never answer another chat
         text = str(message.get("text") or "").strip()
-        if not text.startswith("/"):
+        if not text:
             return False
+        if not text.startswith("/"):
+            if self.brain is None:
+                return False
+            try:
+                from sellbird.agents.copilot_agent import SellbirdCopilotAgent
+                res = await SellbirdCopilotAgent(
+                    self.brain, self.state, self.config, self.env
+                ).ask(text)
+                answer = str((res or {}).get("answer") or "").strip()
+                await self._send(
+                    answer or "I couldn't gather enough pipeline data to answer that yet."
+                )
+                return True
+            except Exception as exc:
+                logger.debug("Telegram natural-language copilot error: %s", exc)
+                return False
 
         command, _, arg = text.partition(" ")
         command = command.split("@")[0].lower()  # /approve@the_bot -> /approve
@@ -442,10 +459,10 @@ class TelegramCopilot:
         return await self._send(text, reply_markup=markup)
 
 
-async def poll_telegram_commands(state, config=None, env=None, transport=None) -> int:
+async def poll_telegram_commands(state, config=None, env=None, transport=None, *, brain=None) -> int:
     """One poll per heartbeat cycle. Never raises."""
     try:
-        copilot = TelegramCopilot(state, config=config, env=env, transport=transport)
+        copilot = TelegramCopilot(state, config=config, env=env, transport=transport, brain=brain)
         return await copilot.poll()
     except Exception as exc:
         logger.debug("poll_telegram_commands error: %s", exc)

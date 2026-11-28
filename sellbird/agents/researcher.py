@@ -15,7 +15,7 @@ import asyncio
 import logging
 import os
 from datetime import datetime, timezone
-from urllib.parse import quote, urlparse, urlunparse
+from urllib.parse import quote, urljoin, urlparse, urlunparse
 
 import httpx
 
@@ -331,7 +331,8 @@ class DeepResearcher:
             _register_url(u)
             all_sources.append(hit)
 
-        # Fetch top cited pages via SSRF-guarded stealth_fetch for clean Markdown context
+        # Fetch top cited pages concurrently via SSRF-guarded stealth_fetch;
+        # when external search hits are sparse, also inspect /about and /careers on their domain.
         urls_to_fetch: list[str] = []
         if website:
             urls_to_fetch.append(website)
@@ -341,23 +342,38 @@ class DeepResearcher:
                 host = normalize_domain(u)
                 if host and (host == domain or not is_junk(host)):
                     urls_to_fetch.append(u)
+        if website and len(urls_to_fetch) < MAX_PAGES_TO_FETCH + 1:
+            for sub in ("/about", "/careers"):
+                sub_url = urljoin(website.rstrip("/") + "/", sub.lstrip("/"))
+                sub_canon = _canonical_url(sub_url)
+                if sub_canon and sub_canon not in seen_canon and sub_url not in urls_to_fetch:
+                    seen_canon.add(sub_canon)
+                    _register_url(sub_url)
+                    urls_to_fetch.append(sub_url)
+                if len(urls_to_fetch) >= MAX_PAGES_TO_FETCH + 1:
+                    break
 
-        page_extracts: list[str] = []
-        for u in urls_to_fetch:
+        async def _fetch_one(target_url: str) -> str:
             try:
-                await validate_public_url(u)
-                fetched = await fetch_page(u, config=self.config, env=self.env, timeout=12.0)
+                await validate_public_url(target_url)
+                fetched = await fetch_page(target_url, config=self.config, env=self.env, timeout=12.0)
             except Exception as exc:
-                logger.debug("Researcher stealth_fetch skipped %s: %s", u, exc)
-                continue
+                logger.debug("Researcher stealth_fetch skipped %s: %s", target_url, exc)
+                return ""
             if fetched.final_url:
                 _register_url(fetched.final_url)
             if fetched.markdown:
                 date_note = f" (published {fetched.published_date})" if fetched.published_date else ""
-                page_extracts.append(
-                    f"SOURCE URL: {fetched.final_url or u}{date_note}\n"
+                return (
+                    f"SOURCE URL: {fetched.final_url or target_url}{date_note}\n"
                     f"{fetched.markdown[:PAGE_MD_CHARS]}"
                 )
+            return ""
+
+        fetched_blocks = await asyncio.gather(*(_fetch_one(u) for u in urls_to_fetch), return_exceptions=True)
+        page_extracts: list[str] = [
+            blk for blk in fetched_blocks if isinstance(blk, str) and blk
+        ]
 
         sources_text = "\n\n".join(
             f"[{idx + 1}] URL: {s['url']}\nTitle: {s.get('title', '')}\nSnippet: {s.get('snippet', '')}"
@@ -385,6 +401,7 @@ Return ONLY valid JSON matching this schema:
 {{
   "summary": "1-2 sentence factual summary of what the company does",
   "icp_fit": "1 sentence on why they fit or don't fit our ICP",
+  "opening_hook": "1 concise, verifiable cold-email opening observation grounded in a source above (or empty string)",
   "verified_facts": [
     {{"fact": "Concrete factual detail", "evidence_url": "https://..."}}
   ],
@@ -525,6 +542,7 @@ Return ONLY valid JSON matching this schema:
             "domain": domain,
             "summary": str(raw_synthesis.get("summary") or "").strip(),
             "icp_fit": str(raw_synthesis.get("icp_fit") or "").strip(),
+            "opening_hook": str(raw_synthesis.get("opening_hook") or "").strip(),
             "verified_facts": verified_facts,
             "decision_makers": decision_makers,
             "recent_triggers": recent_triggers,

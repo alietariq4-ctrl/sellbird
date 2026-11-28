@@ -2147,12 +2147,20 @@ class FreeMultiSourceProvider(DiscoveryProvider):
                 _merge(res)
 
         with_domains = sum(1 for b in merged if b.domain)
-        if with_domains < min(limit, 15) and query.term and query.location:
-            alt = replace(query, term=f"{query.term} services", depth=min(query.depth or 30, 25))
-            try:
-                _merge(await _run_ddg(alt))
-            except Exception as exc:
-                logger.debug("free_auto ddgs secondary failed for %r: %s", alt.keyword(), exc)
+        if with_domains < min(limit, 20) and query.term and query.location:
+            alt_queries = [
+                replace(query, term=f"{query.term} services", depth=min(query.depth or 30, 25)),
+                replace(query, term=f"{query.term} company -site:yelp.com -site:angi.com -site:bbb.org", depth=min(query.depth or 30, 25)),
+            ]
+            alt_results = await asyncio.gather(
+                *(_run_ddg(alt) for alt in alt_queries),
+                return_exceptions=True,
+            )
+            for alt, res in zip(alt_queries, alt_results):
+                if isinstance(res, Exception):
+                    logger.debug("free_auto ddgs secondary failed for %r: %s", alt.keyword(), res)
+                elif res:
+                    _merge(res)
 
         # Put domain-bearing businesses ahead of domainless map pins
         merged.sort(key=lambda b: (0 if b.domain else 1))

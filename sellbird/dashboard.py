@@ -7946,6 +7946,82 @@ async def brain_doctor(request: Request, network: str = "0"):
     return await _fallback_brain_doctor(use_network)
 
 
+@_agentic_router.get("/api/agents/insights")
+async def agents_insights():
+    """Return live funnel metrics, Bandit framework stats, and Analyst insights."""
+    from sellbird.agents.analyst import Analyst
+
+    state = _state()
+    await state.init_db()
+    try:
+        config = _load_active_sellbird_config()
+    except Exception:
+        config = None
+    analyst = Analyst(state, brain=None, config=config)
+    pipeline = await analyst._pipeline_summary()
+    campaigns = await analyst._campaign_performance()
+    intents = await analyst._intent_breakdown()
+    stages = await analyst._stage_breakdown()
+    report = {
+        "pipeline": pipeline,
+        "campaigns": campaigns,
+        "intents": intents,
+        "stages": stages,
+    }
+    report["insights"] = analyst._generate_insights(report)
+    try:
+        report["framework_stats"] = await state.framework_stats()
+    except Exception:
+        report["framework_stats"] = {}
+
+    analytics_path = Path(state.db_path).parent / "analytics.json"
+    if analytics_path.exists():
+        try:
+            saved = json.loads(analytics_path.read_text(encoding="utf-8"))
+            if isinstance(saved, dict):
+                if saved.get("ai_recommendation"):
+                    report["ai_recommendation"] = saved["ai_recommendation"]
+                if saved.get("generated_at"):
+                    report["generated_at"] = saved["generated_at"]
+        except Exception:
+            pass
+    return {"ok": True, **report}
+
+
+@_agentic_router.post("/api/copilot/chat")
+async def copilot_chat(request: Request):
+    """Interactive ReAct tool-using AI Copilot over live Sellbird pipeline state."""
+    from sellbird.agents.copilot_agent import SellbirdCopilotAgent
+
+    try:
+        body = await request.json() if request.headers.get("content-type", "").startswith("application/json") else {}
+    except Exception:
+        body = {}
+    if not isinstance(body, dict):
+        body = {}
+
+    message = str(body.get("message") or body.get("question") or "").strip()
+    if not message:
+        return JSONResponse({"ok": False, "message": "Message is required."}, status_code=400)
+    history = body.get("history")
+    if not isinstance(history, list):
+        history = []
+
+    runtime, err = await _prepare_agentic_runtime()
+    if err is not None:
+        return err
+    brain, state, config, env = runtime
+    try:
+        agent = SellbirdCopilotAgent(brain, state, config, env)
+        res = await agent.ask(message, history=history, max_steps=5)
+        return res
+    except Exception as exc:
+        logger.warning("Copilot chat failed: %s", exc)
+        return JSONResponse({"ok": False, "message": str(exc)}, status_code=500)
+    finally:
+        await _close_brain(brain)
+
+
 @_agentic_router.post("/api/brain/probe")
 async def brain_probe(request: Request):
     """Dry-run validation or live 1-token LLM probe against the configured router/provider."""

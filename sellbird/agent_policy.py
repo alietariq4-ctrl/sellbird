@@ -42,6 +42,7 @@ AGENT_ROUTES: tuple[tuple[str, str], ...] = (
     ("GET", r"/api/inboxes"),
     ("GET", r"/api/brain/config"),
     ("GET", r"/api/brain/doctor"),
+    ("GET", r"/api/agents/insights"),
     ("GET", r"/api/enrichment/columns"),
     ("POST", r"/api/discover/estimate"),   # computes a price, runs nothing
     ("POST", r"/api/sending/pause"),       # never resume: that's yours

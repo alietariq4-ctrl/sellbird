@@ -9,11 +9,13 @@ Steps 2-3 stay campaign-level (proof point + breakup are less personal by
 design). Every draft still passes the deterministic pre-send gate.
 """
 
+import asyncio
 import inspect
 import json
 import logging
 import re
 from datetime import datetime, timezone
+from pathlib import Path
 
 from sellbird.agents.critic import CopyCritic
 from sellbird.brain import Brain
@@ -252,6 +254,7 @@ class Writer:
     async def run(self):
         """Create email campaigns for prospects that need outreach."""
         logger.info("Writer: Crafting email campaigns...")
+        self._cached_learning_ctx = None
 
         # Load foundational skills for this agent
         self.skills = self._load_writer_skills()
@@ -330,6 +333,14 @@ class Writer:
                 "Writer: No prospects with deliverable (verified/risky) emails yet."
             )
             return
+
+        # Sort verified-first & highest ICP lead score first so high-value prospects win NATIVE_BATCH_CAP.
+        prospects_with_email.sort(
+            key=lambda p: (
+                0 if str(getattr(p, "email_status", "") or "").lower() == "verified" else 1,
+                -int(getattr(p, "score", 0) or 0),
+            )
+        )
 
         # channels.email.min_write_score: a prospect scored below it stays
         # 'new' and is never written for. 0 (the default) keeps everyone.
@@ -532,6 +543,7 @@ class Writer:
         pending = []
         self._personal_facts_cache = {}
         is_suppressed = getattr(self.state, "is_suppressed", None)
+        eligible = []
         for prospect in prospects:
             if callable(is_suppressed) and prospect.email:
                 try:
@@ -543,11 +555,20 @@ class Writer:
                 except Exception as e:
                     logger.warning(f"Writer: is_suppressed check failed for {prospect.email} ({e}); skipping fail-closed.")
                     continue
-            try:
-                draft = await self._write_personal_email(prospect)
-            except Exception as e:
-                logger.warning(f"Writer: personal draft failed for {prospect.email}: {e}")
-                continue
+            eligible.append(prospect)
+
+        sem = asyncio.Semaphore(3)
+
+        async def _draft_one(prospect):
+            async with sem:
+                try:
+                    return await self._write_personal_email(prospect)
+                except Exception as e:
+                    logger.warning(f"Writer: personal draft failed for {prospect.email}: {e}")
+                    return None
+
+        drafts = await asyncio.gather(*(_draft_one(p) for p in eligible)) if eligible else []
+        for prospect, draft in zip(eligible, drafts):
             if draft:
                 facts = self._personal_facts_cache.pop(id(prospect), None)
                 if facts is None:
@@ -661,6 +682,58 @@ class Writer:
             "this writing. They never override the STRICT EMAIL RULES or the FACTS rule:\n"
             + lines
         )
+
+    async def _learning_context(self) -> str:
+        """Closed-loop performance context from past campaign reply rates & Analyst insights."""
+        cached = getattr(self, "_cached_learning_ctx", None)
+        if isinstance(cached, str):
+            return cached
+        notes: list[str] = []
+        try:
+            get_stats = getattr(self.state, "get_campaign_stats", None)
+            if callable(get_stats):
+                campaigns = get_stats()
+                if inspect.isawaitable(campaigns):
+                    campaigns = await campaigns
+                rated = [
+                    c for c in (campaigns or [])
+                    if isinstance(c, dict) and (c.get("reply_rate") or 0) > 0
+                ]
+                if rated:
+                    best = max(rated, key=lambda c: float(c.get("reply_rate") or 0))
+                    fw = f" [{best.get('framework')}]" if best.get("framework") else ""
+                    notes.append(
+                        f"- Highest-converting campaign so far: '{best.get('name', 'Campaign')}'{fw} "
+                        f"at {best.get('reply_rate')}% reply rate. Lean into concise, concrete hooks."
+                    )
+        except Exception:
+            pass
+
+        try:
+            db_path = getattr(self.state, "db_path", None)
+            if db_path:
+                report_path = Path(str(db_path)).parent / "analytics.json"
+                if report_path.exists():
+                    data = json.loads(report_path.read_text(encoding="utf-8"))
+                    if isinstance(data, dict):
+                        ai_rec = str(data.get("ai_recommendation") or "").strip()
+                        if ai_rec:
+                            notes.append(f"- Strategist guidance: {ai_rec[:260]}")
+                        for ins in (data.get("insights") or [])[:2]:
+                            s = str(ins or "").strip()
+                            if s.startswith(("ACTION:", "KEEP:")) and len(notes) < 3:
+                                notes.append(f"- {s[:240]}")
+        except Exception:
+            pass
+
+        block = (
+            "\n\nCLOSED-LOOP LEARNING FROM PAST CAMPAIGNS (optimize style/angle using this, "
+            "never invent facts):\n" + "\n".join(notes)
+            if notes
+            else ""
+        )
+        self._cached_learning_ctx = block
+        return block
 
     async def _collect_personal_facts(self, prospect) -> tuple[list[str], list[str] | None]:
         """Gather all verified research, site, startup, enrichment, and registry facts."""
@@ -822,6 +895,7 @@ class Writer:
         if startup is not None:
             prompt += self._startup_playbook()
         prompt += await self._feedback_block([prospect.id])
+        prompt += await self._learning_context()
         rules = getattr(self, "email_rules", "")
         prompt += offer_block(self.config)
         prompt += operator_rules_block(rules)
@@ -922,6 +996,7 @@ Pricing: {self.config.product.pricing}"""
         # Campaign notes only: this template goes to the whole batch, so a
         # note about one person ("met her at the expo") must never reach it.
         prompt += await self._feedback_block([])
+        prompt += await self._learning_context()
         rules = getattr(self, "email_rules", "")
         prompt += offer_block(self.config)
         prompt += operator_rules_block(rules)

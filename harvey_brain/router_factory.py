@@ -154,6 +154,7 @@ def build(path: str | os.PathLike[str] | None = None, *,
         chain,
         budget_usd_per_day=settings.max_usd_per_day,
         profiles=settings.profiles,
+        transient_cooldown_seconds=30.0,
     )
     logger.info(
         "brain chain: %s (budget $%s/day%s)",

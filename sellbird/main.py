@@ -640,7 +640,7 @@ async def heartbeat(stop_event: asyncio.Event | None = None):
                 # commands and button taps (loopback dashboard, so no webhook).
                 from sellbird.integrations.copilot import poll_telegram_commands
                 tasks.append(("copilot_poll",
-                              poll_telegram_commands(state, config=config, env=env)))
+                              poll_telegram_commands(state, config=config, env=env, brain=brain)))
 
                 # Inbound CRM sync: pull people marked do-not-contact in
                 # Twenty into suppressions (opt-in, Twenty only).

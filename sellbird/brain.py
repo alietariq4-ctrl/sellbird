@@ -9,6 +9,7 @@ other one.
 
 import asyncio
 from collections.abc import Mapping
+from dataclasses import dataclass, field
 import inspect
 import json
 import logging
@@ -16,6 +17,7 @@ import os
 import re
 import time
 from pathlib import Path
+from typing import Any, Callable
 
 from sellbird.state import StateManager
 
@@ -24,6 +26,16 @@ logger = logging.getLogger("sellbird.brain")
 from sellbird.paths import PROJECT_ROOT
 from sellbird.textio import read_user_text
 from sellbird.workspace_home import current_home
+
+
+@dataclass(frozen=True)
+class AgentTool:
+    """Declarative tool descriptor usable inside ``Brain.run_agent``."""
+
+    name: str
+    description: str
+    parameters: dict[str, Any] = field(default_factory=dict)
+    handler: Callable[..., Any] | None = None
 
 PROMPTS_DIR = PROJECT_ROOT / "prompts"
 SKILLS_DIR = PROJECT_ROOT / "skills"
@@ -940,6 +952,174 @@ class Brain:
                     f"Return a corrected JSON object matching:\n{schema_json}"
                 )
         return None
+
+    async def run_agent(
+        self,
+        goal: str,
+        tools: list[AgentTool] | Mapping[str, AgentTool],
+        *,
+        system_context: str = "",
+        max_steps: int = 6,
+        session_id: str | None = None,
+        agent: str = "copilot",
+        task: str = "react_agent",
+        max_observation_chars: int = 2400,
+    ) -> dict[str, Any]:
+        """Bounded ReAct tool-calling loop compatible with all Brain transports.
+
+        Returns ``{"ok": bool, "answer": str, "steps": list[dict], "tool_calls": int}``.
+        """
+        if isinstance(tools, Mapping):
+            tool_map = {str(k): v for k, v in tools.items() if isinstance(v, AgentTool)}
+        else:
+            tool_map = {t.name: t for t in tools if isinstance(t, AgentTool)}
+
+        if self.paused_reason:
+            return {
+                "ok": False,
+                "answer": f"AI provider paused: {self.paused_reason}",
+                "steps": [],
+                "tool_calls": 0,
+            }
+
+        tool_specs = [
+            {
+                "name": t.name,
+                "description": t.description,
+                "parameters": t.parameters or {"type": "object", "properties": {}},
+            }
+            for t in tool_map.values()
+        ]
+        tools_doc = json.dumps(tool_specs, ensure_ascii=False, indent=2)
+        scratchpad: list[str] = []
+        steps: list[dict[str, Any]] = []
+        tool_calls = 0
+        budget_steps = max(1, min(12, int(max_steps)))
+
+        for step_idx in range(1, budget_steps + 1):
+            if self.paused_reason:
+                break
+            history_block = "\n\n".join(scratchpad) if scratchpad else "(none yet)"
+            prompt = (
+                f"{system_context.strip()}\n\n" if system_context.strip() else ""
+            ) + f"""You are an autonomous agent executing a ReAct loop to solve the user's goal accurately using ONLY verified tool results.
+
+GOAL:
+{goal}
+
+AVAILABLE TOOLS:
+{tools_doc}
+
+TRACE SO FAR:
+{history_block}
+
+STEP {step_idx} OF {budget_steps} INSTRUCTIONS:
+- If you need information or an allowed action, invoke ONE tool:
+  {{"thought": "brief reason", "action": "<tool_name>", "arguments": {{...}}}}
+- Once you have enough verified evidence to answer directly (or no tool applies), finish:
+  {{"thought": "brief summary", "action": "final", "answer": "your clear, concise final response"}}
+- Never invent counts, emails, companies, or metrics not returned by a tool.
+
+Respond with ONLY valid JSON."""
+
+            decision = await self.think_json(
+                prompt,
+                session_id=session_id or f"sellbird-{agent}",
+                agent=agent,
+                task=task,
+            )
+            if not isinstance(decision, dict):
+                break
+
+            thought = str(decision.get("thought") or "").strip()
+            action = str(decision.get("action") or "").strip()
+            if action == "final" or (not action and decision.get("answer")):
+                answer = str(decision.get("answer") or "").strip()
+                steps.append({
+                    "step": step_idx,
+                    "thought": thought,
+                    "action": "final",
+                })
+                return {
+                    "ok": bool(answer),
+                    "answer": answer,
+                    "steps": steps,
+                    "tool_calls": tool_calls,
+                }
+
+            tool = tool_map.get(action)
+            args = decision.get("arguments")
+            if not isinstance(args, dict):
+                args = {}
+
+            if tool is None or not callable(tool.handler):
+                obs_payload: Any = {
+                    "error": f"Unknown tool '{action}'. Available: {sorted(tool_map.keys())}"
+                }
+            else:
+                tool_calls += 1
+                try:
+                    sig = inspect.signature(tool.handler)
+                    has_var_kw = any(
+                        p.kind == inspect.Parameter.VAR_KEYWORD
+                        for p in sig.parameters.values()
+                    )
+                    call_kwargs = args if has_var_kw else {
+                        k: v for k, v in args.items() if k in sig.parameters
+                    }
+                    res = tool.handler(**call_kwargs)
+                    obs_payload = await res if inspect.isawaitable(res) else res
+                except Exception as exc:
+                    obs_payload = {"error": f"{type(exc).__name__}: {exc}"}
+
+            obs_text = (
+                obs_payload
+                if isinstance(obs_payload, str)
+                else json.dumps(obs_payload, ensure_ascii=False, default=str)
+            )[:max_observation_chars]
+            steps.append({
+                "step": step_idx,
+                "thought": thought,
+                "action": action,
+                "arguments": args,
+                "observation_preview": obs_text[:300],
+            })
+            scratchpad.append(
+                f"Step {step_idx} Thought: {thought}\n"
+                f"Step {step_idx} Action: {action}({json.dumps(args, default=str)})\n"
+                f"Step {step_idx} Observation: {obs_text}"
+            )
+
+        # Final synthesis turn if step limit was consumed gathering tool results
+        if scratchpad and not self.paused_reason:
+            synth_prompt = (
+                f"GOAL:\n{goal}\n\n"
+                f"VERIFIED OBSERVATIONS:\n" + "\n\n".join(scratchpad) + "\n\n"
+                "Provide the concise, factual final answer grounded strictly in the observations above."
+            )
+            final_text = (
+                await self.think(
+                    synth_prompt,
+                    session_id=session_id or f"sellbird-{agent}",
+                    agent=agent,
+                    task=f"{task}_synth",
+                )
+                or ""
+            ).strip()
+            if final_text:
+                return {
+                    "ok": True,
+                    "answer": final_text,
+                    "steps": steps,
+                    "tool_calls": tool_calls,
+                }
+
+        return {
+            "ok": False,
+            "answer": "",
+            "steps": steps,
+            "tool_calls": tool_calls,
+        }
 
     @staticmethod
     def _extract_json(text: str) -> dict | list | None:

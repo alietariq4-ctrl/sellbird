@@ -52,6 +52,7 @@ class RouterTransport:
         on_usage: Callable[[Usage], Any] | None = None,
         failure_hold_seconds: float = FAILURE_HOLD_SECONDS,
         profiles: dict[str, profiles_mod.TaskProfile] | None = None,
+        transient_cooldown_seconds: float = 0.0,
     ):
         if not chain:
             raise ValueError("RouterTransport needs at least one transport")
@@ -67,6 +68,8 @@ class RouterTransport:
         self.ledger = ledger
         self.on_usage = on_usage
         self.failure_hold_seconds = max(0.0, float(failure_hold_seconds))
+        self.transient_cooldown_seconds = max(0.0, float(transient_cooldown_seconds))
+        self._transport_cooldowns: dict[int, float] = {}
         # In-memory day spend. Resets automatically when local date rolls over.
         self.spend_usd = 0.0
         self._spend_date: str = date.today().isoformat()
@@ -242,6 +245,13 @@ class RouterTransport:
                 ))
                 logger.warning("task profile %s failed; walking the chain", key)
 
+        now_ts = monotonic()
+        has_cool_fallback = any(
+            not getattr(t, "paused_reason", "")
+            and self._transport_cooldowns.get(id(t), 0.0) <= now_ts
+            for t in self.chain
+        )
+
         for transport in self.chain:
             default_model = str(getattr(transport, "model", ""))
             if already_tried == (id(transport), default_model, ""):
@@ -257,6 +267,15 @@ class RouterTransport:
                 failures.append((name, f"paused: {reason[:80]}"))
                 continue
 
+            if (
+                self.transient_cooldown_seconds > 0
+                and has_cool_fallback
+                and self._transport_cooldowns.get(id(transport), 0.0) > now_ts
+            ):
+                logger.debug("%s skipped (transient cooldown active)", name)
+                failures.append((name, "transient cooldown"))
+                continue
+
             remaining = deadline - monotonic()
             if remaining <= 0:
                 failures.append((name, "no time left in the budget"))
@@ -267,6 +286,7 @@ class RouterTransport:
                 expect_json=expect_json,
             )
             if text:
+                self._transport_cooldowns.pop(id(transport), None)
                 self.last_provider = name
                 self.last_usage = getattr(transport, "last_usage", None)
                 usage = self.last_usage
@@ -277,6 +297,8 @@ class RouterTransport:
                 self.last_error = ""
                 return text
 
+            if self.transient_cooldown_seconds > 0 and not getattr(transport, "paused_reason", ""):
+                self._transport_cooldowns[id(transport)] = monotonic() + self.transient_cooldown_seconds
             detail = str(getattr(transport, "last_error", "") or "empty reply")
             failures.append((name, detail[:120]))
             if getattr(transport, "paused_reason", ""):
