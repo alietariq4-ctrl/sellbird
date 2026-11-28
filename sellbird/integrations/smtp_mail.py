@@ -20,6 +20,7 @@ import hashlib
 import imaplib
 import inspect
 import logging
+import os
 from dataclasses import asdict, dataclass, field
 from email.message import EmailMessage
 from email.utils import formataddr, make_msgid, parseaddr

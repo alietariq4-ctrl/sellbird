@@ -7,7 +7,7 @@
 <title>VeloReach</title>
 <!-- First, so the token leaves the address bar before anything else runs. -->
 <script src="/static/auth.js"></script>
-<link rel="stylesheet" href="/static/app.css?v=20261128e">
+<link rel="stylesheet" href="/static/app.css?v=20261128g">
 <link rel="icon" href="/static/sellbird-mark.svg" type="image/svg+xml">
 </head>
 <body>
@@ -158,12 +158,12 @@
 </header>
 <div class="content-inner">
 
-<!-- Today: what needs a human -->
+<!-- Today: command center -->
 <div id="today" class="section active">
   <div class="section-head">
     <div>
       <h2>Today</h2>
-      <p>Command center: run your AI pipeline, monitor lead readiness, and jump straight into outreach.</p>
+      <p>Run your AI pipeline, review queued approvals, and monitor live lead readiness.</p>
     </div>
     <div class="page-actions">
       <button class="btn btn-primary btn-sm" id="today-cycle-btn" onclick="runAgenticCycleToday(this)">Run Agentic Cycle</button>
@@ -172,50 +172,16 @@
   </div>
 
   <div class="feature-guide" id="today-workflow-guide" aria-label="Outreach workflow quick-start">
-    <span><b>Outreach Workflow:</b></span>
-    <button type="button" class="fg-pill" onclick="goTab('company')"><span class="step-n">1</span>Define Offer &amp; ICP</button>
-    <button type="button" class="fg-pill" onclick="goTab('discover')"><span class="step-n">2</span>Discover Leads</button>
-    <button type="button" class="fg-pill" onclick="goTab('prospects')"><span class="step-n">3</span>Tag &amp; Edit Contacts</button>
-    <button type="button" class="fg-pill" onclick="goTab('campaigns')"><span class="step-n">4</span>Build A/B Campaign</button>
-    <button type="button" class="fg-pill" onclick="goTab('outbox')"><span class="step-n">5</span>Preview &amp; Approve Outbox</button>
+    <span><b>Workflow:</b></span>
+    <button type="button" class="fg-pill" onclick="goTab('company')"><span class="step-n">1</span>Offer &amp; ICP</button>
+    <button type="button" class="fg-pill" onclick="goTab('discover')"><span class="step-n">2</span>Discover</button>
+    <button type="button" class="fg-pill" onclick="goTab('prospects')"><span class="step-n">3</span>Contacts</button>
+    <button type="button" class="fg-pill" onclick="goTab('campaigns')"><span class="step-n">4</span>Campaigns</button>
+    <button type="button" class="fg-pill" onclick="goTab('outbox')"><span class="step-n">5</span>Outbox</button>
   </div>
 
   <div id="today-kpis"></div>
   <div id="today-renamed"></div>
-
-  <div class="launchpad-grid" id="today-launchpad">
-    <div class="launchpad-card" id="today-resend-card">
-      <div class="launchpad-head">
-        <div>
-          <h3>Resend Email Quick Configure</h3>
-          <p>Connect Resend right here on your dashboard for live email testing &amp; demos (no hunting in Settings).</p>
-        </div>
-        <span class="badge t-waiting" id="dash-resend-badge">Checking…</span>
-      </div>
-      <div class="form-row" style="margin-bottom:4px;">
-        <div class="form-group" style="margin-bottom:0;flex:1.25;">
-          <label class="form-label" for="dash-resend-key">Resend API Key</label>
-          <div class="with-btn">
-            <input type="password" class="form-input" id="dash-resend-key" placeholder="re_... (saved locally to .env)" autocomplete="off">
-            <button type="button" class="btn btn-secondary" onclick="toggleVisibility('dash-resend-key')">Show</button>
-          </div>
-        </div>
-        <div class="form-group" style="margin-bottom:0;flex:1;">
-          <label class="form-label" for="dash-resend-from">From Address (Sandbox)</label>
-          <input type="email" class="form-input" id="dash-resend-from" placeholder="onboarding@resend.dev" autocomplete="off">
-        </div>
-      </div>
-      <div class="resend-actions">
-        <button type="button" class="btn btn-primary btn-sm" id="dash-resend-save-btn" onclick="connectResendFromDashboard(this)">Save &amp; Connect</button>
-        <button type="button" class="btn btn-secondary btn-sm" onclick="fillDashboardResendSandbox()">Use Sandbox</button>
-        <button type="button" class="btn btn-secondary btn-sm" onclick="openTestSendModal()">Send Test</button>
-      </div>
-      <div id="dash-resend-result" style="font-size:12px;"></div>
-    </div>
-
-    <div id="today-setup"></div>
-  </div>
-
   <div id="today-agentic"></div>
 
   <div class="grid-main">
@@ -236,68 +202,132 @@
       <div class="facts" id="today-facts"></div>
       <div id="today-runs-block">
         <div class="subhead">Collector runs</div>
-        <div class="card" id="today-runs" style="padding-top:8px;padding-bottom:8px"></div>
+        <div class="card" id="today-runs"></div>
       </div>
     </aside>
   </div>
+
+  <div id="today-setup-drawer" class="setup-drawer">
+    <button type="button" class="drawer-toggle" id="today-setup-toggle" aria-expanded="false" onclick="toggleTodaySetupDrawer()">
+      <span class="drawer-toggle-main">
+        <b>Quick Setup &amp; Email Sender</b>
+        <span class="hint" id="today-setup-summary">Resend sandbox &amp; workspace readiness</span>
+      </span>
+      <svg class="icon nav-chev" aria-hidden="true"><use href="#i-chevron"/></svg>
+    </button>
+    <div class="launchpad-grid" id="today-launchpad">
+      <div class="launchpad-card" id="today-resend-card">
+        <div class="launchpad-head">
+          <div>
+            <h3>Resend Email Quick Configure</h3>
+            <p>Connect Resend right here for live email testing &amp; demos.</p>
+          </div>
+          <span class="badge t-waiting" id="dash-resend-badge">Checking…</span>
+        </div>
+        <div class="form-row" style="margin-bottom:4px;">
+          <div class="form-group" style="margin-bottom:0;flex:1.25;">
+            <label class="form-label" for="dash-resend-key">Resend API Key</label>
+            <div class="with-btn">
+              <input type="password" class="form-input" id="dash-resend-key" placeholder="re_... (saved locally to .env)" autocomplete="off">
+              <button type="button" class="btn btn-secondary" onclick="toggleVisibility('dash-resend-key')">Show</button>
+            </div>
+          </div>
+          <div class="form-group" style="margin-bottom:0;flex:1;">
+            <label class="form-label" for="dash-resend-from">From Address (Sandbox)</label>
+            <input type="email" class="form-input" id="dash-resend-from" placeholder="onboarding@resend.dev" autocomplete="off">
+          </div>
+        </div>
+        <div class="resend-actions">
+          <button type="button" class="btn btn-primary btn-sm" id="dash-resend-save-btn" onclick="connectResendFromDashboard(this)">Save &amp; Connect</button>
+          <button type="button" class="btn btn-secondary btn-sm" onclick="fillDashboardResendSandbox()">Use Sandbox</button>
+          <button type="button" class="btn btn-secondary btn-sm" onclick="openTestSendModal()">Send Test</button>
+        </div>
+        <div id="dash-resend-result" style="font-size:12px;"></div>
+      </div>
+
+      <div id="today-setup"></div>
+    </div>
+  </div>
 </div>
 
-<!-- Signals: the confirmation gate -->
 <!-- Your company: everything VeloReach writes from (sellbird.offer) -->
 <div id="company" class="section">
   <div class="section-head">
     <div>
       <h2>Your company</h2>
-      <p>Everything VeloReach writes from: what you sell, who you sell to, the offer every first email ends with, and who it's from. Edit any of it here, or talk it through with your coding agent.</p>
+      <p>What you sell, who you sell to, the offer every first email ends with, and who it's from.</p>
     </div>
   </div>
   <div id="company-body" class="company-body"><div class="loading" role="status">Loading…</div></div>
 </div>
 
+<!-- Signals: qualification catalog & cohort builder -->
 <div id="signals" class="section">
   <div class="section-head">
     <div>
       <h2>Lead Qualification Signals</h2>
-      <p>Choose which signals VeloReach collects and uses to score high-intent companies (e.g. website gaps, reviews, hiring). Only confirmed signals are actively tracked.</p>
+      <p>Choose which signals VeloReach tracks to score high-intent companies, and build target cohorts from confirmed signals.</p>
     </div>
   </div>
-  <div class="feature-guide">
-    <span><b>How Signals work:</b></span>
-    <span class="fg-note">1. Confirm signals below to qualify leads</span>
-    <span class="fg-note">2. Cohort Builder filters your company database</span>
+  <div class="subtabs" id="signals-subtabs" role="tablist" aria-label="Signals views">
+    <button type="button" class="subtab-btn active" role="tab" aria-selected="true" data-signals-tab="catalog" onclick="setSignalsSubtab('catalog', this)">Signal Catalog</button>
+    <button type="button" class="subtab-btn" role="tab" aria-selected="false" data-signals-tab="cohort" onclick="setSignalsSubtab('cohort', this)">Cohort Builder</button>
   </div>
-  <div id="signals-summary"></div>
-  <div id="signals-groups"></div>
-
-  <div class="subhead">Cohort Builder <span class="hint">Test which companies qualify for outreach</span></div>
-  <div class="card">
-    <p class="lede">Pick required signals (must have) and disqualifying signals (exclude) to preview matching companies before drafting outreach.</p>
-    <div id="cohort-builder"></div>
-    <div id="cohort-result"></div>
+  <div id="signals-catalog-pane" data-signals-pane="catalog">
+    <div id="signals-summary"></div>
+    <div id="signals-groups"></div>
+  </div>
+  <div id="signals-cohort-pane" class="subview-hidden" data-signals-pane="cohort">
+    <div class="card">
+      <h3>Cohort Builder</h3>
+      <p class="lede">Pick required signals (must have) and disqualifying signals (exclude) to preview matching companies before drafting outreach.</p>
+      <div id="cohort-builder"></div>
+      <div id="cohort-result"></div>
+    </div>
   </div>
 </div>
 
-<!-- Discover: Apollo-style Search & Lead Engine -->
+<!-- Discover: Search & Lead Engine -->
 <div id="discover" class="section">
   <div class="section-head">
     <div>
       <h2>Lead Finder</h2>
-      <p>Search any business vertical and location, choose a $0 keyless or API source, and extract verified leads straight into Companies &amp; Contacts.</p>
+      <p>Search any business vertical and location using $0 keyless or API sources, and extract verified leads straight into Companies &amp; Contacts.</p>
     </div>
-  </div>
-  <div class="feature-guide">
-    <span><b>Lead Engine:</b></span>
-    <span class="fg-note">1. Enter query &amp; location below</span>
-    <span class="fg-note">2. Pick $0 Free Keyless or API source</span>
-    <span class="fg-note">3. Auto-scrapes websites &amp; contact emails</span>
   </div>
   <div id="discover-profile"></div>
 
-  <div class="subhead">1. Search &amp; Filters</div>
-  <div class="card">
-    <div style="margin-bottom:12px">
-      <div class="form-label" style="margin-bottom:6px">Quick Business Chips <span class="hint">(click to fill search query)</span></div>
-      <div class="chip-row">
+  <div class="card discover-search-card">
+    <div class="form-row discover-bar">
+      <div class="form-group" style="flex:1.4">
+        <label class="form-label" for="disc-query">Businesses / leads to find</label>
+        <input class="form-input" id="disc-query" placeholder="e.g. dentist, hvac, saas (blank = ICP)" autocomplete="off">
+      </div>
+      <div class="form-group" style="flex:1.5">
+        <label class="form-label" for="disc-cities">Cities / locations</label>
+        <input class="form-input" id="disc-cities" placeholder="Austin, TX; Denver, CO (separate with ;)" autocomplete="off">
+      </div>
+      <div class="form-group" style="flex:1">
+        <label class="form-label" for="disc-preset">Preset mode</label>
+        <select class="form-input" id="disc-preset" title="Optional startup or hiring search presets">
+          <option value="">Exact business query / ICP</option>
+          <option value="yc">YC startups</option>
+          <option value="accelerator">Accelerator startups</option>
+          <option value="funding">Recently funded</option>
+          <option value="hiring">Companies hiring for your roles</option>
+        </select>
+      </div>
+      <div class="form-group discover-bar-actions" style="flex:0 0 auto">
+        <div class="btn-group" style="margin-top:0">
+          <button class="btn btn-primary" id="disc-run" onclick="runDiscovery()">Find New Leads</button>
+          <button class="btn btn-danger" id="disc-stop" onclick="stopDiscovery()" style="display:none">Stop</button>
+        </div>
+      </div>
+    </div>
+
+    <details class="more-fields" id="disc-advanced" style="margin-top:10px;margin-bottom:0">
+      <summary>Filters, limits &amp; industry shortcuts</summary>
+      <div class="chip-row" style="margin-bottom:12px">
         <button type="button" class="chip" onclick="pickDiscoverChip('dentist')">dentist</button>
         <button type="button" class="chip" onclick="pickDiscoverChip('hvac')">hvac</button>
         <button type="button" class="chip" onclick="pickDiscoverChip('plumber')">plumber</button>
@@ -308,53 +338,30 @@
         <button type="button" class="chip" onclick="pickDiscoverChip('saas')">saas</button>
         <button type="button" class="chip" onclick="pickDiscoverChip('marketing agency')">marketing agency</button>
       </div>
-    </div>
-    <div class="form-row" style="margin-bottom:4px">
-      <div class="form-group" style="flex:1.4">
-        <label class="form-label" for="disc-query">What businesses / leads to find</label>
-        <input class="form-input" id="disc-query" placeholder="e.g. dentist, hvac, saas (blank = ICP)" autocomplete="off">
+      <div class="form-row" style="margin-bottom:8px">
+        <div class="form-group">
+          <label class="form-label" for="disc-limit">Results per query <span class="hint muted">(max leads kept)</span></label>
+          <input class="form-input" id="disc-limit" type="number" value="50" min="1" max="1000">
+        </div>
+        <div class="form-group">
+          <label class="form-label" for="disc-depth">Search depth <span class="hint muted">(SERP pages scanned)</span></label>
+          <input class="form-input" id="disc-depth" type="number" value="30" min="10" max="100" step="10">
+        </div>
+        <div class="form-group">
+          <label class="form-label" for="disc-cap">Spend cap ($) <span class="hint muted">($0 on free sources)</span></label>
+          <input class="form-input" id="disc-cap" type="number" value="1.00" min="0" step="0.25">
+        </div>
       </div>
-      <div class="form-group" style="flex:1.6">
-        <label class="form-label" for="disc-cities">Cities / Locations</label>
-        <input class="form-input" id="disc-cities" placeholder="Austin, TX; Denver, CO (separate cities with ;)" autocomplete="off">
+      <div>
+        <button type="button" class="btn btn-secondary btn-sm" onclick="estimateDiscovery()">Preview Queries &amp; Cost</button>
       </div>
-      <div class="form-group">
-        <label class="form-label" for="disc-preset">Preset mode</label>
-        <select class="form-input" id="disc-preset" title="Optional startup or hiring search presets">
-          <option value="">Exact business query / ICP</option>
-          <option value="yc">YC startups</option>
-          <option value="accelerator">Accelerator startups</option>
-          <option value="funding">Recently funded</option>
-          <option value="hiring">Companies hiring for your roles</option>
-        </select>
-      </div>
-    </div>
-    <div class="form-row" style="margin-bottom:4px">
-      <div class="form-group">
-        <label class="form-label" for="disc-limit">Results per query <span class="hint muted">(max leads kept)</span></label>
-        <input class="form-input" id="disc-limit" type="number" value="50" min="1" max="1000">
-      </div>
-      <div class="form-group">
-        <label class="form-label" for="disc-depth">Search depth <span class="hint muted">(SERP pages scanned)</span></label>
-        <input class="form-input" id="disc-depth" type="number" value="30" min="10" max="100" step="10">
-      </div>
-      <div class="form-group">
-        <label class="form-label" for="disc-cap">Spend cap ($) <span class="hint muted">($0 on free sources)</span></label>
-        <input class="form-input" id="disc-cap" type="number" value="1.00" min="0" step="0.25">
-      </div>
-    </div>
+    </details>
     <div id="discover-estimate"></div>
-    <div class="btn-group">
-      <button class="btn btn-primary" id="disc-run" onclick="runDiscovery()">Find New Leads</button>
-      <button class="btn btn-secondary" onclick="estimateDiscovery()">Preview Queries &amp; Cost</button>
-      <button class="btn btn-danger" id="disc-stop" onclick="stopDiscovery()" style="display:none">
-        Stop</button>
-    </div>
   </div>
   <div id="discover-result"></div>
 
   <div class="subhead" style="display:flex;align-items:center;justify-content:space-between;gap:10px;flex-wrap:wrap">
-    <span>2. Data Source</span>
+    <span>Data Source</span>
     <span class="segmented" role="group" aria-label="Filter discovery sources">
       <button type="button" class="on" id="disc-filter-all" onclick="setDiscoverFilter('all')">All Sources</button>
       <button type="button" id="disc-filter-free" onclick="setDiscoverFilter('free')">Free Keyless ($0 Ready)</button>
@@ -365,16 +372,15 @@
 
 <!-- Companies -->
 <div id="companies" class="section">
-  <div class="section-head"><div><h2>Companies</h2><p>Discovered &amp; profiled businesses ranked by ICP fit. Click any row to inspect website signals and contacts.</p></div>
+  <div class="section-head">
+    <div>
+      <h2>Companies</h2>
+      <p>Discovered &amp; profiled businesses ranked by ICP fit. Click any row to inspect website signals and contacts.</p>
+    </div>
     <div class="page-actions">
       <button class="btn btn-primary btn-sm" id="companies-batch-research-btn" onclick="runBatchResearch(this)">Deep Research (Top 5)</button>
       <button class="btn btn-secondary btn-sm" onclick="downloadCsv('/api/export/companies.csv', 'company-register.csv', this)"><svg class="icon" aria-hidden="true"><use href="#i-download"/></svg>Export register</button>
-    </div></div>
-  <div class="feature-guide">
-    <span><b>Company Pipeline:</b></span>
-    <span class="fg-note">Click any row for signals &amp; contacts</span>
-    <span class="fg-note">Deep Research (Top 5) fetches AI buying triggers</span>
-    <span class="fg-note">Export register CSV anytime</span>
+    </div>
   </div>
   <div id="companies-list"></div>
 </div>
@@ -382,20 +388,22 @@
 <!-- Contacts -->
 <div id="prospects" class="section">
   <div class="section-head">
-    <div><h2>Contacts</h2><p>Manage leads, edit profiles &amp; email history, segment with tags, or run bulk actions.</p></div>
+    <div>
+      <h2>Contacts</h2>
+      <p>Manage leads, edit profiles &amp; email history, segment with tags, or run bulk actions.</p>
+    </div>
     <div class="page-actions">
       <button class="btn btn-primary btn-sm" onclick="openAddContactModal()">+ Add Contact</button>
       <button class="btn btn-secondary btn-sm" onclick="openImportCsvModal()">+ Import CSV</button>
       <button class="btn btn-secondary btn-sm" id="suppressions-toggle-btn" onclick="toggleSuppressionsPanel()">Suppressions</button>
-      <button class="btn btn-secondary btn-sm" onclick="downloadCsv('/api/export/prospects.csv', 'prospects.csv', this)"><svg class="icon" aria-hidden="true"><use href="#i-download"/></svg>Export deliverable</button>
-      <button class="btn btn-ghost btn-sm" onclick="downloadCsv('/api/export/prospects.csv?all=true', 'prospects-all.csv', this)">Export all</button>
+      <details class="more-wrap" ontoggle="this.classList.toggle('open', this.open)">
+        <summary class="btn btn-secondary btn-sm"><svg class="icon" aria-hidden="true"><use href="#i-download"/></svg>Export</summary>
+        <div class="more-menu" role="menu">
+          <button type="button" class="more-item" role="menuitem" onclick="downloadCsv('/api/export/prospects.csv', 'prospects.csv', this);var d=this.closest('details');if(d)d.open=false;">Export deliverable</button>
+          <button type="button" class="more-item" role="menuitem" onclick="downloadCsv('/api/export/prospects.csv?all=true', 'prospects-all.csv', this);var d=this.closest('details');if(d)d.open=false;">Export all</button>
+        </div>
+      </details>
     </div>
-  </div>
-  <div class="feature-guide">
-    <span><b>What you can do here:</b></span>
-    <span class="fg-note">Click any name or Edit to view history</span>
-    <span class="fg-note">Check rows for bulk Tag / Suppress / Delete</span>
-    <span class="fg-note">Filter by Tags for Campaigns</span>
   </div>
   <div id="suppressions-panel" style="display:none;margin-bottom:14px"></div>
   <div id="prospects-table"></div>
@@ -404,22 +412,27 @@
 <!-- Campaigns -->
 <div id="campaigns" class="section">
   <div class="section-head">
-    <div><h2>Campaigns</h2><p>Create multi-step A/B email sequences, save templates, launch to Outbox, and track step &amp; reply analytics.</p></div>
+    <div>
+      <h2>Campaigns</h2>
+      <p>Create multi-step A/B email sequences, manage templates, launch to Outbox, and track step &amp; reply analytics.</p>
+    </div>
     <div class="page-actions">
       <button class="btn btn-secondary btn-sm" id="templates-btn" onclick="openTemplatesModal()">Templates Library</button>
       <button class="btn btn-secondary btn-sm" id="new-campaign-btn" onclick="openCampaignBuilderModal()">+ New Campaign</button>
       <button class="btn btn-primary btn-sm" id="writer-run-btn" onclick="triggerWriterRun(this)">Write Emails Now</button>
     </div>
   </div>
-  <div class="feature-guide">
-    <span><b>Campaign tools:</b></span>
-    <span class="fg-note">+ New Campaign drafts AI A/B steps</span>
-    <span class="fg-note">Test Email previews safely via Resend</span>
-    <span class="fg-note">Launch stages emails to Outbox</span>
+  <div class="subtabs" id="campaigns-subtabs" role="tablist" aria-label="Campaign views">
+    <button type="button" class="subtab-btn active" role="tab" aria-selected="true" data-campaigns-tab="campaigns" onclick="setCampaignsSubtab('campaigns', this)">Campaigns</button>
+    <button type="button" class="subtab-btn" role="tab" aria-selected="false" data-campaigns-tab="funnel" onclick="setCampaignsSubtab('funnel', this)">Funnel &amp; Experiments</button>
   </div>
-  <div id="campaigns-funnel"></div>
-  <div id="frameworks-card"></div>
-  <div id="campaigns-list"></div>
+  <div id="campaigns-list-pane" data-campaigns-pane="campaigns">
+    <div id="campaigns-list"></div>
+  </div>
+  <div id="campaigns-funnel-pane" class="subview-hidden" data-campaigns-pane="funnel">
+    <div id="campaigns-funnel"></div>
+    <div id="frameworks-card"></div>
+  </div>
 </div>
 
 <!-- Outbox: the decisions desk -->
@@ -427,16 +440,16 @@
   <div class="section-head">
     <div>
       <h2>Outbox</h2>
-      <p>Review personalized drafts, catch missing merge tags, preview rendered HTML, and approve or bulk-queue sends &mdash;
+      <p>Review personalized drafts, preview rendered HTML, and approve or queue sends &mdash;
          <kbd>A</kbd> approve, <kbd>R</kbd> reject, <kbd>E</kbd> edit, <kbd>J</kbd>/<kbd>K</kbd> move.</p>
     </div>
     <div class="page-actions" id="outbox-actions"></div>
   </div>
-  <div class="feature-guide">
-    <span><b>Safety &amp; Bulk Review:</b></span>
-    <span class="fg-note">Test Preview renders HTML &amp; footer</span>
-    <span class="fg-note">Auto-blocks unrendered {{tag}} leaks</span>
-    <span class="fg-note">Select rows for bulk Approve / Reject</span>
+  <div class="subtabs" id="outbox-subtabs" role="tablist" aria-label="Outbox views">
+    <button type="button" class="subtab-btn active" role="tab" aria-selected="true" data-outbox-tab="review" onclick="setOutboxSubtab('review', this)">Review Queue</button>
+    <button type="button" class="subtab-btn" role="tab" aria-selected="false" data-outbox-tab="scheduled" onclick="setOutboxSubtab('scheduled', this)">Scheduled</button>
+    <button type="button" class="subtab-btn" role="tab" aria-selected="false" data-outbox-tab="sent" onclick="setOutboxSubtab('sent', this)">Sent</button>
+    <button type="button" class="subtab-btn" role="tab" aria-selected="false" data-outbox-tab="failed" onclick="setOutboxSubtab('failed', this)">Failed</button>
   </div>
   <div id="outbox-banner"></div>
   <div id="outbox-desk"></div>
@@ -445,11 +458,11 @@
 
 <!-- Conversations -->
 <div id="conversations" class="section">
-  <div class="section-head"><div><h2>Conversations</h2><p>Track prospect replies, draft AI/manual responses directly to Outbox, and book meetings.</p></div></div>
-  <div class="feature-guide">
-    <span><b>Reply Handling:</b></span>
-    <span class="fg-note">Reply writes manually, via AI, or Template</span>
-    <span class="fg-note">Book Meeting inserts live calendar slots</span>
+  <div class="section-head">
+    <div>
+      <h2>Conversations</h2>
+      <p>Track prospect replies, draft AI or manual responses to Outbox, and book calendar slots.</p>
+    </div>
   </div>
   <div id="conversations-list"></div>
 </div>
@@ -459,14 +472,9 @@
   <div class="section-head">
     <div>
       <h2>Inboxes</h2>
-      <p>Connect multiple sender mailboxes to scale daily cold outreach safely. Replies automatically route back to the inbox that started the thread.</p>
+      <p>Connect sender mailboxes to rotate daily cold outreach safely. Replies route back to the inbox that started the thread.</p>
     </div>
     <div class="page-actions" id="inboxes-actions"></div>
-  </div>
-  <div class="feature-guide">
-    <span><b>Sender Setup:</b></span>
-    <span class="fg-note">Connect Gmail / M365 OAuth here, or activate Resend SMTP in Settings</span>
-    <span class="fg-note">Daily caps rotate sends safely</span>
   </div>
   <div id="inboxes-list"></div>
 </div>
@@ -483,10 +491,13 @@
       <label class="form-label" for="col-name">Column Display Name</label>
       <input type="text" class="form-input" id="col-name" placeholder="e.g. Tech Stack Deep Dive" oninput="autoSlugColKey(this.value)">
     </div>
-    <div class="form-group">
-      <label class="form-label" for="col-key">Column Identifier Key</label>
-      <input type="text" class="form-input" id="col-key" placeholder="e.g. tech_stack_analysis">
-    </div>
+    <details class="more-fields">
+      <summary>Column slug (auto-generated)</summary>
+      <div class="form-group" style="margin-bottom:0">
+        <label class="form-label" for="col-key">Column Identifier Key</label>
+        <input type="text" class="form-input" id="col-key" placeholder="e.g. tech_stack_analysis">
+      </div>
+    </details>
     <div class="form-group">
       <label class="form-label" for="col-prompt">AI Research Prompt Instruction</label>
       <textarea class="form-input" id="col-prompt" rows="3" placeholder="Instruct the AI what to research and evaluate about this company or prospect..."></textarea>
@@ -701,32 +712,38 @@
     </div>
   </div>
   <div class="modal-body">
-    <div class="cb-step-card">
-      <div class="cb-step-bar">
-        <span class="cb-step-label" id="tpl-form-title">Save New Template</span>
-        <button type="button" class="btn btn-ghost btn-sm" id="tpl-cancel-edit-btn" style="display:none" onclick="resetTemplateForm()">Cancel Edit</button>
+    <div class="toolbar" style="justify-content:space-between;margin-bottom:10px;">
+      <span class="hint">Saved templates ready to insert into campaigns and replies.</span>
+      <button type="button" class="btn btn-primary btn-sm" id="tpl-new-btn" onclick="if(typeof toggleTemplateEditor==='function'){toggleTemplateEditor();}else{var w=document.getElementById('tpl-editor-wrap');if(w){w.classList.toggle('subview-hidden');if(!w.classList.contains('subview-hidden'))resetTemplateForm();}}">+ New Template</button>
+    </div>
+    <div id="tpl-editor-wrap" class="subview-hidden">
+      <div class="cb-step-card">
+        <div class="cb-step-bar">
+          <span class="cb-step-label" id="tpl-form-title">Save New Template</span>
+          <button type="button" class="btn btn-ghost btn-sm" id="tpl-cancel-edit-btn" style="display:none" onclick="resetTemplateForm()">Cancel Edit</button>
+        </div>
+        <div class="form-row">
+          <div class="form-group"><label class="form-label" for="tpl-name">Template name *</label>
+            <input type="text" class="form-input" id="tpl-name" placeholder="e.g. SaaS Cold Intro" autocomplete="off"></div>
+          <div class="form-group"><label class="form-label" for="tpl-category">Category</label>
+            <select class="form-input" id="tpl-category">
+              <option value="cold">Cold Outreach</option>
+              <option value="followup">Follow-Up</option>
+              <option value="local">Local Business</option>
+              <option value="reply">Reply / Booking</option>
+              <option value="general">General</option>
+            </select></div>
+        </div>
+        <div class="form-row">
+          <div class="form-group"><label class="form-label" for="tpl-subject">Subject line *</label>
+            <input type="text" class="form-input" id="tpl-subject" placeholder="Quick idea for {{company}}" autocomplete="off"></div>
+          <div class="form-group"><label class="form-label" for="tpl-tags">Tags (optional)</label>
+            <input type="text" class="form-input" id="tpl-tags" placeholder="saas, founder" autocomplete="off"></div>
+        </div>
+        <div class="form-group"><label class="form-label" for="tpl-body">Body *</label>
+          <textarea class="form-input" id="tpl-body" rows="4" placeholder="Hi {{first_name}}, ..."></textarea></div>
+        <button type="button" class="btn btn-primary btn-sm" id="tpl-save-btn" onclick="saveTemplateForm(this)">Save Template</button>
       </div>
-      <div class="form-row">
-        <div class="form-group"><label class="form-label" for="tpl-name">Template name *</label>
-          <input type="text" class="form-input" id="tpl-name" placeholder="e.g. SaaS Cold Intro" autocomplete="off"></div>
-        <div class="form-group"><label class="form-label" for="tpl-category">Category</label>
-          <select class="form-input" id="tpl-category">
-            <option value="cold">Cold Outreach</option>
-            <option value="followup">Follow-Up</option>
-            <option value="local">Local Business</option>
-            <option value="reply">Reply / Booking</option>
-            <option value="general">General</option>
-          </select></div>
-      </div>
-      <div class="form-row">
-        <div class="form-group"><label class="form-label" for="tpl-subject">Subject line *</label>
-          <input type="text" class="form-input" id="tpl-subject" placeholder="Quick idea for {{company}}" autocomplete="off"></div>
-        <div class="form-group"><label class="form-label" for="tpl-tags">Tags (optional)</label>
-          <input type="text" class="form-input" id="tpl-tags" placeholder="saas, founder" autocomplete="off"></div>
-      </div>
-      <div class="form-group"><label class="form-label" for="tpl-body">Body *</label>
-        <textarea class="form-input" id="tpl-body" rows="4" placeholder="Hi {{first_name}}, ..."></textarea></div>
-      <button type="button" class="btn btn-primary btn-sm" id="tpl-save-btn" onclick="saveTemplateForm(this)">Save Template</button>
     </div>
     <div id="templates-list"></div>
   </div>
@@ -741,21 +758,17 @@
     <button class="btn btn-ghost" onclick="closeTestSendModal()"><svg class="icon"><use href="#i-close"/></svg></button>
   </div>
   <div class="modal-body">
-    <div class="feature-guide" style="margin-bottom:12px;">
-      <span><b>Safe Test Mode:</b></span>
-      <span>Sends only 1 single test email to the target address below (live prospects in Contacts &amp; Outbox are never emailed).</span>
-    </div>
-    <div class="form-row">
-      <div class="form-group"><label class="form-label" for="ts-email">Test recipient email (or click a Resend test address below)</label>
+    <p class="form-hint" style="margin:0 0 12px;">Safe Test Mode: sends only 1 test email to the address below; live prospects in Contacts &amp; Outbox are never emailed.</p>
+    <div class="form-group">
+      <label class="form-label" for="ts-email">Test recipient email</label>
+      <div class="with-btn">
         <input type="email" class="form-input" id="ts-email" placeholder="you@yourdomain.com or delivered@resend.dev" autocomplete="off">
-        <div class="quick-chips" style="margin-top:6px;">
-          <button type="button" class="chip-btn" onclick="pickTestEmail('delivered@resend.dev')">delivered@resend.dev (Pass)</button>
-          <button type="button" class="chip-btn" onclick="pickTestEmail('bounced@resend.dev')">bounced@resend.dev (Bounce)</button>
-          <button type="button" class="chip-btn" onclick="pickTestEmail('complained@resend.dev')">complained@resend.dev (Spam)</button>
-        </div>
-      </div>
-      <div class="form-group" style="display:flex;align-items:flex-end">
         <button type="button" class="btn btn-primary btn-sm" id="ts-run-btn" onclick="runTestSendPreview(this)">Send Test / Render Preview</button>
+      </div>
+      <div class="quick-chips" style="margin-top:8px;">
+        <button type="button" class="chip-btn" onclick="pickTestEmail('delivered@resend.dev')">delivered@resend.dev (Pass)</button>
+        <button type="button" class="chip-btn" onclick="pickTestEmail('bounced@resend.dev')">bounced@resend.dev (Bounce)</button>
+        <button type="button" class="chip-btn" onclick="pickTestEmail('complained@resend.dev')">complained@resend.dev (Spam)</button>
       </div>
     </div>
     <div id="ts-preview"></div>
@@ -765,12 +778,12 @@
   </div>
 </dialog>
 
-<!-- Brain Studio -->
+<!-- Brain Studio / AI Models -->
 <div id="brain" class="section">
   <div class="section-head">
     <div>
-      <h2>Brain Studio</h2>
-      <p>Configure universal OpenAI-compatible LLMs, multi-provider fallback chains, and per-role routing.</p>
+      <h2>AI Models</h2>
+      <p>Manage provider fallback chains, live-fetched model catalogs, and role routing.</p>
     </div>
     <label class="check-line" style="font-weight:600;color:var(--text);">
       <input type="checkbox" id="brain-activate-router" onchange="toggleActivateRouter(this.checked)">
@@ -803,7 +816,11 @@
 
   <div class="subhead">Fallback Provider Chain <span class="hint">Top-to-bottom automatic failover</span></div>
   <div class="card">
-    <p class="desc">Requests try the first provider. If rate-limited, timed out, or returning a 5xx error, the router automatically fails over to the next provider in line.</p>
+    <p class="desc">Requests try the top provider first and automatically fail over on rate limits, timeouts, or 5xx responses.</p>
+    <div class="toolbar" style="justify-content:space-between;margin:var(--sp-3) 0;">
+      <div id="brain-key-bar" class="chip-row"></div>
+      <button type="button" class="btn btn-secondary btn-sm" id="brain-fetch-all-btn" onclick="fetchAllBrainModels(this)">Fetch All Active Models</button>
+    </div>
     <div id="brain-chain-container" style="display: flex; flex-direction: column; gap: 8px; margin-bottom: var(--sp-4);"></div>
     <div class="btn-group">
       <button class="btn btn-secondary" onclick="addChainRow()">+ Add Provider</button>
@@ -811,9 +828,9 @@
     </div>
   </div>
 
-  <div class="subhead">Specialized Role Routing <span class="hint">Assign the right model to each task</span></div>
+  <div class="subhead">Specialized Role Routing <span class="hint">Inherits chain by default &bull; set overrides per agent</span></div>
   <div class="card">
-    <p class="desc">Route high-volume extraction to fast, cheap models (DeepSeek V4.1 Flash, Gemini Flash, Groq) and persuasive copywriting to capable reasoning models.</p>
+    <p class="desc">Every agent inherits your active Fallback Chain automatically. Leave fields blank to inherit, or enter a provider and model to override that role.</p>
     <div class="roles-grid" id="brain-roles-grid"></div>
     <div style="margin-top: var(--sp-4)">
       <button class="btn btn-primary" onclick="saveBrainRoles()">Save Role Assignments</button>
@@ -830,7 +847,7 @@
 
     <div style="margin-top: var(--sp-5); border-top: 1px solid var(--line); padding-top: var(--sp-4);">
       <h3>Interactive Model Probe</h3>
-      <p class="desc">Send a real test prompt through the router to verify latency, JSON output, and token accounting.</p>
+      <p class="desc">Send a test prompt through the router to verify latency, JSON output, and token accounting.</p>
       <div class="form-row">
         <div class="form-group" style="max-width: 220px">
           <label class="form-label" for="probe-role">Agent Role</label>
@@ -861,52 +878,61 @@
   <div class="section-head">
     <div>
       <h2>AI Data Enrichment Matrix</h2>
-      <p>Add custom AI research columns (like a spreadsheet) to extract pricing, tools used, or buying signals for every company.</p>
+      <p>Extract custom structured intelligence across every company with source citations and CSV export.</p>
     </div>
-  </div>
-  <div class="feature-guide">
-    <span><b>How Enrichment works:</b></span>
-    <span class="fg-note">1. + Add AI Column</span>
-    <span class="fg-note">2. Run Batch Enrichment</span>
-    <span class="fg-note">3. Export CSV with citations</span>
-  </div>
-
-  <div class="card">
-    <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: var(--sp-4);">
-      <div>
-        <h3>Custom Enrichment Columns</h3>
-        <p class="desc">Each column runs prompt instructions against company facts and live OSINT to produce structured data.</p>
-      </div>
-      <button class="btn btn-primary" onclick="openAddColumnModal()">+ Add AI Column</button>
-    </div>
-
-    <div class="clay-col-list" id="clay-column-list">
-      <div class="loading" role="status">Loading…</div>
-    </div>
-
-    <div style="display: flex; gap: var(--sp-3); align-items: center; border-top: 1px solid var(--line); padding-top: var(--sp-4);">
-      <button class="btn btn-primary" id="enrichment-run-btn" onclick="triggerEnrichmentRun()">Run Batch Enrichment</button>
-      <span id="enrichment-run-status" class="hint">Processes un-enriched companies and prospects</span>
+    <div class="page-actions">
+      <button type="button" class="btn btn-secondary btn-sm" onclick="openAddColumnModal()">+ Add AI Column</button>
+      <button type="button" class="btn btn-primary btn-sm" id="enrichment-run-btn" onclick="triggerEnrichmentRun()">Run Batch Enrichment</button>
+      <button type="button" class="btn btn-secondary btn-sm" onclick="downloadCsv('/api/export/enrichment.csv', 'enrichment-matrix.csv', this)"><svg class="icon" aria-hidden="true"><use href="#i-download"/></svg>Export CSV</button>
     </div>
   </div>
 
   <div class="card" id="clay-data-matrix">
-    <div style="display: flex; justify-content: space-between; align-items: center; gap: var(--sp-3); flex-wrap: wrap; margin-bottom: var(--sp-4);">
+    <div style="display:flex;justify-content:space-between;align-items:center;gap:var(--sp-3);flex-wrap:wrap;margin-bottom:var(--sp-3);">
       <div>
         <h3>Enriched Company Data Matrix</h3>
-        <p class="desc">Enriched values, clickable source citations, and per-company runs across your custom AI columns.</p>
+        <p class="desc" id="enrichment-run-status">Processes un-enriched companies and prospects across your custom AI columns.</p>
       </div>
-      <button class="btn btn-secondary btn-sm" onclick="downloadCsv('/api/export/enrichment.csv', 'enrichment-matrix.csv', this)"><svg class="icon" aria-hidden="true"><use href="#i-download"/></svg>Export CSV</button>
     </div>
     <div id="clay-matrix-table">
       <div class="loading" role="status">Loading…</div>
     </div>
   </div>
+
+  <details id="enrichment-cols-drawer" class="card">
+    <summary style="cursor:pointer;font-weight:600;display:flex;align-items:center;justify-content:space-between;gap:10px;">
+      <span>Manage AI Columns &amp; Prompts</span>
+      <span class="hint">Add, run individual columns, or delete prompts</span>
+    </summary>
+    <div style="margin-top:var(--sp-4);">
+      <div class="clay-col-list" id="clay-column-list">
+        <div class="loading" role="status">Loading…</div>
+      </div>
+      <div>
+        <button type="button" class="btn btn-secondary btn-sm" onclick="openAddColumnModal()">+ Add AI Column</button>
+      </div>
+    </div>
+  </details>
 </div>
 
 <!-- Activity -->
 <div id="activity" class="section">
   <div class="section-head"><div><h2>Activity</h2><p>A running log of every action VeloReach's agents have taken.</p></div></div>
+  <div class="toolbar">
+    <input type="search" class="form-input" id="activity-search" placeholder="Search actions, contacts, or domains…" aria-label="Search activity log" oninput="if(typeof renderActivity==='function')renderActivity()" style="flex:1;min-width:200px;">
+    <select class="form-input toolbar-select" id="activity-agent-filter" aria-label="Filter by agent" onchange="if(typeof renderActivity==='function')renderActivity()">
+      <option value="">All agents</option>
+      <option value="scout">Scout</option>
+      <option value="researcher">Researcher</option>
+      <option value="enricher">Enricher</option>
+      <option value="writer">Writer</option>
+      <option value="critic">Critic</option>
+      <option value="handler">Handler</option>
+      <option value="analyst">Analyst</option>
+      <option value="trainer">Trainer</option>
+      <option value="main">Main</option>
+    </select>
+  </div>
   <div id="activity-list"></div>
 </div>
 
@@ -921,412 +947,433 @@
 
 <!-- Settings -->
 <div id="settings" class="section">
-  <div class="section-head"><div><h2>Settings</h2><p>All keys stay local in <code>.env</code> and config lives in <code>sellbird.local.yaml</code>. Jump directly to any section below.</p></div></div>
+  <div class="section-head"><div><h2>Settings</h2><p>All keys stay local in <code>.env</code> and runtime config lives in <code>sellbird.local.yaml</code>.</p></div></div>
 
-  <div class="feature-guide" id="settings-jump">
-    <span><b>Quick Jump:</b></span>
-    <button type="button" class="fg-pill" onclick="jumpSettings('settings-email-providers')">1. Email &amp; Resend SMTP</button>
-    <button type="button" class="fg-pill" onclick="jumpSettings('sending-mode-card')">2. Sending Mode &amp; DNS</button>
-    <button type="button" class="fg-pill" onclick="jumpSettings('compliance-card')">3. Limits &amp; Warmup</button>
-    <button type="button" class="fg-pill" onclick="jumpSettings('settings-verifiers')">4. Verifiers</button>
-    <button type="button" class="fg-pill" onclick="jumpSettings('settings-ai-providers')">5. AI Models</button>
-    <button type="button" class="fg-pill" onclick="jumpSettings('settings-search-crm')">6. Search &amp; CRM</button>
-    <button type="button" class="fg-pill" onclick="jumpSettings('competitor-watch-card')">7. Competitor Watch</button>
+  <div class="subtabs" id="settings-subtabs" role="tablist" aria-label="Settings categories">
+    <button type="button" class="subtab-btn active" role="tab" aria-selected="true" data-settings-tab="email" onclick="setSettingsSubtab('email', this)">Email &amp; Sending</button>
+    <button type="button" class="subtab-btn" role="tab" aria-selected="false" data-settings-tab="compliance" onclick="setSettingsSubtab('compliance', this)">Compliance &amp; Warmup</button>
+    <button type="button" class="subtab-btn" role="tab" aria-selected="false" data-settings-tab="ai" onclick="setSettingsSubtab('ai', this)">AI Keys &amp; Endpoints</button>
+    <button type="button" class="subtab-btn" role="tab" aria-selected="false" data-settings-tab="integrations" onclick="setSettingsSubtab('integrations', this)">Search, CRM &amp; Alerts</button>
+    <button type="button" class="subtab-btn" role="tab" aria-selected="false" data-settings-tab="watch" onclick="setSettingsSubtab('watch', this)">Watch &amp; Verifiers</button>
   </div>
 
-  <div class="subhead" id="settings-email-providers" style="display:flex;align-items:center;justify-content:space-between;gap:10px;flex-wrap:wrap">
-    <span>Email Provider <span class="hint">Active: <b id="active-provider">…</b></span></span>
-    <span class="chip-row" aria-label="Switch active email provider">
-      <button type="button" class="chip" id="ep-gmail" onclick="switchEmailProvider('gmail')">Use Gmail</button>
-      <button type="button" class="chip" id="ep-smtp" onclick="switchEmailProvider('smtp')">Use SMTP / Resend</button>
-      <button type="button" class="chip" id="ep-microsoft" onclick="switchEmailProvider('microsoft')">Use M365</button>
-      <button type="button" class="chip" id="ep-instantly" onclick="switchEmailProvider('instantly')">Use Instantly</button>
-    </span>
-  </div>
-  <div class="card">
-    <div class="settings-row">
-      <div>
-        <h3>SMTP + IMAP mailbox <span class="tag accent">Resend SMTP Ready</span></h3>
-        <p class="desc">Use <strong>Resend</strong> (3,000 free/mo, ideal for live tests &amp; demos) or any real SMTP+IMAP mailbox (AgentMail, Fastmail, Google Workspace app password). Note: Resend is outbound SMTP only.</p>
-        <div style="margin-top:8px;">
-          <button type="button" class="btn btn-secondary btn-sm" onclick="fillResendPreset()">Use Resend SMTP Preset (smtp.resend.com)</button>
+  <div class="settings-panel" data-settings-tab="email">
+    <div class="subhead" id="settings-email-providers" style="display:flex;align-items:center;justify-content:space-between;gap:10px;flex-wrap:wrap">
+      <span>Email Provider <span class="hint">Active: <b id="active-provider">…</b></span></span>
+      <span class="chip-row" aria-label="Switch active email provider">
+        <button type="button" class="chip" id="ep-gmail" onclick="switchEmailProvider('gmail')">Use Gmail</button>
+        <button type="button" class="chip" id="ep-smtp" onclick="switchEmailProvider('smtp')">Use SMTP / Resend</button>
+        <button type="button" class="chip" id="ep-microsoft" onclick="switchEmailProvider('microsoft')">Use M365</button>
+        <button type="button" class="chip" id="ep-instantly" onclick="switchEmailProvider('instantly')">Use Instantly</button>
+      </span>
+    </div>
+    <div class="card">
+      <div class="settings-row">
+        <div>
+          <h3>SMTP + IMAP mailbox <span class="tag accent">Resend SMTP Ready</span></h3>
+          <p class="desc">Use <strong>Resend</strong> (3,000 free/mo, ideal for live tests &amp; demos) or any real SMTP+IMAP mailbox (AgentMail, Fastmail, Google Workspace app password). Note: Resend is outbound SMTP only.</p>
+          <div style="margin-top:8px;">
+            <button type="button" class="btn btn-secondary btn-sm" onclick="fillResendPreset()">Use Resend SMTP Preset (smtp.resend.com)</button>
+          </div>
         </div>
-      </div>
-      <div class="fields">
-        <div class="form-row">
-          <div class="form-group"><label class="form-label" for="smtp-host">SMTP host</label>
-            <input type="text" class="form-input" id="smtp-host" placeholder="smtp.example.com" autocomplete="off"></div>
-          <div class="form-group" style="max-width:120px"><label class="form-label" for="smtp-port">Port</label>
-            <input type="text" class="form-input" id="smtp-port" placeholder="587" autocomplete="off"></div>
-        </div>
-        <div class="form-group"><label class="form-label" for="smtp-user">Username</label>
-          <input type="text" class="form-input" id="smtp-user" placeholder="you@example.com or resend" autocomplete="off"></div>
-        <div class="form-group"><label class="form-label" for="smtp-pass">Password / API key</label>
-          <div class="with-btn"><input type="password" class="form-input" id="smtp-pass" placeholder="Password or Resend API key (re_...)" autocomplete="off">
-            <button class="btn btn-secondary" onclick="toggleVisibility('smtp-pass')">Show</button></div></div>
-        <div class="form-group"><label class="form-label" for="smtp-from">From address override <span class="hint muted">(e.g. onboarding@resend.dev for test mode)</span></label>
-          <input type="email" class="form-input" id="smtp-from" placeholder="Leave blank to use Your Company email, or onboarding@resend.dev" autocomplete="off"></div>
-        <details class="more-fields">
-          <summary>Reading replies from a different IMAP server or login</summary>
+        <div class="fields">
           <div class="form-row">
-            <div class="form-group"><label class="form-label" for="imap-host">IMAP host</label>
-              <input type="text" class="form-input" id="imap-host" placeholder="Same as SMTP host (blank for Resend)" autocomplete="off"></div>
-            <div class="form-group" style="max-width:120px"><label class="form-label" for="imap-port">Port</label>
-              <input type="text" class="form-input" id="imap-port" placeholder="993" autocomplete="off"></div>
+            <div class="form-group"><label class="form-label" for="smtp-host">SMTP host</label>
+              <input type="text" class="form-input" id="smtp-host" placeholder="smtp.example.com" autocomplete="off"></div>
+            <div class="form-group" style="max-width:120px"><label class="form-label" for="smtp-port">Port</label>
+              <input type="text" class="form-input" id="smtp-port" placeholder="587" autocomplete="off"></div>
           </div>
-          <div class="form-group"><label class="form-label" for="imap-user">IMAP username</label>
-            <input type="text" class="form-input" id="imap-user" placeholder="Same as SMTP username" autocomplete="off"></div>
-          <div class="form-group"><label class="form-label" for="imap-pass">IMAP password</label>
-            <div class="with-btn"><input type="password" class="form-input" id="imap-pass" placeholder="Same as SMTP password" autocomplete="off" oninput="if (this.value) document.getElementById('imap-same-pass').checked = false">
-              <button class="btn btn-secondary" onclick="toggleVisibility('imap-pass')">Show</button></div></div>
-          <label class="check-line"><input type="checkbox" id="imap-same-pass"> Use the SMTP password for IMAP</label>
-        </details>
-        <div style="display:flex;gap:8px;align-items:center;flex-wrap:wrap;margin-top:6px;">
-          <button class="btn btn-primary btn-sm" onclick="saveSmtp(true)">Save &amp; Activate SMTP</button>
-          <button class="btn btn-secondary btn-sm" onclick="saveSmtp(false)">Save Credentials Only</button>
-          <button class="btn btn-secondary btn-sm" id="test-smtp-btn" onclick="testSmtpConnection(this)">Test SMTP / IMAP</button>
-          <span id="smtp-test-result" class="muted" style="font-size:12px;"></span>
+          <div class="form-group"><label class="form-label" for="smtp-user">Username</label>
+            <input type="text" class="form-input" id="smtp-user" placeholder="you@example.com or resend" autocomplete="off"></div>
+          <div class="form-group"><label class="form-label" for="smtp-pass">Password / API key</label>
+            <div class="with-btn"><input type="password" class="form-input" id="smtp-pass" placeholder="Password or Resend API key (re_...)" autocomplete="off">
+              <button class="btn btn-secondary" onclick="toggleVisibility('smtp-pass')">Show</button></div></div>
+          <div class="form-group"><label class="form-label" for="smtp-from">From address override <span class="hint muted">(e.g. onboarding@resend.dev for test mode)</span></label>
+            <input type="email" class="form-input" id="smtp-from" placeholder="Leave blank to use Your Company email, or onboarding@resend.dev" autocomplete="off"></div>
+          <details class="more-fields">
+            <summary>Reading replies from a different IMAP server or login</summary>
+            <div class="form-row">
+              <div class="form-group"><label class="form-label" for="imap-host">IMAP host</label>
+                <input type="text" class="form-input" id="imap-host" placeholder="Same as SMTP host (blank for Resend)" autocomplete="off"></div>
+              <div class="form-group" style="max-width:120px"><label class="form-label" for="imap-port">Port</label>
+                <input type="text" class="form-input" id="imap-port" placeholder="993" autocomplete="off"></div>
+            </div>
+            <div class="form-group"><label class="form-label" for="imap-user">IMAP username</label>
+              <input type="text" class="form-input" id="imap-user" placeholder="Same as SMTP username" autocomplete="off"></div>
+            <div class="form-group"><label class="form-label" for="imap-pass">IMAP password</label>
+              <div class="with-btn"><input type="password" class="form-input" id="imap-pass" placeholder="Same as SMTP password" autocomplete="off" oninput="if (this.value) document.getElementById('imap-same-pass').checked = false">
+                <button class="btn btn-secondary" onclick="toggleVisibility('imap-pass')">Show</button></div></div>
+            <label class="check-line"><input type="checkbox" id="imap-same-pass"> Use the SMTP password for IMAP</label>
+          </details>
+          <div style="display:flex;gap:8px;align-items:center;flex-wrap:wrap;margin-top:6px;">
+            <button class="btn btn-primary btn-sm" onclick="saveSmtp(true)">Save &amp; Activate SMTP</button>
+            <button class="btn btn-secondary btn-sm" onclick="saveSmtp(false)">Save Credentials Only</button>
+            <button class="btn btn-secondary btn-sm" id="test-smtp-btn" onclick="testSmtpConnection(this)">Test SMTP / IMAP</button>
+            <span id="smtp-test-result" class="muted" style="font-size:12px;"></span>
+          </div>
+        </div>
+      </div>
+
+      <div class="settings-row">
+        <div>
+          <h3>Gmail / Google Workspace <span id="gmail-status" class="email-tag"></span></h3>
+          <p class="desc">Connect a Google Workspace mailbox using OAuth ("Desktop app" in Google Cloud Console &rarr; Gmail API), save credentials, then sign in on the Inboxes tab.</p>
+        </div>
+        <div class="fields">
+          <div class="form-group"><label class="form-label" for="gmail-id">Client ID</label>
+            <input type="text" class="form-input" id="gmail-id" placeholder="xxxx.apps.googleusercontent.com" autocomplete="off"></div>
+          <div class="form-group"><label class="form-label" for="gmail-secret">Client secret</label>
+            <div class="with-btn"><input type="password" class="form-input" id="gmail-secret" placeholder="Enter client secret" autocomplete="off">
+              <button class="btn btn-secondary" onclick="toggleVisibility('gmail-secret')">Show</button></div></div>
+          <button class="btn btn-primary btn-sm" onclick="saveGmail()">Save Gmail</button>
+        </div>
+      </div>
+
+      <div class="settings-row">
+        <div>
+          <h3>Microsoft 365 / Outlook <span id="m365-status" class="email-tag"></span></h3>
+          <p class="desc">Register a "Public client/native" app in <a href="https://entra.microsoft.com" target="_blank" rel="noopener noreferrer">Entra</a> with redirect URI <code>http://localhost:8766</code>, paste IDs, then sign in on the Inboxes tab.</p>
+        </div>
+        <div class="fields">
+          <div class="form-group"><label class="form-label" for="m365-client">Application (client) ID</label>
+            <input type="text" class="form-input" id="m365-client" placeholder="00000000-0000-0000-0000-000000000000" autocomplete="off"></div>
+          <div class="form-group"><label class="form-label" for="m365-tenant">Directory (tenant) ID</label>
+            <input type="text" class="form-input" id="m365-tenant" placeholder="00000000-0000-0000-0000-000000000000" autocomplete="off"></div>
+          <button class="btn btn-primary btn-sm" onclick="saveMicrosoft()">Save Microsoft 365</button>
+        </div>
+      </div>
+
+      <div class="settings-row">
+        <div>
+          <h3>Instantly <span class="tag">Legacy</span></h3>
+          <p class="desc">Get your API key from <a href="https://app.instantly.ai/app/settings/integrations" target="_blank" rel="noopener">Instantly Settings &rarr; Integrations</a>.</p>
+        </div>
+        <div class="fields">
+          <div class="form-group"><label class="form-label" for="instantly-key">API key</label>
+            <div class="with-btn"><input type="password" class="form-input" id="instantly-key" placeholder="Enter your Instantly API key" autocomplete="off">
+              <button class="btn btn-secondary" onclick="toggleVisibility('instantly-key')">Show</button>
+              <button class="btn btn-secondary" onclick="testInstantly()">Test</button></div>
+            <div id="instantly-test-result"></div></div>
+          <button class="btn btn-primary btn-sm" onclick="saveInstantly()">Save Instantly</button>
         </div>
       </div>
     </div>
 
-    <div class="settings-row">
-      <div>
-        <h3>Gmail / Google Workspace <span id="gmail-status" class="email-tag"></span></h3>
-        <p class="desc">Connect a Google Workspace mailbox using OAuth ("Desktop app" in Google Cloud Console → Gmail API), save credentials, then sign in on the Inboxes tab.</p>
-      </div>
-      <div class="fields">
-        <div class="form-group"><label class="form-label" for="gmail-id">Client ID</label>
-          <input type="text" class="form-input" id="gmail-id" placeholder="xxxx.apps.googleusercontent.com" autocomplete="off"></div>
-        <div class="form-group"><label class="form-label" for="gmail-secret">Client secret</label>
-          <div class="with-btn"><input type="password" class="form-input" id="gmail-secret" placeholder="Enter client secret" autocomplete="off">
-            <button class="btn btn-secondary" onclick="toggleVisibility('gmail-secret')">Show</button></div></div>
-        <button class="btn btn-primary btn-sm" onclick="saveGmail()">Save Gmail</button>
-      </div>
-    </div>
+    <div class="subhead">Sending Mode &amp; DNS Check</div>
+    <div id="sending-mode-card"></div>
 
-    <div class="settings-row">
-      <div>
-        <h3>Microsoft 365 / Outlook <span id="m365-status" class="email-tag"></span></h3>
-        <p class="desc">Register a "Public client/native" app in <a href="https://entra.microsoft.com" target="_blank" rel="noopener noreferrer">Entra</a> with redirect URI <code>http://localhost:8766</code>, paste IDs, then sign in on the Inboxes tab.</p>
-      </div>
-      <div class="fields">
-        <div class="form-group"><label class="form-label" for="m365-client">Application (client) ID</label>
-          <input type="text" class="form-input" id="m365-client" placeholder="00000000-0000-0000-0000-000000000000" autocomplete="off"></div>
-        <div class="form-group"><label class="form-label" for="m365-tenant">Directory (tenant) ID</label>
-          <input type="text" class="form-input" id="m365-tenant" placeholder="00000000-0000-0000-0000-000000000000" autocomplete="off"></div>
-        <button class="btn btn-primary btn-sm" onclick="saveMicrosoft()">Save Microsoft 365</button>
-      </div>
-    </div>
-
-    <div class="settings-row">
-      <div>
-        <h3>Instantly <span class="tag">Legacy</span></h3>
-        <p class="desc">Get your API key from <a href="https://app.instantly.ai/app/settings/integrations" target="_blank" rel="noopener">Instantly Settings → Integrations</a>.</p>
-      </div>
-      <div class="fields">
-        <div class="form-group"><label class="form-label" for="instantly-key">API key</label>
-          <div class="with-btn"><input type="password" class="form-input" id="instantly-key" placeholder="Enter your Instantly API key" autocomplete="off">
-            <button class="btn btn-secondary" onclick="toggleVisibility('instantly-key')">Show</button>
-            <button class="btn btn-secondary" onclick="testInstantly()">Test</button></div>
-          <div id="instantly-test-result"></div></div>
-        <button class="btn btn-primary btn-sm" onclick="saveInstantly()">Save Instantly</button>
+    <div class="card" id="dns-card">
+      <div class="settings-row">
+        <div>
+          <h3>DNS check</h3>
+          <p class="desc">Check MX, SPF, DKIM and DMARC records for your sending domain before live cold email.</p>
+        </div>
+        <div class="fields">
+          <div class="form-group"><label class="form-label" for="dns-domain">Domain <span class="optional-tag">blank = your sending domain</span></label>
+            <input type="text" class="form-input" id="dns-domain" placeholder="yourdomain.com" autocomplete="off"></div>
+          <div><button class="btn btn-secondary btn-sm" id="dns-run" onclick="runDnsCheck()">Check DNS</button></div>
+          <div id="dns-results" aria-live="polite"></div>
+        </div>
       </div>
     </div>
   </div>
 
-  <div class="subhead">Sending Mode, DNS Check &amp; Warmup Limits</div>
-  <div id="sending-mode-card"></div>
-
-  <div class="card" id="dns-card">
-    <div class="settings-row">
-      <div>
-        <h3>DNS check</h3>
-        <p class="desc">Check MX, SPF, DKIM and DMARC records for your sending domain before live cold email.</p>
-      </div>
-      <div class="fields">
-        <div class="form-group"><label class="form-label" for="dns-domain">Domain <span class="optional-tag">blank = your sending domain</span></label>
-          <input type="text" class="form-input" id="dns-domain" placeholder="yourdomain.com" autocomplete="off"></div>
-        <div><button class="btn btn-secondary btn-sm" id="dns-run" onclick="runDnsCheck()">Check DNS</button></div>
-        <div id="dns-results" aria-live="polite"></div>
-      </div>
-    </div>
-  </div>
-
-  <div class="card" id="compliance-card">
-    <div class="settings-row">
-      <div>
-        <h3>Compliance &amp; Sending Schedule</h3>
-        <p class="desc">CAN-SPAM footer, daily sending caps, manual approval mode, recipient send windows, and quiet hours stored in your VeloReach config.</p>
-      </div>
-      <div class="fields">
-        <div class="form-group">
-          <label class="form-label" for="comp-postal">Postal address</label>
-          <input type="text" class="form-input" id="comp-postal" placeholder="123 Main St, Suite 400, Austin, TX 78701" autocomplete="off">
+  <div class="settings-panel subview-hidden" data-settings-tab="compliance">
+    <div class="card" id="compliance-card">
+      <div class="settings-row">
+        <div>
+          <h3>Compliance &amp; Sending Schedule</h3>
+          <p class="desc">CAN-SPAM footer, daily sending caps, manual approval mode, warmup ramp, recipient send windows, and quiet hours.</p>
         </div>
-        <div class="form-group">
-          <label class="form-label" for="comp-optout">Opt-out footer line</label>
-          <input type="text" class="form-input" id="comp-optout" placeholder="Not interested? Just let me know and I won't email you again." autocomplete="off">
-        </div>
-        <div class="form-row">
-          <div class="form-group" style="max-width:180px">
-            <label class="form-label" for="comp-daily-limit">Daily email limit</label>
-            <input type="number" min="0" max="10000" class="form-input" id="comp-daily-limit" placeholder="50">
-          </div>
-          <div class="form-group" style="max-width:180px">
-            <label class="form-label" for="comp-inbox-cap">Per-inbox daily cap</label>
-            <input type="number" min="1" max="1000" class="form-input" id="comp-inbox-cap" placeholder="30">
+        <div class="fields">
+          <div class="form-group">
+            <label class="form-label" for="comp-postal">Postal address</label>
+            <input type="text" class="form-input" id="comp-postal" placeholder="123 Main St, Suite 400, Austin, TX 78701" autocomplete="off">
           </div>
           <div class="form-group">
-            <label class="form-label" for="comp-from-name">Sender display name</label>
-            <input type="text" class="form-input" id="comp-from-name" placeholder="Ali Tariq" autocomplete="off">
+            <label class="form-label" for="comp-optout">Opt-out footer line</label>
+            <input type="text" class="form-input" id="comp-optout" placeholder="Not interested? Just let me know and I won't email you again." autocomplete="off">
           </div>
-        </div>
-        <div class="form-row" style="margin-bottom:8px">
-          <div class="form-group" style="display:flex;align-items:center;margin-bottom:0">
-            <label class="check-line"><input type="checkbox" id="comp-require-approval"> Require manual approval</label>
+          <div class="form-row">
+            <div class="form-group" style="max-width:180px">
+              <label class="form-label" for="comp-daily-limit">Daily email limit</label>
+              <input type="number" min="0" max="10000" class="form-input" id="comp-daily-limit" placeholder="50">
+            </div>
+            <div class="form-group" style="max-width:180px">
+              <label class="form-label" for="comp-inbox-cap">Per-inbox daily cap</label>
+              <input type="number" min="1" max="1000" class="form-input" id="comp-inbox-cap" placeholder="30">
+            </div>
+            <div class="form-group">
+              <label class="form-label" for="comp-from-name">Sender display name</label>
+              <input type="text" class="form-input" id="comp-from-name" placeholder="Ali Tariq" autocomplete="off">
+            </div>
           </div>
-          <div class="form-group" style="display:flex;align-items:center;margin-bottom:0">
-            <label class="check-line"><input type="checkbox" id="comp-send-risky"> Send to catch-all (risky) addresses</label>
+          <div class="form-row" style="margin-bottom:8px">
+            <div class="form-group" style="display:flex;align-items:center;margin-bottom:0">
+              <label class="check-line"><input type="checkbox" id="comp-require-approval"> Require manual approval</label>
+            </div>
+            <div class="form-group" style="display:flex;align-items:center;margin-bottom:0">
+              <label class="check-line"><input type="checkbox" id="comp-send-risky"> Send to catch-all (risky) addresses</label>
+            </div>
           </div>
-        </div>
-        <div class="schedule-group">
-          <div class="form-label" style="margin-bottom:8px;font-weight:600">Warmup Ramp Guard (optional)</div>
-          <div class="compliance-grid">
-            <div class="form-group"><label class="form-label" for="comp-wu-start">Start date (YYYY-MM-DD)</label>
-              <input type="text" class="form-input" id="comp-wu-start" placeholder="Blank = off" autocomplete="off"></div>
-            <div class="form-group"><label class="form-label" for="comp-wu-min">Warmup-only days</label>
-              <input type="number" min="0" max="90" class="form-input" id="comp-wu-min" placeholder="14"></div>
-            <div class="form-group"><label class="form-label" for="comp-wu-initial">Day-1 cold cap</label>
-              <input type="number" min="1" max="100" class="form-input" id="comp-wu-initial" placeholder="5"></div>
-            <div class="form-group"><label class="form-label" for="comp-wu-inc">Daily increase</label>
-              <input type="number" min="1" max="50" class="form-input" id="comp-wu-inc" placeholder="3"></div>
+          <div class="schedule-group">
+            <div class="form-label" style="margin-bottom:8px;font-weight:600">Warmup Ramp Guard (optional)</div>
+            <div class="compliance-grid">
+              <div class="form-group"><label class="form-label" for="comp-wu-start">Start date (YYYY-MM-DD)</label>
+                <input type="text" class="form-input" id="comp-wu-start" placeholder="Blank = off" autocomplete="off"></div>
+              <div class="form-group"><label class="form-label" for="comp-wu-min">Warmup-only days</label>
+                <input type="number" min="0" max="90" class="form-input" id="comp-wu-min" placeholder="14"></div>
+              <div class="form-group"><label class="form-label" for="comp-wu-initial">Day-1 cold cap</label>
+                <input type="number" min="1" max="100" class="form-input" id="comp-wu-initial" placeholder="5"></div>
+              <div class="form-group"><label class="form-label" for="comp-wu-inc">Daily increase</label>
+                <input type="number" min="1" max="50" class="form-input" id="comp-wu-inc" placeholder="3"></div>
+            </div>
           </div>
-        </div>
-        <div class="schedule-group">
-          <label class="check-line" style="font-weight:600;margin-bottom:8px"><input type="checkbox" id="comp-sw-enabled"> Enable Send Window</label>
-          <div class="compliance-grid">
-            <div class="form-group"><label class="form-label" for="comp-sw-start">Start (HH:MM)</label>
-              <input type="text" class="form-input" id="comp-sw-start" placeholder="08:00" autocomplete="off"></div>
-            <div class="form-group"><label class="form-label" for="comp-sw-end">End (HH:MM)</label>
-              <input type="text" class="form-input" id="comp-sw-end" placeholder="17:00" autocomplete="off"></div>
-            <div class="form-group"><label class="form-label" for="comp-sw-days">Days</label>
-              <input type="text" class="form-input" id="comp-sw-days" placeholder="mon-fri" autocomplete="off"></div>
-            <div class="form-group"><label class="form-label" for="comp-sw-tz">Fallback Timezone</label>
-              <input type="text" class="form-input" id="comp-sw-tz" placeholder="America/New_York" autocomplete="off"></div>
+          <div class="schedule-group">
+            <label class="check-line" style="font-weight:600;margin-bottom:8px"><input type="checkbox" id="comp-sw-enabled"> Enable Send Window</label>
+            <div class="compliance-grid">
+              <div class="form-group"><label class="form-label" for="comp-sw-start">Start (HH:MM)</label>
+                <input type="text" class="form-input" id="comp-sw-start" placeholder="08:00" autocomplete="off"></div>
+              <div class="form-group"><label class="form-label" for="comp-sw-end">End (HH:MM)</label>
+                <input type="text" class="form-input" id="comp-sw-end" placeholder="17:00" autocomplete="off"></div>
+              <div class="form-group"><label class="form-label" for="comp-sw-days">Days</label>
+                <input type="text" class="form-input" id="comp-sw-days" placeholder="mon-fri" autocomplete="off"></div>
+              <div class="form-group"><label class="form-label" for="comp-sw-tz">Fallback Timezone</label>
+                <input type="text" class="form-input" id="comp-sw-tz" placeholder="America/New_York" autocomplete="off"></div>
+            </div>
           </div>
-        </div>
-        <div class="schedule-group">
-          <label class="check-line" style="font-weight:600;margin-bottom:8px"><input type="checkbox" id="comp-qh-enabled"> Enable Quiet Hours</label>
-          <div class="compliance-grid">
-            <div class="form-group"><label class="form-label" for="comp-qh-start">Start (HH:MM)</label>
-              <input type="text" class="form-input" id="comp-qh-start" placeholder="22:00" autocomplete="off"></div>
-            <div class="form-group"><label class="form-label" for="comp-qh-end">End (HH:MM)</label>
-              <input type="text" class="form-input" id="comp-qh-end" placeholder="07:00" autocomplete="off"></div>
-            <div class="form-group"><label class="form-label" for="comp-qh-tz">Timezone</label>
-              <input type="text" class="form-input" id="comp-qh-tz" placeholder="America/New_York" autocomplete="off"></div>
+          <div class="schedule-group">
+            <label class="check-line" style="font-weight:600;margin-bottom:8px"><input type="checkbox" id="comp-qh-enabled"> Enable Quiet Hours</label>
+            <div class="compliance-grid">
+              <div class="form-group"><label class="form-label" for="comp-qh-start">Start (HH:MM)</label>
+                <input type="text" class="form-input" id="comp-qh-start" placeholder="22:00" autocomplete="off"></div>
+              <div class="form-group"><label class="form-label" for="comp-qh-end">End (HH:MM)</label>
+                <input type="text" class="form-input" id="comp-qh-end" placeholder="07:00" autocomplete="off"></div>
+              <div class="form-group"><label class="form-label" for="comp-qh-tz">Timezone</label>
+                <input type="text" class="form-input" id="comp-qh-tz" placeholder="America/New_York" autocomplete="off"></div>
+            </div>
           </div>
-        </div>
-        <div style="margin-top:12px;">
-          <button class="btn btn-primary btn-sm" id="comp-save-btn" onclick="saveComplianceSettings()">Save Compliance &amp; Schedule</button>
+          <div style="margin-top:12px;">
+            <button class="btn btn-primary btn-sm" id="comp-save-btn" onclick="saveComplianceSettings()">Save Compliance &amp; Schedule</button>
+          </div>
         </div>
       </div>
     </div>
   </div>
 
-  <div class="subhead" id="settings-verifiers">Email Verification <span class="hint">Strongly recommended</span></div>
-  <div class="card">
-    <div class="settings-row">
-      <div>
-        <h3>Verifiers</h3>
-        <p class="desc">Add at least one so found emails get verified. Without any, addresses stay <span class="email-tag guess" style="margin:0">guess</span> and are never sent. Reoon has the best free tier (600 a month).</p>
+  <div class="settings-panel subview-hidden" data-settings-tab="ai">
+    <div class="subhead" id="settings-ai-providers">Universal AI Brain &amp; Providers <span class="hint">OpenAI-compatible &amp; Cloud LLMs</span></div>
+    <div class="card">
+      <div class="settings-row">
+        <div>
+          <h3>Universal OpenAI-Compatible Endpoint</h3>
+          <p class="desc">Connect local vLLM, LMStudio, Ollama, DeepSeek, or any OpenAI-compatible API.</p>
+        </div>
+        <div class="fields">
+          <div class="form-group"><label class="form-label" for="openai-base-url">Base URL</label>
+            <input type="text" class="form-input" id="openai-base-url" placeholder="https://api.deepseek.com/v1 or http://localhost:11434/v1" autocomplete="off"></div>
+          <div class="form-row">
+            <div class="form-group">
+              <label class="form-label" for="openai-model">Default Model</label>
+              <div class="with-btn">
+                <input type="text" class="form-input" id="openai-model" placeholder="deepseek-chat or custom" autocomplete="off">
+                <button type="button" class="btn btn-secondary btn-sm" onclick="fetchSettingsOpenAiModels(this)">Fetch Live Models</button>
+              </div>
+              <div id="openai-model-menu"></div>
+            </div>
+            <div class="form-group"><label class="form-label" for="openai-key">API Key</label>
+              <div class="with-btn"><input type="password" class="form-input" id="openai-key" placeholder="API key (or sk-none)" autocomplete="off">
+                <button class="btn btn-secondary" onclick="toggleVisibility('openai-key')">Show</button></div></div>
+          </div>
+          <button class="btn btn-primary btn-sm" onclick="saveUniversalBrain()">Save OpenAI-Compatible</button>
+        </div>
       </div>
-      <div class="fields">
-        <div class="form-group"><label class="form-label" for="reoon-key">Reoon API key <span id="reoon-status" class="email-tag"></span></label>
-          <div class="with-btn"><input type="password" class="form-input" id="reoon-key" placeholder="600 free/mo — reoon.com/email-verifier" autocomplete="off">
-            <button class="btn btn-secondary" onclick="toggleVisibility('reoon-key')">Show</button></div></div>
-        <div class="form-group"><label class="form-label" for="zerobounce-key">ZeroBounce API key <span id="zerobounce-status" class="email-tag"></span></label>
-          <div class="with-btn"><input type="password" class="form-input" id="zerobounce-key" placeholder="100 free/mo — best for M365/Workspace catch-alls" autocomplete="off">
-            <button class="btn btn-secondary" onclick="toggleVisibility('zerobounce-key')">Show</button></div></div>
-        <div class="form-group"><label class="form-label" for="hunter-key">Hunter API key <span id="hunter-status" class="email-tag"></span></label>
-          <div class="with-btn"><input type="password" class="form-input" id="hunter-key" placeholder="50 free/mo + email-pattern lookup" autocomplete="off">
-            <button class="btn btn-secondary" onclick="toggleVisibility('hunter-key')">Show</button></div></div>
-        <button class="btn btn-primary btn-sm" onclick="saveVerifiers()">Save verification keys</button>
-      </div>
-    </div>
-  </div>
 
-  <div class="subhead">Optional</div>
-  <div class="card">
-    <div class="settings-row">
-      <div>
-        <h3>LinkedIn</h3>
-        <p class="desc">For automated LinkedIn prospecting. VeloReach logs in and searches like a human.</p>
-      </div>
-      <div class="fields">
-        <div class="form-group">
-          <label class="form-label" for="linkedin-email">Email or username</label>
-          <input type="text" class="form-input" id="linkedin-email" placeholder="your@email.com" autocomplete="off">
+      <div class="settings-row">
+        <div>
+          <h3>Cloud Model API Keys</h3>
+          <p class="desc">API keys for AI Router fallback chains, dynamic model discovery, and role assignments.</p>
         </div>
-        <div class="form-group">
-          <label class="form-label" for="linkedin-password">Password</label>
-          <div class="with-btn"><input type="password" class="form-input" id="linkedin-password" placeholder="Enter password" autocomplete="new-password">
-            <button class="btn btn-secondary" onclick="toggleVisibility('linkedin-password')">Show</button></div>
-        </div>
-        <button class="btn btn-primary btn-sm" onclick="saveLinkedIn()">Save LinkedIn</button>
-      </div>
-    </div>
-    <div class="settings-row">
-      <div>
-        <h3>Cloudflare</h3>
-        <p class="desc">Deep website crawling with JavaScript rendering during product training. About $5 a month.</p>
-      </div>
-      <div class="fields">
-        <div class="form-group">
-          <label class="form-label" for="cf-account-id">Account ID</label>
-          <input type="text" class="form-input" id="cf-account-id" placeholder="Your Cloudflare Account ID" autocomplete="off">
-        </div>
-        <div class="form-group">
-          <label class="form-label" for="cf-api-token">API token</label>
-          <div class="with-btn"><input type="password" class="form-input" id="cf-api-token" placeholder="Your Cloudflare API Token" autocomplete="off">
-            <button class="btn btn-secondary" onclick="toggleVisibility('cf-api-token')">Show</button></div>
-        </div>
-        <button class="btn btn-primary btn-sm" onclick="saveCloudflare()">Save Cloudflare</button>
-      </div>
-    </div>
-  </div>
-
-  <div class="subhead" id="settings-ai-providers">Universal AI Brain &amp; Providers <span class="hint">OpenAI-compatible &amp; Cloud LLMs</span></div>
-  <div class="card">
-    <div class="settings-row">
-      <div>
-        <h3>Universal OpenAI-Compatible Endpoint</h3>
-        <p class="desc">Connect local vLLM, LMStudio, Ollama, DeepSeek V4.1, or any custom API without Claude login.</p>
-      </div>
-      <div class="fields">
-        <div class="form-group"><label class="form-label" for="openai-base-url">Base URL</label>
-          <input type="text" class="form-input" id="openai-base-url" placeholder="https://api.deepseek.com/v1 or http://localhost:11434/v1" autocomplete="off"></div>
-        <div class="form-row">
-          <div class="form-group"><label class="form-label" for="openai-model">Default Model</label>
-            <input type="text" class="form-input" id="openai-model" placeholder="deepseek-chat or custom" autocomplete="off"></div>
-          <div class="form-group"><label class="form-label" for="openai-key">API Key</label>
-            <div class="with-btn"><input type="password" class="form-input" id="openai-key" placeholder="API key (or sk-none)" autocomplete="off">
-              <button class="btn btn-secondary" onclick="toggleVisibility('openai-key')">Show</button></div></div>
-        </div>
-        <button class="btn btn-primary btn-sm" onclick="saveUniversalBrain()">Save OpenAI-Compatible</button>
-      </div>
-    </div>
-
-    <div class="settings-row">
-      <div>
-        <h3>Cloud Model API Keys</h3>
-        <p class="desc">API keys for fallback failovers and role assignments.</p>
-      </div>
-      <div class="fields">
-        <div class="key-grid">
-          <div class="form-group"><label class="form-label" for="openrouter-key">OpenRouter API Key <span id="openrouter-status" class="email-tag"></span></label>
-            <input type="password" class="form-input" id="openrouter-key" placeholder="sk-or-v1-..." autocomplete="off"></div>
-          <div class="form-group"><label class="form-label" for="deepseek-key">DeepSeek API Key <span id="deepseek-status" class="email-tag"></span></label>
-            <input type="password" class="form-input" id="deepseek-key" placeholder="sk-..." autocomplete="off"></div>
-          <div class="form-group"><label class="form-label" for="gemini-key">Gemini API Key <span id="gemini-status" class="email-tag"></span></label>
-            <input type="password" class="form-input" id="gemini-key" placeholder="AIzaSy..." autocomplete="off"></div>
-          <div class="form-group"><label class="form-label" for="xai-key">xAI Grok API Key <span id="xai-status" class="email-tag"></span></label>
-            <input type="password" class="form-input" id="xai-key" placeholder="xai-..." autocomplete="off"></div>
-          <div class="form-group"><label class="form-label" for="groq-key">Groq API Key <span id="groq-status" class="email-tag"></span></label>
-            <input type="password" class="form-input" id="groq-key" placeholder="gsk_..." autocomplete="off"></div>
-        </div>
-        <div style="margin-top:12px;">
-          <button class="btn btn-primary btn-sm" onclick="saveCloudModelKeys()">Save Model Keys</button>
+        <div class="fields">
+          <div class="key-grid">
+            <div class="form-group"><label class="form-label" for="openrouter-key">OpenRouter API Key <span id="openrouter-status" class="email-tag"></span></label>
+              <input type="password" class="form-input" id="openrouter-key" placeholder="sk-or-v1-..." autocomplete="off"></div>
+            <div class="form-group"><label class="form-label" for="deepseek-key">DeepSeek API Key <span id="deepseek-status" class="email-tag"></span></label>
+              <input type="password" class="form-input" id="deepseek-key" placeholder="sk-..." autocomplete="off"></div>
+            <div class="form-group"><label class="form-label" for="gemini-key">Gemini API Key <span id="gemini-status" class="email-tag"></span></label>
+              <input type="password" class="form-input" id="gemini-key" placeholder="AIzaSy..." autocomplete="off"></div>
+            <div class="form-group"><label class="form-label" for="xai-key">xAI Grok API Key <span id="xai-status" class="email-tag"></span></label>
+              <input type="password" class="form-input" id="xai-key" placeholder="xai-..." autocomplete="off"></div>
+            <div class="form-group"><label class="form-label" for="groq-key">Groq API Key <span id="groq-status" class="email-tag"></span></label>
+              <input type="password" class="form-input" id="groq-key" placeholder="gsk_..." autocomplete="off"></div>
+            <div class="form-group"><label class="form-label" for="mistral-key">Mistral API Key <span id="mistral-status" class="email-tag"></span></label>
+              <input type="password" class="form-input" id="mistral-key" placeholder="Mistral API key" autocomplete="off"></div>
+            <div class="form-group"><label class="form-label" for="together-key">Together AI Key <span id="together-status" class="email-tag"></span></label>
+              <input type="password" class="form-input" id="together-key" placeholder="Together API key" autocomplete="off"></div>
+            <div class="form-group"><label class="form-label" for="fireworks-key">Fireworks AI Key <span id="fireworks-status" class="email-tag"></span></label>
+              <input type="password" class="form-input" id="fireworks-key" placeholder="fw_..." autocomplete="off"></div>
+            <div class="form-group"><label class="form-label" for="cerebras-key">Cerebras API Key <span id="cerebras-status" class="email-tag"></span></label>
+              <input type="password" class="form-input" id="cerebras-key" placeholder="csk-..." autocomplete="off"></div>
+            <div class="form-group"><label class="form-label" for="anthropic-key">Anthropic API Key <span id="anthropic-status" class="email-tag"></span></label>
+              <input type="password" class="form-input" id="anthropic-key" placeholder="sk-ant-..." autocomplete="off"></div>
+          </div>
+          <div style="margin-top:12px;">
+            <button class="btn btn-primary btn-sm" onclick="saveCloudModelKeys()">Save Model Keys</button>
+          </div>
         </div>
       </div>
     </div>
   </div>
 
-  <div class="subhead" id="settings-search-crm">Search, Scraping &amp; Integrations</div>
-  <div class="card">
-    <div class="settings-row">
-      <div>
-        <h3>Web Search &amp; Discovery Engines</h3>
-        <p class="desc">Optional API keys for paid/tiered search sources. Keyless <b>OSM Live Places</b>, <b>YC Startups Directory</b>, and <b>DuckDuckGo</b> work free out of the box.</p>
-      </div>
-      <div class="fields">
-        <div class="key-grid">
-          <div class="form-group"><label class="form-label" for="tavily-key">Tavily Search Key</label>
-            <input type="password" class="form-input" id="tavily-key" placeholder="tvly-..." autocomplete="off"></div>
-          <div class="form-group"><label class="form-label" for="firecrawl-key">Firecrawl API Key</label>
-            <input type="password" class="form-input" id="firecrawl-key" placeholder="fc-..." autocomplete="off"></div>
-          <div class="form-group"><label class="form-label" for="serper-key">Serper (Google Search) Key</label>
-            <input type="password" class="form-input" id="serper-key" placeholder="Enter key" autocomplete="off"></div>
-          <div class="form-group"><label class="form-label" for="searxng-url">SearXNG Base URL</label>
-            <input type="text" class="form-input" id="searxng-url" placeholder="https://searx.example.com" autocomplete="off"></div>
+  <div class="settings-panel subview-hidden" data-settings-tab="integrations">
+    <div class="subhead" id="settings-search-crm">Search, Scraping &amp; Integrations</div>
+    <div class="card">
+      <div class="settings-row">
+        <div>
+          <h3>Web Search &amp; Discovery Engines</h3>
+          <p class="desc">Optional API keys for paid/tiered search sources. Keyless <b>OSM Live Places</b>, <b>YC Startups Directory</b>, and <b>DuckDuckGo</b> work free out of the box.</p>
         </div>
-        <button class="btn btn-primary btn-sm" onclick="saveSearchTools()">Save Search Tools</button>
+        <div class="fields">
+          <div class="key-grid">
+            <div class="form-group"><label class="form-label" for="tavily-key">Tavily Search Key</label>
+              <input type="password" class="form-input" id="tavily-key" placeholder="tvly-..." autocomplete="off"></div>
+            <div class="form-group"><label class="form-label" for="firecrawl-key">Firecrawl API Key</label>
+              <input type="password" class="form-input" id="firecrawl-key" placeholder="fc-..." autocomplete="off"></div>
+            <div class="form-group"><label class="form-label" for="serper-key">Serper (Google Search) Key</label>
+              <input type="password" class="form-input" id="serper-key" placeholder="Enter key" autocomplete="off"></div>
+            <div class="form-group"><label class="form-label" for="searxng-url">SearXNG Base URL</label>
+              <input type="text" class="form-input" id="searxng-url" placeholder="https://searx.example.com" autocomplete="off"></div>
+          </div>
+          <button class="btn btn-primary btn-sm" onclick="saveSearchTools()">Save Search Tools</button>
+        </div>
       </div>
-    </div>
 
-    <div class="settings-row">
-      <div>
-        <h3>Calendar, CRM &amp; Copilot Alerts</h3>
-        <p class="desc">Auto-booking links, Twenty CRM synchronization, and instant Telegram/Slack alerts.</p>
+      <div class="settings-row">
+        <div>
+          <h3>Calendar, CRM &amp; Copilot Alerts</h3>
+          <p class="desc">Auto-booking links, Twenty CRM synchronization, and instant Telegram/Slack alerts.</p>
+        </div>
+        <div class="fields">
+          <div class="key-grid">
+            <div class="form-group"><label class="form-label" for="calcom-key">Cal.com API Key</label>
+              <input type="password" class="form-input" id="calcom-key" placeholder="cal_live_..." autocomplete="off"></div>
+            <div class="form-group"><label class="form-label" for="calcom-event-type-id">Cal.com Event Type ID</label>
+              <input type="text" class="form-input" id="calcom-event-type-id" placeholder="e.g. 123456" autocomplete="off"></div>
+            <div class="form-group"><label class="form-label" for="calcom-webhook-secret">Cal.com Webhook Secret</label>
+              <input type="password" class="form-input" id="calcom-webhook-secret" placeholder="Enter webhook signing secret" autocomplete="off"></div>
+            <div class="form-group"><label class="form-label" for="twenty-url">Twenty CRM URL</label>
+              <input type="text" class="form-input" id="twenty-url" placeholder="https://twenty.example.com" autocomplete="off"></div>
+            <div class="form-group"><label class="form-label" for="twenty-key">Twenty CRM API Key</label>
+              <input type="password" class="form-input" id="twenty-key" placeholder="Enter API key" autocomplete="off"></div>
+            <div class="form-group"><label class="form-label" for="telegram-token">Telegram Bot Token</label>
+              <input type="password" class="form-input" id="telegram-token" placeholder="bot123456:ABC-DEF..." autocomplete="off"></div>
+            <div class="form-group"><label class="form-label" for="telegram-chat">Telegram Chat ID</label>
+              <input type="text" class="form-input" id="telegram-chat" placeholder="12345678" autocomplete="off"></div>
+            <div class="form-group"><label class="form-label" for="slack-webhook">Slack Webhook URL</label>
+              <input type="password" class="form-input" id="slack-webhook" placeholder="https://hooks.slack.com/services/..." autocomplete="off"></div>
+          </div>
+          <div class="btn-group" style="display:flex;gap:10px;align-items:center;flex-wrap:wrap;margin-top:8px;">
+            <button class="btn btn-primary btn-sm" onclick="saveIntegrations()">Save Integrations</button>
+            <select class="form-input" id="integration-test-service" style="width:auto;min-width:150px;" aria-label="Integration service to test">
+              <option value="telegram">Telegram Bot</option>
+              <option value="slack">Slack Webhook</option>
+              <option value="calcom">Cal.com</option>
+              <option value="twenty">Twenty CRM</option>
+            </select>
+            <label class="check-line"><input type="checkbox" id="integration-test-ping"> Send Slack test ping</label>
+            <button class="btn btn-secondary btn-sm" id="integration-test-btn" onclick="testIntegrationConnection(this)">Test Connection</button>
+          </div>
+          <div id="integration-test-result" class="form-hint" aria-live="polite" style="margin-top:8px;"></div>
+        </div>
       </div>
-      <div class="fields">
-        <div class="key-grid">
-          <div class="form-group"><label class="form-label" for="calcom-key">Cal.com API Key</label>
-            <input type="password" class="form-input" id="calcom-key" placeholder="cal_live_..." autocomplete="off"></div>
-          <div class="form-group"><label class="form-label" for="calcom-event-type-id">Cal.com Event Type ID</label>
-            <input type="text" class="form-input" id="calcom-event-type-id" placeholder="e.g. 123456" autocomplete="off"></div>
-          <div class="form-group"><label class="form-label" for="calcom-webhook-secret">Cal.com Webhook Secret</label>
-            <input type="password" class="form-input" id="calcom-webhook-secret" placeholder="Enter webhook signing secret" autocomplete="off"></div>
-          <div class="form-group"><label class="form-label" for="twenty-url">Twenty CRM URL</label>
-            <input type="text" class="form-input" id="twenty-url" placeholder="https://twenty.example.com" autocomplete="off"></div>
-          <div class="form-group"><label class="form-label" for="twenty-key">Twenty CRM API Key</label>
-            <input type="password" class="form-input" id="twenty-key" placeholder="Enter API key" autocomplete="off"></div>
-          <div class="form-group"><label class="form-label" for="telegram-token">Telegram Bot Token</label>
-            <input type="password" class="form-input" id="telegram-token" placeholder="bot123456:ABC-DEF..." autocomplete="off"></div>
-          <div class="form-group"><label class="form-label" for="telegram-chat">Telegram Chat ID</label>
-            <input type="text" class="form-input" id="telegram-chat" placeholder="12345678" autocomplete="off"></div>
-          <div class="form-group"><label class="form-label" for="slack-webhook">Slack Webhook URL</label>
-            <input type="password" class="form-input" id="slack-webhook" placeholder="https://hooks.slack.com/services/..." autocomplete="off"></div>
+
+      <div class="settings-row">
+        <div>
+          <h3>LinkedIn</h3>
+          <p class="desc">Optional credentials for automated LinkedIn prospecting.</p>
         </div>
-        <div class="btn-group" style="display:flex;gap:10px;align-items:center;flex-wrap:wrap;margin-top:8px;">
-          <button class="btn btn-primary btn-sm" onclick="saveIntegrations()">Save Integrations</button>
-          <select class="form-input" id="integration-test-service" style="width:auto;min-width:150px;" aria-label="Integration service to test">
-            <option value="telegram">Telegram Bot</option>
-            <option value="slack">Slack Webhook</option>
-            <option value="calcom">Cal.com</option>
-            <option value="twenty">Twenty CRM</option>
-          </select>
-          <label class="check-line"><input type="checkbox" id="integration-test-ping"> Send Slack test ping</label>
-          <button class="btn btn-secondary btn-sm" id="integration-test-btn" onclick="testIntegrationConnection(this)">Test Connection</button>
+        <div class="fields">
+          <div class="form-group">
+            <label class="form-label" for="linkedin-email">Email or username</label>
+            <input type="text" class="form-input" id="linkedin-email" placeholder="your@email.com" autocomplete="off">
+          </div>
+          <div class="form-group">
+            <label class="form-label" for="linkedin-password">Password</label>
+            <div class="with-btn"><input type="password" class="form-input" id="linkedin-password" placeholder="Enter password" autocomplete="new-password">
+              <button class="btn btn-secondary" onclick="toggleVisibility('linkedin-password')">Show</button></div>
+          </div>
+          <button class="btn btn-primary btn-sm" onclick="saveLinkedIn()">Save LinkedIn</button>
         </div>
-        <div id="integration-test-result" class="form-hint" aria-live="polite" style="margin-top:8px;"></div>
+      </div>
+
+      <div class="settings-row">
+        <div>
+          <h3>Cloudflare Browser Rendering</h3>
+          <p class="desc">Optional JS-rendered website crawling during product training.</p>
+        </div>
+        <div class="fields">
+          <div class="form-group">
+            <label class="form-label" for="cf-account-id">Account ID</label>
+            <input type="text" class="form-input" id="cf-account-id" placeholder="Your Cloudflare Account ID" autocomplete="off">
+          </div>
+          <div class="form-group">
+            <label class="form-label" for="cf-api-token">API token</label>
+            <div class="with-btn"><input type="password" class="form-input" id="cf-api-token" placeholder="Your Cloudflare API Token" autocomplete="off">
+              <button class="btn btn-secondary" onclick="toggleVisibility('cf-api-token')">Show</button></div>
+          </div>
+          <button class="btn btn-primary btn-sm" onclick="saveCloudflare()">Save Cloudflare</button>
+        </div>
       </div>
     </div>
   </div>
 
-  <div class="subhead">Competitor watch</div>
-  <div class="card" id="competitor-watch-card">
-    <div class="settings-row">
-      <div>
-        <h3>Pages to watch</h3>
-        <p class="desc">VeloReach reads these pages on idle cycles and alerts you when one changes — a rival's pricing page, their careers page. Findings come to you (Telegram/Slack and the log below), never into cold emails. The first check only records a baseline.</p>
-        <label class="cw-enabled"><input type="checkbox" id="cw-enabled" onchange="saveCompetitorWatch()"> Watch these pages</label>
-      </div>
-      <div class="fields">
-        <div id="cw-watches"></div>
-        <div class="cw-add">
-          <input type="text" class="form-input" id="cw-name" placeholder="e.g. Rival pricing" autocomplete="off">
-          <input type="text" class="form-input" id="cw-url" placeholder="https://rival.example/pricing" autocomplete="off">
-          <select class="form-input" id="cw-kind" aria-label="What kind of page is this">
-            <option value="pricing">pricing</option>
-            <option value="hiring">hiring</option>
-            <option value="homepage">homepage</option>
-          </select>
-          <button class="btn btn-secondary btn-sm" onclick="addCompetitorWatch()">Add</button>
+  <div class="settings-panel subview-hidden" data-settings-tab="watch">
+    <div class="subhead" id="settings-verifiers">Email Verification <span class="hint">Strongly recommended</span></div>
+    <div class="card">
+      <div class="settings-row">
+        <div>
+          <h3>Verifiers</h3>
+          <p class="desc">Add at least one verifier so found emails get validated before sending. Without any, addresses stay <span class="email-tag guess" style="margin:0">guess</span>. Reoon offers 600 free/mo.</p>
         </div>
-        <div><button class="btn btn-primary btn-sm" id="cw-save" onclick="saveCompetitorWatch()">Save watches</button>
-          <span id="cw-status" class="hint"></span></div>
-        <div id="cw-changes"></div>
+        <div class="fields">
+          <div class="form-group"><label class="form-label" for="reoon-key">Reoon API key <span id="reoon-status" class="email-tag"></span></label>
+            <div class="with-btn"><input type="password" class="form-input" id="reoon-key" placeholder="600 free/mo — reoon.com/email-verifier" autocomplete="off">
+              <button class="btn btn-secondary" onclick="toggleVisibility('reoon-key')">Show</button></div></div>
+          <div class="form-group"><label class="form-label" for="zerobounce-key">ZeroBounce API key <span id="zerobounce-status" class="email-tag"></span></label>
+            <div class="with-btn"><input type="password" class="form-input" id="zerobounce-key" placeholder="100 free/mo — best for M365/Workspace catch-alls" autocomplete="off">
+              <button class="btn btn-secondary" onclick="toggleVisibility('zerobounce-key')">Show</button></div></div>
+          <div class="form-group"><label class="form-label" for="hunter-key">Hunter API key <span id="hunter-status" class="email-tag"></span></label>
+            <div class="with-btn"><input type="password" class="form-input" id="hunter-key" placeholder="50 free/mo + email-pattern lookup" autocomplete="off">
+              <button class="btn btn-secondary" onclick="toggleVisibility('hunter-key')">Show</button></div></div>
+          <button class="btn btn-primary btn-sm" onclick="saveVerifiers()">Save verification keys</button>
+        </div>
+      </div>
+    </div>
+
+    <div class="subhead">Competitor watch</div>
+    <div class="card" id="competitor-watch-card">
+      <div class="settings-row">
+        <div>
+          <h3>Pages to watch</h3>
+          <p class="desc">VeloReach reads these pages on idle cycles and alerts you via Telegram/Slack when one changes. Findings never enter cold emails; the first check records a baseline.</p>
+          <label class="cw-enabled"><input type="checkbox" id="cw-enabled" onchange="saveCompetitorWatch()"> Watch these pages</label>
+        </div>
+        <div class="fields">
+          <div id="cw-watches"></div>
+          <div class="cw-add">
+            <input type="text" class="form-input" id="cw-name" placeholder="e.g. Rival pricing" autocomplete="off">
+            <input type="text" class="form-input" id="cw-url" placeholder="https://rival.example/pricing" autocomplete="off">
+            <select class="form-input" id="cw-kind" aria-label="What kind of page is this">
+              <option value="pricing">pricing</option>
+              <option value="hiring">hiring</option>
+              <option value="homepage">homepage</option>
+            </select>
+            <button class="btn btn-secondary btn-sm" onclick="addCompetitorWatch()">Add</button>
+          </div>
+          <div><button class="btn btn-primary btn-sm" id="cw-save" onclick="saveCompetitorWatch()">Save watches</button>
+            <span id="cw-status" class="hint"></span></div>
+          <div id="cw-changes"></div>
+        </div>
       </div>
     </div>
   </div>
@@ -1349,109 +1396,109 @@
       </div>
     </div>
     <div class="card">
-      <h2>Recent logs <button class="btn btn-ghost btn-sm" onclick="loadLogs()" style="margin-left:auto"><svg class="icon" aria-hidden="true"><use href="#i-refresh"/></svg>Refresh</button></h2>
-      <div class="log-viewer" id="log-viewer">No logs yet. Start VeloReach to see activity.</div>
+      <div style="display:flex;align-items:center;justify-content:space-between;gap:10px;flex-wrap:wrap;margin-bottom:var(--sp-3);">
+        <h2 style="margin:0">Recent logs</h2>
+        <button class="btn btn-ghost btn-sm" onclick="loadLogs()"><svg class="icon" aria-hidden="true"><use href="#i-refresh"/></svg>Refresh</button>
+      </div>
+      <div class="toolbar log-toolbar">
+        <input type="search" class="form-input" id="log-search" placeholder="Filter logs…" aria-label="Filter logs" oninput="if(typeof filterLogs==='function')filterLogs()" style="flex:1;min-width:160px;">
+        <select class="form-input toolbar-select" id="log-level" aria-label="Filter log level" onchange="if(typeof filterLogs==='function')filterLogs()">
+          <option value="">All levels</option>
+          <option value="ERROR">Errors</option>
+          <option value="WARN">Warnings</option>
+          <option value="INFO">Info</option>
+        </select>
+        <label class="check-line"><input type="checkbox" id="log-autoscroll-toggle" checked> Auto-scroll</label>
+      </div>
+      <div class="log-viewer" id="log-viewer" tabindex="0" role="region" aria-label="Agent loop log output">No logs yet. Start VeloReach to see activity.</div>
     </div>
   </div>
 </div>
 
 <!-- Help -->
 <div id="help" class="section">
-  <div class="section-head"><div><h2>Help &amp; Quick Start</h2><p>What VeloReach does, how every stage connects, and how to run a live demo or campaign.</p></div></div>
+  <div class="section-head"><div><h2>Help &amp; Quick Start</h2><p>Launch your pipeline, connect models and mailers, and resolve common setup issues.</p></div></div>
 
-  <div class="help-section">
-    <h2>What is VeloReach?</h2>
-    <p>VeloReach is an end-to-end AI sales and email marketing platform: it discovers businesses, crawls their websites for buying signals, extracts &amp; verifies contacts, writes personalized A/B email sequences, stages everything in a safe human-review Outbox, tracks replies, and books meetings.</p>
-    <p>Powered by the universal AI Router (<b>Gemini</b>, <b>DeepSeek</b>, <b>OpenRouter</b>, <b>Groq</b>, <b>OpenAI-compatible / Ollama</b>, or <b>Claude / Codex</b>) with all data stored locally on your machine.</p>
-  </div>
-
-  <div class="help-section">
-    <h2>Getting started in 4 steps</h2>
-    <pre>1. Your Company: Describe your offer in plain language (or train from URL)
-2. Discover: Pick "OSM Live Places" or "YC Startups Directory" ($0 free keyless) and search leads
-3. Campaigns &amp; Outbox: Build A/B sequences, preview rendered HTML, and approve sends
-4. Settings: Connect Resend SMTP (for demos/testing) or Gmail/M365 OAuth (for full cold + reply inbox)</pre>
-    <p><b>Today</b> shows your live pipeline metrics and next recommended action at a glance.</p>
-  </div>
-
-  <div class="help-section">
-    <h2>Where everything lives</h2>
-    <p>Everything VeloReach needs is inside this one project folder. Nothing is stored elsewhere.</p>
-    <div class="table-card">
-    <table class="file-table">
-      <tr><td>.env</td><td>Your API keys and credentials (never shared or committed)</td></tr>
-      <tr><td>sellbird.yaml</td><td>Your product info, target customers, and behavior settings</td></tr>
-      <tr><td>skills/</td><td>Sales knowledge files. Edit these to change how VeloReach writes and sells.</td></tr>
-      <tr><td>skills/product_knowledge.md</td><td>Everything VeloReach knows about your product (auto-generated from training)</td></tr>
-      <tr><td>prompts/</td><td>Prompt templates for each agent. Advanced customization.</td></tr>
-      <tr><td>data/sellbird.db</td><td>Database with all prospects, campaigns, and conversations</td></tr>
-      <tr><td>data/sellbird.log</td><td>Log file showing what VeloReach is doing</td></tr>
-    </table>
+  <div class="help-grid" style="display:grid;grid-template-columns:repeat(auto-fit,minmax(280px,1fr));gap:var(--sp-4);margin-bottom:var(--sp-6);">
+    <div class="card">
+      <h3>1. Define Offer &amp; ICP</h3>
+      <p class="desc">Describe what you sell or train VeloReach directly from your website URL, and configure your calendar booking link.</p>
+      <div style="margin-top:var(--sp-3);">
+        <button type="button" class="btn btn-secondary btn-sm" onclick="goTab('company')">Open Your Company</button>
+      </div>
+    </div>
+    <div class="card">
+      <h3>2. Find Keyless Leads ($0)</h3>
+      <p class="desc">Use OSM Live Places, YC Startups Directory, or DuckDuckGo with zero API keys to extract companies and decision-makers.</p>
+      <div style="margin-top:var(--sp-3);">
+        <button type="button" class="btn btn-secondary btn-sm" onclick="goTab('discover')">Open Lead Finder</button>
+      </div>
+    </div>
+    <div class="card">
+      <h3>3. Connect Dynamic AI Models</h3>
+      <p class="desc">Add provider keys in Settings, click Fetch All Active Models in AI Models, and cap your daily USD spend.</p>
+      <div style="margin-top:var(--sp-3);">
+        <button type="button" class="btn btn-secondary btn-sm" onclick="goTab('brain')">Open AI Models</button>
+      </div>
+    </div>
+    <div class="card">
+      <h3>4. Stage, Preview &amp; Approve</h3>
+      <p class="desc">Generate A/B sequences in Campaigns, inspect rendered HTML in Outbox, and send safely via Resend SMTP, Gmail, or M365.</p>
+      <div style="margin-top:var(--sp-3);">
+        <button type="button" class="btn btn-secondary btn-sm" onclick="goTab('outbox')">Open Outbox</button>
+      </div>
     </div>
   </div>
 
   <div class="help-section">
-    <h2>Getting your API keys</h2>
+    <h2>Troubleshooting FAQ</h2>
 
     <details>
-      <summary>Instantly API key (legacy)</summary>
+      <summary>Resend SMTP &amp; Live Email Testing</summary>
       <div class="faq-body">
-        <p>Instantly is the legacy sending option; Gmail or SMTP is recommended.</p>
-        <p>1. Sign up at <a href="https://instantly.ai" target="_blank" rel="noopener">instantly.ai</a> (you need the Growth plan for API access)</p>
-        <p>2. Go to Settings &gt; Integrations</p>
-        <p>3. Copy your API key</p>
-        <p>4. Paste it in the Settings tab here</p>
+        <p>Open <b>Today &rarr; Quick Setup</b> or <b>Settings &rarr; Email &amp; Sending</b> and apply the Resend SMTP preset (<code>smtp.resend.com</code>, port <code>587</code>, user <code>resend</code>, password <code>re_...</code>).</p>
+        <p>For sandbox testing without DNS verification, use <code>onboarding@resend.dev</code> as the From address and test delivery with <code>delivered@resend.dev</code>, <code>bounced@resend.dev</code>, or <code>complained@resend.dev</code> in the Test Lab. Remember Resend is outbound SMTP only &mdash; connect Gmail or Microsoft 365 OAuth for full two-way reply sync.</p>
       </div>
     </details>
 
     <details>
-      <summary>LinkedIn credentials (optional)</summary>
+      <summary>Free Keyless Discovery ($0 Sources)</summary>
       <div class="faq-body">
-        <p>If you want VeloReach to find prospects on LinkedIn, enter your LinkedIn email and password. VeloReach uses a real browser to search LinkedIn like a human would, with random delays and rate limits to avoid detection.</p>
-        <p>If you skip this, VeloReach will find prospects through Google searches and company website scraping instead.</p>
+        <p>In <b>Discover</b>, select <b>Free Keyless ($0 Ready)</b> to run <b>OSM Live Places</b>, <b>YC Startups Directory</b>, or <b>DuckDuckGo</b> without paid search APIs. VeloReach automatically scrapes company websites to extract contact emails and buying signals.</p>
+        <p>For accelerator/funding presets or high-volume Google SERP queries, add an optional Serper, Tavily, or Firecrawl key in <b>Settings &rarr; Search, CRM &amp; Alerts</b>.</p>
       </div>
     </details>
 
     <details>
-      <summary>Cloudflare Browser Rendering (optional)</summary>
+      <summary>Dynamic AI Models &amp; Role Routing</summary>
       <div class="faq-body">
-        <p>This is only used during product training (when VeloReach crawls your website to learn about your product). It handles JavaScript-heavy websites that a basic crawler can't read.</p>
-        <p>1. Sign up at <a href="https://dash.cloudflare.com" target="_blank" rel="noopener">Cloudflare</a> (paid Workers plan, ~$5/month)</p>
-        <p>2. Go to Workers &amp; Pages &gt; Browser Rendering</p>
-        <p>3. Create an API token with Browser Rendering Edit permissions</p>
-        <p>4. Enter your Account ID and API Token in the Settings tab</p>
-        <p>Without this, VeloReach uses a built-in crawler that works fine for most websites but can't render JavaScript.</p>
+        <p>Save keys for Gemini, DeepSeek, OpenRouter, Groq, Mistral, Together, Fireworks, Cerebras, or Anthropic in <b>Settings &rarr; AI Keys &amp; Endpoints</b> (or set a local Ollama/vLLM Base URL and click <b>Fetch Live Models</b>).</p>
+        <p>In <b>AI Models</b>, click <b>Fetch All Active Models</b> to refresh available model IDs, order your Fallback Provider Chain from top to bottom, and leave Role Routing blank to inherit the chain or override specific agents.</p>
+      </div>
+    </details>
+
+    <details>
+      <summary>Agentic Mode &amp; Outbox Safety</summary>
+      <div class="faq-body">
+        <p>Click <b>Run Agentic Cycle</b> on <b>Today</b> for a single on-demand pass (Scout &rarr; Researcher &rarr; Enricher &rarr; Writer &rarr; Analyst), or start the continuous background worker in <b>Agent Loop</b>.</p>
+        <p>With manual approval enabled in <b>Settings &rarr; Compliance &amp; Warmup</b>, every drafted message stays in the <b>Outbox</b> Review Queue with automatic merge-tag checks, quiet hours, and warmup caps protecting your sender reputation.</p>
       </div>
     </details>
   </div>
 
   <div class="help-section">
-    <h2>Common issues</h2>
-
-    <details>
-      <summary>"command not found: sellbird"</summary>
-      <div class="faq-body">You need to activate the virtual environment first: <code>source .venv/bin/activate</code></div>
-    </details>
-
-    <details>
-      <summary>Instantly API returns 401</summary>
-      <div class="faq-body">Your API key is wrong, or you need the Growth plan (the free plan doesn't include API access). Double-check the key in Settings &gt; Integrations in your Instantly dashboard.</div>
-    </details>
-
-    <details>
-      <summary>Claude headless mode fails</summary>
-      <div class="faq-body">Make sure you've run <code>claude login</code> in your terminal and have an active Claude Max subscription. VeloReach uses your existing subscription, not a separate API key.</div>
-    </details>
-
-    <details>
-      <summary>Codex calls fail</summary>
-      <div class="faq-body">With <code>brain.provider: codex</code>, set <code>brain.model</code> to an available model ID, including Luna, Sol, or Terra (for example <code>gpt-6.1-sol</code>), or leave it blank to select a listed model. VeloReach runs these models without tools; <code>gpt-5.5</code> also remains supported when present in your account's catalog. Run <code>codex login</code> and choose "Sign in with ChatGPT" (API-key logins are refused). VeloReach never renews your Codex login: if the log says it has expired or is due for renewal, use Codex once or run <code>codex login</code>. VeloReach needs Codex CLI 0.159.3 on macOS or Linux (Codex isn't supported on Windows; use Claude there) and refuses other versions. While Codex can't be used, VeloReach pauses (Today shows "Codex is paused" and why), leaves replies and queued emails untouched, and resumes once it's fixed; <code>sellbird status --check</code> checks on demand. If the log says isolation could not be verified, a Codex config layer is forcing a tool, hook, MCP server or custom endpoint back on — VeloReach refuses to send prompts until it is removed. VeloReach never falls back to Claude on its own.</div>
-    </details>
-
-    <details>
-      <summary>VeloReach isn't finding prospects</summary>
-      <div class="faq-body">Check that your ICP (ideal customer profile) in sellbird.yaml has realistic titles, industries, and geography. If LinkedIn is set up, check that the credentials are correct. Check the Activity tab to see what VeloReach has been trying to do.</div>
-    </details>
+    <h2>File Reference</h2>
+    <p>All workspace state, keys, and databases remain local inside your project directory.</p>
+    <div class="table-card">
+      <table class="file-table">
+        <tr><td>sellbird.local.yaml</td><td>Your offer, ICP, compliance limits, send window, and runtime settings</td></tr>
+        <tr><td>brain.yaml</td><td>AI Router fallback provider chain, per-role overrides, and daily USD budget</td></tr>
+        <tr><td>.env</td><td>Local API keys, Resend/SMTP credentials, and OAuth secrets (never committed)</td></tr>
+        <tr><td>data/sellbird.db</td><td>SQLite database for companies, contacts, campaigns, outbox, enrichment, and replies</td></tr>
+        <tr><td>skills/product_knowledge.md</td><td>Auto-generated product &amp; objection playbook from website training</td></tr>
+        <tr><td>data/sellbird.log</td><td>Live worker log streamed into the Agent Loop tab</td></tr>
+      </table>
+    </div>
   </div>
 </div>
 
@@ -1471,6 +1518,6 @@
 <div id="toast-stack" class="toast-stack" aria-live="polite" aria-atomic="false"></div>
 <div id="ui-tooltip" class="ui-tooltip" role="tooltip" aria-hidden="true"></div>
 
-<script src="/static/app.js?v=20261128e"></script>
+<script src="/static/app.js?v=20261128g"></script>
 </body>
 </html>

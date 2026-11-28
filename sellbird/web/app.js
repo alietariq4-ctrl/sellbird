@@ -240,7 +240,7 @@ function meterHtml(pct, segments) {
   const n = segments || 10;
   const v = Math.max(0, Math.min(100, Number(pct) || 0));
   const on = Math.round(v / 100 * n);
-  return '<span class="meter-row"><span class="meter" role="meter" aria-valuemin="0" ' +
+  return '<span class="meter-row"><span class="meter" role="meter" aria-label="Score ' + v + ' out of 100" aria-valuemin="0" ' +
     'aria-valuemax="100" aria-valuenow="' + v + '">' +
     Array.from({length: n}, (_, i) => '<i class="' + (i < on ? 'on' : '') + '"></i>').join('') +
     '</span><span class="v">' + v + '</span></span>';
@@ -1069,6 +1069,29 @@ async function dismissRenameNotice() {
   }
 }
 
+let _todaySetupManual = false;
+function toggleTodaySetupDrawer(forceOpen) {
+  const lp = document.getElementById('today-launchpad');
+  const btn = document.getElementById('today-setup-toggle');
+  if (!lp || !btn) return;
+  const open = typeof forceOpen === 'boolean' ? forceOpen : lp.classList.contains('subview-hidden');
+  if (typeof forceOpen !== 'boolean') _todaySetupManual = true;
+  lp.classList.toggle('subview-hidden', !open);
+  if (typeof btn.setAttribute === 'function') btn.setAttribute('aria-expanded', open ? 'true' : 'false');
+}
+
+function updateTodaySetupSummary() {
+  const sum = document.getElementById('today-setup-summary');
+  const badge = document.getElementById('dash-resend-badge');
+  const pctEl = document.querySelector('#today-setup .setup-pct');
+  if (!sum) return;
+  const parts = [];
+  if (badge && badge.textContent) parts.push(badge.textContent.trim());
+  if (pctEl && pctEl.textContent) parts.push(pctEl.textContent.trim());
+  else if (document.querySelector('#today-setup .t-good')) parts.push('Setup 100% Ready');
+  if (parts.length) sum.textContent = parts.join(' — ');
+}
+
 async function loadTodayResendCard() {
   const badgeEl = document.getElementById('dash-resend-badge');
   const topPill = document.getElementById('topbar-mailer-pill');
@@ -1096,6 +1119,7 @@ async function loadTodayResendCard() {
     if (keyEl) {
       keyEl.placeholder = data.smtp_password_set ? 'Saved in .env — enter new key to replace' : 're_... (paste your Resend API key)';
     }
+    updateTodaySetupSummary();
   } catch (_) {}
 }
 
@@ -1178,13 +1202,16 @@ async function loadSetupStatus() {
   const pct = data.percent || 0;
   if (pct === 100) {
     el.innerHTML =
-      '<div class="card setup-card" style="margin-bottom:0;height:100%;display:flex;flex-direction:column;justify-content:center;">' +
+      '<div class="card setup-card">' +
         '<div class="setup-head"><div><h3>System Ready</h3>' +
         '<p class="muted">All required pipeline &amp; email checks passed.</p></div>' +
         '<span class="badge t-good">100% Ready</span></div>' +
       '</div>';
+    if (!_todaySetupManual) toggleTodaySetupDrawer(false);
+    updateTodaySetupSummary();
     return;
   }
+  if (!_todaySetupManual) toggleTodaySetupDrawer(true);
 
   const next = data.checks.find(c => c.required && !c.done);
   const renderCheck = (c, optional) =>
@@ -1256,6 +1283,29 @@ async function useOtherWarmup() {
 
 // ── Signals: VeloReach proposes, you confirm ──
 
+let _signalsSubtab = 'catalog';
+let _signalsFilter = 'all';
+let _signalsQuery = '';
+
+function setSignalsSubtab(tab, btn) {
+  _signalsSubtab = tab === 'cohort' ? 'cohort' : 'catalog';
+  const tabs = document.querySelectorAll('#signals-subtabs .subtab-btn');
+  tabs.forEach(b => {
+    const active = (typeof b.getAttribute === 'function' ? b.getAttribute('data-signals-tab') : '') === _signalsSubtab || b === btn;
+    b.classList.toggle('active', active);
+    if (typeof b.setAttribute === 'function') b.setAttribute('aria-selected', active ? 'true' : 'false');
+  });
+  const cat = document.getElementById('signals-catalog-pane');
+  const coh = document.getElementById('signals-cohort-pane');
+  if (cat) cat.classList.toggle('subview-hidden', _signalsSubtab !== 'catalog');
+  if (coh) coh.classList.toggle('subview-hidden', _signalsSubtab !== 'cohort');
+}
+
+function setSignalsFilter(f) {
+  _signalsFilter = f || 'all';
+  renderSignalsCatalog();
+}
+
 async function loadSignals() {
   const data = await api('/api/signals');
   const sumEl = document.getElementById('signals-summary');
@@ -1275,9 +1325,41 @@ async function loadSignals() {
       '<span class="legend-val">' + p[1] + '<small>' + Math.round(100 * p[1] / all) + '%</small></span></div>'
     ).join('') + '</div></div>';
 
-  grpEl.innerHTML = (data.groups || []).map(g => {
-    // Only the undecided ones: "Confirm all" must never re-enable a signal
-    // you turned off (or "Skip all" turn off one you confirmed).
+  renderSignalsCatalog();
+  renderCohortBuilder();
+}
+
+function renderSignalsCatalog() {
+  const grpEl = document.getElementById('signals-groups');
+  const data = _signals;
+  if (!grpEl || !data) return;
+  const sigFree = s => /free|included/i.test(s.cost_note || '');
+  const sigMatches = (s, mode) => {
+    if (mode === 'confirmed') return s.status === 'confirmed';
+    if (mode === 'proposed') return s.status === 'proposed';
+    if (mode === 'free') return sigFree(s);
+    if (mode === 'rejected') return s.status === 'rejected';
+    return true;
+  };
+  const q = _signalsQuery.trim().toLowerCase();
+  const sigSearch = s => !q || (String(s.label || '') + ' ' + String(s.code || '') + ' ' + String(s.description || '')).toLowerCase().includes(q);
+  const allSigs = (data.groups || []).flatMap(g => g.signals || []);
+  const filterBar =
+    '<div class="toolbar">' +
+      '<div class="search"><svg class="icon" aria-hidden="true"><use href="#i-discover"/></svg>' +
+        '<input type="search" class="form-input" value="' + escHtml(_signalsQuery) + '" placeholder="Search signals…" aria-label="Search signals" oninput="_signalsQuery=this.value;renderSignalsCatalog()"></div>' +
+      '<div class="segmented" role="group" aria-label="Filter signals">' +
+        [['all', 'All'], ['proposed', 'Waiting'], ['confirmed', 'Confirmed'], ['free', 'Free only'], ['rejected', 'Off']].map(([k, lbl]) => {
+          const n = allSigs.filter(s => sigMatches(s, k) && sigSearch(s)).length;
+          return '<button type="button" class="' + (k === _signalsFilter ? 'on' : '') + '" aria-pressed="' + (k === _signalsFilter) +
+            '" onclick="setSignalsFilter(' + jsq(k) + ')">' + lbl + ' <span class="n">' + n + '</span></button>';
+        }).join('') +
+      '</div>' +
+    '</div>';
+
+  const groupsHtml = (data.groups || []).map(g => {
+    const visible = g.signals.filter(x => sigMatches(x, _signalsFilter) && sigSearch(x));
+    if (!visible.length && (_signalsFilter !== 'all' || q)) return '';
     const pending = escHtml(JSON.stringify(g.signals.filter(x => x.status === 'proposed').map(x => x.code)));
     const undecided = g.signals.filter(x => x.status === 'proposed').length;
     return '<div class="sig-group">' +
@@ -1285,7 +1367,7 @@ async function loadSignals() {
         '<h3>' + escHtml(g.label) + '</h3><p>' + escHtml(g.blurb) + '</p>' +
       '</div>' +
       (undecided
-        ? '<div style="display:flex;gap:6px;flex-shrink:0">' +
+        ? '<div class="inline-action-row">' +
             '<button class="btn btn-primary btn-sm" onclick="setSignals(' + pending +
               ', \'confirmed\')">Confirm all ' + undecided + '</button>' +
             '<button class="btn btn-secondary btn-sm" onclick="setSignals(' + pending +
@@ -1293,11 +1375,11 @@ async function loadSignals() {
           '</div>'
         : '') +
       '</div>' +
-      '<div class="card flush">' + g.signals.map(sigRow).join('') + '</div>' +
+      '<div class="card flush">' + (visible.map(sigRow).join('') || '<div class="loading">No signals in this group.</div>') + '</div>' +
     '</div>';
   }).join('');
 
-  renderCohortBuilder();
+  grpEl.innerHTML = filterBar + (groupsHtml || '<div class="card">' + emptyState(icon('signals'), 'No matching signals', 'Try clearing your search or filter.') + '</div>');
 }
 
 function sigRow(sig) {
@@ -1382,7 +1464,19 @@ async function loadDiscoverProviders() {
       ? (data.selected || data.default)
       : (list[0]?.key || data.selected || data.default);
   }
-  el.innerHTML = '<div class="prov-grid">' + list.map(p => {
+  const activeProv = list.find(p => p.key === _provider) || list[0];
+  const setupNote = activeProv
+    ? '<div class="status-strip">' +
+        '<b>Selected: ' + escHtml(activeProv.label) + '</b>' +
+        '<span class="hint">' + escHtml(activeProv.cost_note || '') + (activeProv.free_tier ? ' · Free: ' + escHtml(activeProv.free_tier) : '') + '</span>' +
+        (activeProv.caveat ? '<span class="hint">' + escHtml(activeProv.caveat) + '</span>' : '') +
+        (activeProv.needs_key && !activeProv.configured
+          ? '<span class="hint">Requires <code>' + escHtml(activeProv.env_keys.join(', ')) + '</code> in <a href="#settings" onclick="goTab(\'settings\');return false">Settings</a>' +
+            (activeProv.signup_url ? ' · <a href="' + safeHref(activeProv.signup_url) + '" target="_blank" rel="noopener noreferrer">Get key</a>' : '') + '</span>'
+          : '') +
+      '</div>'
+    : '';
+  el.innerHTML = setupNote + '<div class="prov-grid">' + list.map(p => {
     const ready = !p.needs_key
       ? '<span class="badge t-good">$0 Free Keyless</span>'
       : (p.configured
@@ -1393,16 +1487,7 @@ async function loadDiscoverProviders() {
       '<div class="prov-head"><h3>' + escHtml(p.label) + '</h3>' + ready + '</div>' +
       '<div class="blurb">' + escHtml(p.blurb) + '</div>' +
       '<div class="row"><span class="k">Cost</span><span class="v">' +
-        escHtml(p.cost_note) + '</span></div>' +
-      '<div class="row"><span class="k">Free</span><span class="v">' +
-        escHtml(p.free_tier) + '</span></div>' +
-      (p.needs_key
-        ? '<div class="row"><span class="k">Setup</span><span class="v">' +
-          escHtml(p.env_keys.join(', ')) + ' in .env &middot; ' +
-          '<a href="' + safeHref(p.signup_url) + '" target="_blank" rel="noopener noreferrer">get a key</a>' +
-          '</span></div>'
-        : '') +
-      (p.caveat ? '<div class="caveat">' + escHtml(p.caveat) + '</div>' : '') +
+        escHtml(p.cost_note) + (p.free_tier ? ' · ' + escHtml(p.free_tier) : '') + '</span></div>' +
     '</div>';
   }).join('') + '</div>';
 
@@ -1884,6 +1969,7 @@ async function loadSettings() {
   savedPh('gemini-key', data.gemini_api_key_set, 'AIzaSy...');
   savedPh('xai-key', data.xai_api_key_set, 'xai-...');
   savedPh('groq-key', data.groq_api_key_set, 'gsk_...');
+  savedPh('anthropic-key', data.anthropic_api_key_set, 'sk-ant-...');
 
   savedPh('tavily-key', data.tavily_api_key_set, 'tvly-...');
   savedPh('firecrawl-key', data.firecrawl_api_key_set, 'fc-...');
@@ -1899,7 +1985,21 @@ async function loadSettings() {
   tag('gemini-status', data.gemini_api_key_set, 'set');
   tag('xai-status', data.xai_api_key_set, 'set');
   tag('groq-status', data.groq_api_key_set, 'set');
+  tag('anthropic-status', data.anthropic_api_key_set, 'set');
   await loadComplianceSettings();
+}
+
+function setSettingsSubtab(tab, btn) {
+  const chosen = tab || 'email';
+  document.querySelectorAll('#settings-subtabs .subtab-btn').forEach(b => {
+    const active = (typeof b.getAttribute === 'function' ? b.getAttribute('data-settings-tab') : '') === chosen || b === btn;
+    b.classList.toggle('active', active);
+    if (typeof b.setAttribute === 'function') b.setAttribute('aria-selected', active ? 'true' : 'false');
+  });
+  document.querySelectorAll('#settings .settings-panel').forEach(p => {
+    const pt = typeof p.getAttribute === 'function' ? p.getAttribute('data-settings-tab') : '';
+    p.classList.toggle('subview-hidden', pt !== chosen);
+  });
 }
 
 async function loadComplianceSettings() {
@@ -2003,18 +2103,61 @@ function saveUniversalBrain() {
 
 function saveCloudModelKeys() {
   const payload = {};
-  const or = (document.getElementById('openrouter-key') || {}).value;
-  const ds = (document.getElementById('deepseek-key') || {}).value;
-  const gm = (document.getElementById('gemini-key') || {}).value;
-  const xai = (document.getElementById('xai-key') || {}).value;
-  const gr = (document.getElementById('groq-key') || {}).value;
-  if (or) payload.OPENROUTER_API_KEY = or;
-  if (ds) payload.DEEPSEEK_API_KEY = ds;
-  if (gm) payload.GEMINI_API_KEY = gm;
-  if (xai) payload.XAI_API_KEY = xai;
-  if (gr) payload.GROQ_API_KEY = gr;
+  const map = [
+    ['openrouter-key', 'OPENROUTER_API_KEY'],
+    ['deepseek-key', 'DEEPSEEK_API_KEY'],
+    ['gemini-key', 'GEMINI_API_KEY'],
+    ['xai-key', 'XAI_API_KEY'],
+    ['groq-key', 'GROQ_API_KEY'],
+    ['mistral-key', 'MISTRAL_API_KEY'],
+    ['together-key', 'TOGETHER_API_KEY'],
+    ['fireworks-key', 'FIREWORKS_API_KEY'],
+    ['cerebras-key', 'CEREBRAS_API_KEY'],
+    ['anthropic-key', 'ANTHROPIC_API_KEY'],
+  ];
+  for (const [id, envKey] of map) {
+    const val = ((document.getElementById(id) || {}).value || '').trim();
+    if (val) payload[envKey] = val;
+  }
   if (!Object.keys(payload).length) { showToast('No keys entered. Existing keys preserved.', 'info'); return; }
   saveEnv(payload, 'Cloud model keys updated.').then(loadSettings);
+}
+
+async function fetchSettingsOpenAiModels(btn) {
+  const baseUrl = ((document.getElementById('openai-base-url') || {}).value || '').trim();
+  const menu = document.getElementById('openai-model-menu');
+  const inp = document.getElementById('openai-model');
+  if (!menu || !inp) return;
+  if (btn) { btn.disabled = true; btn.textContent = 'Fetching…'; }
+  try {
+    const res = await fetchModelsForProvider('custom', baseUrl, 'OPENAI_API_KEY', true);
+    const models = (res && Array.isArray(res.models)) ? res.models : [];
+    if (!models.length) {
+      menu.innerHTML = '';
+      menu.classList.remove('open');
+      showToast((res && res.warning) || 'No models returned for this endpoint.', 'error');
+      return;
+    }
+    menu.className = 'model-menu open';
+    menu.style.position = 'relative';
+    menu.style.marginTop = '6px';
+    menu.innerHTML = models.slice(0, 60).map(m =>
+      '<button type="button" class="model-opt" onclick="pickSettingsOpenAiModel(' + jsq(m.id) + ')">' +
+        '<span class="model-opt-main">' + escHtml(m.id) + '</span>' +
+        '<span class="model-opt-meta">' + escHtml(formatModelMeta(m)) + '</span>' +
+      '</button>'
+    ).join('');
+    showToast((res.source === 'live' ? 'Loaded ' + models.length + ' live models.' : 'Showing curated fallback models.'), res.ok ? 'success' : 'info');
+  } finally {
+    if (btn) { btn.disabled = false; btn.textContent = 'Fetch Live Models'; }
+  }
+}
+
+function pickSettingsOpenAiModel(id) {
+  const inp = document.getElementById('openai-model');
+  const menu = document.getElementById('openai-model-menu');
+  if (inp) inp.value = id;
+  if (menu) menu.classList.remove('open');
 }
 
 function saveSearchTools() {
@@ -2102,6 +2245,11 @@ function saveGmail() {
 
 function jumpSettings(targetId) {
   const el = document.getElementById(targetId);
+  if (el && typeof el.closest === 'function') {
+    const panel = el.closest('.settings-panel');
+    const tab = panel && typeof panel.getAttribute === 'function' ? panel.getAttribute('data-settings-tab') : '';
+    if (tab) setSettingsSubtab(tab);
+  }
   if (el && el.scrollIntoView) el.scrollIntoView({ behavior: 'smooth', block: 'start' });
 }
 
@@ -2547,6 +2695,26 @@ async function stopSellbird() {
   loadLogs();
 }
 
+let _rawLogLines = [];
+
+function filterLogs() {
+  const el = document.getElementById('log-viewer');
+  if (!el || !el.dataset.hasLogs) return;
+  const q = ((document.getElementById('log-search') || {}).value || '').trim().toLowerCase();
+  const lvl = ((document.getElementById('log-level') || {}).value || '').trim().toUpperCase();
+  const stickChk = document.getElementById('log-autoscroll-toggle');
+  const autoScroll = stickChk ? !!stickChk.checked : true;
+  const lines = _rawLogLines.filter(line => {
+    const s = String(line || '');
+    if (lvl && !s.toUpperCase().includes(lvl)) return false;
+    if (q && !s.toLowerCase().includes(q)) return false;
+    return true;
+  });
+  const stick = autoScroll && (el.scrollTop + el.clientHeight >= el.scrollHeight - 30);
+  el.textContent = lines.length ? lines.join('\n') : 'No log lines match the active filter.';
+  if (stick) el.scrollTop = el.scrollHeight;
+}
+
 async function loadLogs() {
   const data = await api('/api/sellbird/logs');
   const el = document.getElementById('log-viewer');
@@ -2558,11 +2726,11 @@ async function loadLogs() {
     return;
   }
   if (data.lines && data.lines.length) {
-    const stick = el.scrollTop + el.clientHeight >= el.scrollHeight - 30;
-    el.textContent = data.lines.join('\n');
+    _rawLogLines = data.lines;
     el.dataset.hasLogs = '1';
-    if (stick) el.scrollTop = el.scrollHeight;
+    filterLogs();
   } else {
+    _rawLogLines = [];
     delete el.dataset.hasLogs;
     el.textContent = 'No logs yet. Start VeloReach to see activity.';
   }
@@ -2816,18 +2984,30 @@ async function loadOutbox() {
   };
 
   list.innerHTML =
-    table('Approved &amp; scheduled', data.approved, [
+    '<div data-outbox-section="scheduled">' + table('Approved &amp; scheduled', data.approved, [
       ['To', r => r.to_email], ['Step', r => r.step], ['Subject', r => r.subject],
       ['Sends', r => r.status === 'sending' ? badge(r.status) : escHtml(formatDate(r.send_at)), true, true],
-    ]) +
-    table('Recently sent', data.sent, [
+    ]) + '</div>' +
+    '<div data-outbox-section="sent">' + table('Recently sent', data.sent, [
       ['To', r => r.to_email], ['Step', r => r.step], ['Subject', r => r.subject],
       ['Sent', r => formatDate(r.sent_at), true],
-    ]) +
-    table('Didn\'t send', data.failed, [
+    ]) + '</div>' +
+    '<div data-outbox-section="failed">' + table('Didn\'t send', data.failed, [
       ['To', r => r.to_email], ['Status', r => badge(r.status), false, true],
       ['Reason', r => r.error, true], ['Updated', r => formatDate(r.updated_at), true],
-    ]);
+    ]) + '</div>';
+  const counts = {
+    review: pending.length,
+    scheduled: (data.approved || []).length,
+    sent: (data.sent || []).length,
+    failed: (data.failed || []).length,
+  };
+  document.querySelectorAll('#outbox-subtabs .subtab-btn').forEach(b => {
+    const k = typeof b.getAttribute === 'function' ? b.getAttribute('data-outbox-tab') : '';
+    const base = { review: 'Review Queue', scheduled: 'Scheduled', sent: 'Sent', failed: 'Failed' }[k];
+    if (base) b.innerHTML = base + ' <span class="n">' + (counts[k] || 0) + '</span>';
+  });
+  setOutboxSubtab(_outboxSubtab);
 }
 
 const CONTACT_SOURCES = {
@@ -2975,6 +3155,30 @@ async function setSendingMode(mode) {
 
 // Why autopilot sent this back for a human (sender: gate.autopilot_review).
 const HELD_PREFIX = 'held for your review: ';   // state.HELD_FOR_REVIEW
+let _outboxSubtab = 'review';
+
+function setOutboxSubtab(tab, btn) {
+  _outboxSubtab = tab || 'review';
+  document.querySelectorAll('#outbox-subtabs .subtab-btn').forEach(b => {
+    const active = (typeof b.getAttribute === 'function' ? b.getAttribute('data-outbox-tab') : '') === _outboxSubtab || b === btn;
+    b.classList.toggle('active', active);
+    if (typeof b.setAttribute === 'function') b.setAttribute('aria-selected', active ? 'true' : 'false');
+  });
+  const deskEl = document.getElementById('outbox-desk');
+  const listEl = document.getElementById('outbox-list');
+  const isReview = _outboxSubtab === 'review';
+  if (deskEl) deskEl.classList.toggle('subview-hidden', !isReview);
+  if (listEl) {
+    listEl.classList.toggle('subview-hidden', isReview);
+    if (typeof listEl.querySelectorAll === 'function') {
+      listEl.querySelectorAll('[data-outbox-section]').forEach(card => {
+        const k = typeof card.getAttribute === 'function' ? card.getAttribute('data-outbox-section') : '';
+        card.classList.toggle('subview-hidden', k !== _outboxSubtab);
+      });
+    }
+  }
+}
+
 function heldReason(item) {
   const e = String((item && item.error) || '');
   const why = e.startsWith(HELD_PREFIX) ? e.slice(HELD_PREFIX.length) : '';
@@ -3082,8 +3286,7 @@ function renderDesk(items, i) {
         '<span class="tag">' + (cur.kind === 'reply' ? 'Reply' : 'Email ' + escHtml(String(cur.step))) + '</span>' +
         (cur.variant === 'B' ? '<span class="mini accent">Variant B</span>' : '') +
         tagSafety +
-        '<span class="muted">' + wordCount + ' words &middot; sends ' + formatDate(cur.send_at) + '</span></div>' +
-      renderDeskContext(cur.context) +
+        '<span class="muted">' + wordCount + ' words · sends ' + formatDate(cur.send_at) + '</span></div>' +
       tagWarn +
       (heldReason(cur)
         ? '<div class="banner wait desk-held">' + icon('alert') + '<div><b>VeloReach held this instead of sending it</b>' +
@@ -3091,8 +3294,11 @@ function renderDesk(items, i) {
           'email can try to steer what VeloReach writes.</div></div></div>'
         : '') +
       draft + signoffPreview + footer +
+      '<details class="more-fields desk-context-wrap" style="margin-top:var(--sp-4)"><summary>Lead context &amp; signals</summary>' +
+        renderDeskContext(cur.context) +
+      '</details>' +
       '<div class="desk-actions">' + actions +
-        '<div class="desk-pager" style="margin-left:auto;display:flex;align-items:center;gap:6px">' +
+        '<div class="desk-pager">' +
           '<button type="button" class="btn btn-ghost btn-sm" ' + (i <= 0 ? 'disabled ' : '') + 'onclick="deskGo(' + (i - 1) + ')" title="Previous (K)">&larr; Prev</button>' +
           '<span class="muted" style="font-size:12px">' + (i + 1) + ' of ' + items.length + '</span>' +
           '<button type="button" class="btn btn-ghost btn-sm" ' + (i >= items.length - 1 ? 'disabled ' : '') + 'onclick="deskGo(' + (i + 1) + ')" title="Next (J)">Next &rarr;</button>' +
@@ -3373,6 +3579,15 @@ async function sendingToggle(action) {
 
 const COMPANIES_PER_PAGE = 50;
 let _companiesPage = 0;
+let _companiesQuery = '';
+let _companiesStatus = 'all';
+let _companiesSort = 'fit';
+
+function setCompaniesStatusFilter(mode) {
+  _companiesStatus = mode || 'all';
+  _companiesPage = 0;
+  renderCompaniesPage(0);
+}
 
 async function loadCompanies() {
   companyDrill = false;
@@ -3391,27 +3606,69 @@ async function loadCompanies() {
 
 function renderCompaniesPage(page) {
   const el = document.getElementById('companies-list');
-  const data = _companies;
+  const all = _companies || [];
+  const q = _companiesQuery.trim().toLowerCase();
+  const statusMatch = (c, mode) => {
+    const st = String(c.register_status || '').toLowerCase();
+    if (mode === 'ready') return /ready|contact|active/.test(st);
+    if (mode === 'excluded') return /exclude|reject|skip/.test(st);
+    if (mode === 'unprocessed') return !st || /new|pending|unprocess/.test(st);
+    return true;
+  };
+  let data = all.filter(c => {
+    if (!statusMatch(c, _companiesStatus)) return false;
+    if (!q) return true;
+    return [c.name, c.domain, c.industry, c.location, c.register_status].join(' ').toLowerCase().includes(q);
+  });
+  if (_companiesSort === 'contacts') {
+    data = data.slice().sort((a, b) => (b.contact_count || 0) - (a.contact_count || 0));
+  } else if (_companiesSort === 'newest') {
+    data = data.slice().sort((a, b) => String(b.created_at || '').localeCompare(String(a.created_at || '')));
+  } else {
+    data = data.slice().sort((a, b) => (Number(b.fit) || 0) - (Number(a.fit) || 0));
+  }
   const pages = Math.max(1, Math.ceil(data.length / COMPANIES_PER_PAGE));
   _companiesPage = Math.min(Math.max(0, page), pages - 1);
   const start = _companiesPage * COMPANIES_PER_PAGE;
-  let html = '<div class="table-card"><table class="nowrap"><thead><tr><th>Company</th>' +
+  const toolbar =
+    '<div class="toolbar">' +
+      '<div class="search"><svg class="icon" aria-hidden="true"><use href="#i-discover"/></svg>' +
+        '<input type="search" class="form-input" value="' + escHtml(_companiesQuery) + '" placeholder="Filter companies, domains, cities…" aria-label="Filter companies" oninput="_companiesQuery=this.value;_companiesPage=0;renderCompaniesPage(0)"></div>' +
+      '<div class="segmented" role="group" aria-label="Filter companies by status">' +
+        [['all', 'All'], ['ready', 'Ready'], ['unprocessed', 'Pending'], ['excluded', 'Excluded']].map(([k, lbl]) => {
+          const n = all.filter(c => statusMatch(c, k)).length;
+          return '<button type="button" class="' + (k === _companiesStatus ? 'on' : '') + '" aria-pressed="' + (k === _companiesStatus) +
+            '" onclick="setCompaniesStatusFilter(' + jsq(k) + ')">' + lbl + ' <span class="n">' + n + '</span></button>';
+        }).join('') +
+      '</div>' +
+      '<select class="form-input toolbar-select" aria-label="Sort companies" onchange="_companiesSort=this.value;renderCompaniesPage(0)">' +
+        '<option value="fit"' + (_companiesSort === 'fit' ? ' selected' : '') + '>Sort: Highest Fit</option>' +
+        '<option value="contacts"' + (_companiesSort === 'contacts' ? ' selected' : '') + '>Sort: Most Contacts</option>' +
+        '<option value="newest"' + (_companiesSort === 'newest' ? ' selected' : '') + '>Sort: Newest</option>' +
+      '</select>' +
+    '</div>';
+  if (!data.length) {
+    el.innerHTML = toolbar + '<div class="table-card">' + emptyState(icon('companies'), 'No matching companies', 'Try clearing the search or status filter.') + '</div>';
+    return;
+  }
+  let html = toolbar + '<div class="table-card"><table><thead><tr><th>Company</th>' +
     '<th title="Company fit, 0-100: sector, decision maker, reachability, buying signal. Hover a score for why.">Fit</th>' +
     '<th title="Hover a status for why the company was or wasn\'t contacted">Status</th>' +
     '<th>Industry</th><th>Location</th><th class="num">Contacts</th><th>Added</th></tr></thead><tbody>';
-  data.slice(start, start + COMPANIES_PER_PAGE).forEach((c, j) => {
-    const i = start + j;
+  data.slice(start, start + COMPANIES_PER_PAGE).forEach((c) => {
+    const i = all.indexOf(c);
     const website = c.website || (c.domain ? 'https://' + c.domain : '');
     const domain = safeHref(website)
       ? '<a href="' + safeHref(website) + '" target="_blank" rel="noopener noreferrer" onclick="event.stopPropagation()">' +
         escHtml(c.domain || website.replace(/^https?:\/\//i, '')) + '</a>'
       : escHtml(c.domain);
+    const st = c.register_status || 'pending';
     html += '<tr class="clickable" onclick="showCompanyContacts(' + i + ')">' +
       '<td><div class="cell-stack"><span class="cell-main">' + escHtml(c.name) + '</span>' +
         '<span class="cell-sub">' + domain + '</span></div></td>' +
       '<td title="' + escHtml((c.fit_reasons || []).join(' · ')) + '">' +
         (typeof c.fit === 'number' ? meterHtml(c.fit) : '') + '</td>' +
-      '<td title="' + escHtml(c.register_why || '') + '">' + escHtml(c.register_status || '') + '</td>' +
+      '<td title="' + escHtml(c.register_why || '') + '">' + badge(st) + '</td>' +
       '<td>' + (c.industry ? '<span class="tag">' + escHtml(c.industry) + '</span>' : '') + '</td>' +
       '<td>' + escHtml(c.location) + '</td>' +
       '<td class="num">' + (c.contact_count || 0) + '</td>' +
@@ -3466,31 +3723,37 @@ function companyInfoCard(company, profile) {
   const other = Object.values(latest).filter(o => !shown.has(o.signal_code));
   const companyId = c.id || company.id || '';
   const companyDomain = c.domain || company.domain || '';
-  let html = '<div class="card" style="margin-bottom:16px"><div class="card-head" style="flex-wrap:wrap;gap:10px">' +
-    '<div><h3>' + escHtml(c.name || c.domain) + '</h3>' +
-    (typeof company.fit === 'number' ? '<span class="meta">Fit ' + company.fit + ' / 100</span>' : '') + '</div>' +
-    '<div class="page-actions">' +
-      '<button class="btn btn-primary btn-sm" onclick="runCompanyResearch(' + jsq(companyDomain) + ', ' + jsq(companyId) + ', this)">Deep Research</button>' +
-      '<button class="btn btn-secondary btn-sm" onclick="runCompanyEnrichment(' + jsq(companyId) + ', this)">Run AI Columns</button>' +
-    '</div></div>' +
-    '<table><tbody>' +
-    row('Website', link(website, c.domain || website)) +
-    row('Sector', escHtml(c.industry)) +
-    row('Area', escHtml(c.location)) +
-    row('Why selected', escHtml(reg.why_selected || (company.fit_reasons || []).join(' · '))) +
-    row('Status', '<b>' + escHtml(reg.status || company.register_status || '') + '</b>' +
-      (reg.why_not_contacted || company.register_why ? ' — ' + escHtml(reg.why_not_contacted || company.register_why) : '')) +
-    row('Deep Research Dossier', dossierHtml) +
-    row('People named on site', list(people, 8)) +
-    row('Contact form', form ? link(form.value_text, form.value_text) : '') +
-    row('Hiring', list(by('HIRING_ROLE'), 6)) +
-    row('Tech on website', escHtml(by('TECH_STACK').map(o => o.value_text).slice(0, 1).join(''))) +
-    row('Other signals', other.slice(0, 8).map(o => escHtml(o.label) + ': ' +
-      escHtml(o.value_text || String(o.value_num))).join('<br>')) +
-    row('Found via', c.source_url ? link(c.source_url, 'search result') + ' · ' + escHtml(c.source || '') : escHtml(c.source || '')) +
-    row('First found', escHtml((c.created_at || '').slice(0, 10))) +
-    '</tbody></table></div>';
-  return html;
+  const prop = (k, v, wide) => v ? '<div class="prop-item' + (wide ? ' wide' : '') + '"><div class="prop-k">' + k + '</div><div class="prop-v">' + v + '</div></div>' : '';
+  return '<div class="account-hero">' +
+    '<div class="account-hero-head">' +
+      '<div>' +
+        '<h3>' + escHtml(c.name || c.domain) + '</h3>' +
+        '<div class="account-hero-sub">' +
+          (website ? '<span>' + link(website, c.domain || website) + '</span>' : '') +
+          (c.industry ? '<span class="tag">' + escHtml(c.industry) + '</span>' : '') +
+          (c.location ? '<span>' + escHtml(c.location) + '</span>' : '') +
+          (typeof company.fit === 'number' ? '<span class="tag accent">Fit ' + company.fit + ' / 100</span>' : '') +
+          badge(reg.status || company.register_status || 'pending') +
+        '</div>' +
+      '</div>' +
+      '<div class="page-actions">' +
+        '<button class="btn btn-primary btn-sm" onclick="runCompanyResearch(' + jsq(companyDomain) + ', ' + jsq(companyId) + ', this)">Deep Research</button>' +
+        '<button class="btn btn-secondary btn-sm" onclick="runCompanyEnrichment(' + jsq(companyId) + ', this)">Run AI Columns</button>' +
+      '</div>' +
+    '</div>' +
+    '<div class="prop-grid">' +
+      prop('Why selected', escHtml(reg.why_selected || (company.fit_reasons || []).join(' · '))) +
+      prop('Status detail', escHtml(reg.why_not_contacted || company.register_why || '')) +
+      prop('Found via', (c.source_url ? link(c.source_url, 'search result') + ' · ' : '') + escHtml(c.source || '')) +
+      prop('First found', escHtml((c.created_at || '').slice(0, 10))) +
+      prop('People named on site', list(people, 8)) +
+      prop('Hiring', list(by('HIRING_ROLE'), 6)) +
+      prop('Contact form', form ? link(form.value_text, form.value_text) : '') +
+      prop('Tech on website', escHtml(by('TECH_STACK').map(o => o.value_text).slice(0, 1).join(''))) +
+      prop('Deep Research Dossier', dossierHtml, true) +
+      prop('Other signals', other.slice(0, 8).map(o => escHtml(o.label) + ': ' + escHtml(o.value_text || String(o.value_num))).join('<br>'), true) +
+    '</div>' +
+  '</div>';
 }
 
 async function runBatchResearch(btn) {
@@ -3588,7 +3851,9 @@ async function showCompanyContacts(index) {
     for (const p of data) {
       const phoneIcon = p.phone_verified ? ' <span class="muted">&#10003;</span>' : '';
       html += '<tr><td><div class="cell-row"><span class="avatar">' + initials(p.first_name, p.last_name) + '</span>' +
-          '<div class="cell-stack"><span class="cell-main">' + escHtml(p.first_name) + ' ' + escHtml(p.last_name) + '</span>' +
+          '<div class="cell-stack"><span class="cell-main">' +
+            (p.id ? '<a href="#" onclick="openContactDetailModal(' + jsq(p.id) + ');return false">' + escHtml(p.first_name) + ' ' + escHtml(p.last_name) + '</a>'
+                  : escHtml(p.first_name) + ' ' + escHtml(p.last_name)) + '</span>' +
           '<span class="cell-sub">' + escHtml(p.title) + '</span></div></div></td>' +
         '<td>' + escHtml(p.email) + emailTag(p) + '</td>' +
         '<td>' + escHtml(p.phone) + phoneIcon + '</td>' +
@@ -4017,6 +4282,11 @@ async function bulkContactAction(action, btn) {
   }
 }
 
+function filterByContactTag(tag) {
+  _contactTag = (_contactTag === tag ? '' : tag);
+  renderContacts();
+}
+
 function renderContacts() {
   const rowsEl = document.getElementById('contact-rows');
   const filtersEl = document.getElementById('contact-filters');
@@ -4050,18 +4320,16 @@ function renderContacts() {
       (allVisibleSelected ? ' checked' : '') + ' onchange="toggleSelectAllVisibleContacts(this.checked)"></th>' +
     '<th class="col-name">Name</th><th class="col-company">Company &amp; Tags</th><th class="col-email">Email</th>' +
     '<th>Score</th><th>Status</th><th>Source</th><th></th></tr></thead><tbody>';
-function filterByContactTag(tag) {
-  _contactTag = (_contactTag === tag ? '' : tag);
-  renderContacts();
-}
 
   for (const [p, i] of rows) {
     const tags = parseTags(p.tags);
+    const visibleTags = tags.slice(0, 2);
+    const extraTags = tags.length > 2 ? tags.length - 2 : 0;
     const tagPills = tags.length
-      ? '<div class="tag-pills">' + tags.map(t =>
+      ? '<div class="tag-pills">' + visibleTags.map(t =>
           '<button type="button" class="tag-pill' + (t === _contactTag ? ' active' : '') +
           '" onclick="filterByContactTag(' + jsq(t) + ')" title="Filter by #' + escHtml(t) + '">' + escHtml(t) + '</button>'
-        ).join('') + '</div>'
+        ).join('') + (extraTags ? '<span class="tag-pill">+' + extraTags + '</span>' : '') + '</div>'
       : '';
     html += '<tr>' +
       '<td class="col-check"><input type="checkbox" aria-label="Select ' + escHtml(p.email || 'contact') + '"' +
@@ -4080,17 +4348,22 @@ function filterByContactTag(tag) {
       '<td>' + badge(p.status) + '</td>' +
       '<td class="muted"><div class="cell-stack"><span>' + sourceLabel(p.source) + '</span>' +
         '<span class="cell-sub">' + relTime(p.created_at) + '</span></div></td>' +
-      '<td class="actions-td"><div class="cell-row">' + (p.status === 'opted_out' || p.opt_out_undone || _optOut.id === p.id
-        ? '<button class="btn btn-ghost btn-sm" onclick="toggleOptOut(' + i + ')" ' +
-          'aria-expanded="' + (_optOut.id === p.id) + '" title="What made VeloReach stop emailing them">' +
-          (p.status === 'opted_out' ? 'Why?' : 'Opt-out history') + '</button>' : '') +
-        '<button class="btn btn-ghost btn-sm row-action" onclick="openContactDetailModal(' + jsq(p.id) + ')" title="Edit contact & view email timeline">Edit</button>' +
-        (p.email && p.status !== 'opted_out'
-          ? '<button class="btn btn-ghost btn-sm row-action" onclick="suppressContact(' + i + ')" title="Add to Do-Not-Contact suppression list">Suppress</button>' : '') +
-        '<button class="btn btn-ghost btn-sm row-action" onclick="deleteContact(' + i + ')" title="Remove contact and cancel queued drafts">' +
-          (_armedDeleteContactId === p.id ? 'Confirm delete?' : 'Delete') + '</button>' +
-        '<button class="btn btn-ghost btn-sm row-action" onclick="fbProspect(' + i + ')" ' +
-        'title="Leave feedback on this contact">Feedback</button></div></td></tr>';
+      '<td class="actions-td"><div class="cell-row">' +
+        '<button type="button" class="btn btn-ghost btn-sm row-action" onclick="openContactDetailModal(' + jsq(p.id) + ')" title="Edit contact &amp; view email timeline">Edit</button>' +
+        '<details class="more-wrap" ontoggle="this.classList.toggle(\'open\', this.open)">' +
+          '<summary class="more-btn" aria-label="More actions for ' + escHtml(p.email || 'contact') + '">&hellip;</summary>' +
+          '<div class="more-menu" role="menu">' +
+            (p.status === 'opted_out' || p.opt_out_undone || _optOut.id === p.id
+              ? '<button type="button" class="more-item" role="menuitem" onclick="toggleOptOut(' + i + ')">' +
+                  (p.status === 'opted_out' ? 'Why opted out?' : 'Opt-out history') + '</button>' : '') +
+            (p.email && p.status !== 'opted_out'
+              ? '<button type="button" class="more-item" role="menuitem" onclick="suppressContact(' + i + ')">Suppress</button>' : '') +
+            '<button type="button" class="more-item" role="menuitem" onclick="fbProspect(' + i + ')">Feedback</button>' +
+            '<button type="button" class="more-item danger" role="menuitem" onclick="deleteContact(' + i + ')">' +
+              (_armedDeleteContactId === p.id ? 'Confirm delete?' : 'Delete') + '</button>' +
+          '</div>' +
+        '</details>' +
+      '</div></td></tr>';
     if (_optOut.id === p.id) html += '<tr class="detail-row"><td colspan="8">' + optOutPanel(p) + '</td></tr>';
   }
   rowsEl.innerHTML = html + '</tbody></table></div>' +
@@ -4614,6 +4887,13 @@ function renderTemplatesList() {
   }).join('');
 }
 
+function toggleTplEditor(show) {
+  const wrap = document.getElementById('tpl-editor-wrap');
+  if (!wrap) return;
+  const open = typeof show === 'boolean' ? show : wrap.classList.contains('subview-hidden');
+  wrap.classList.toggle('subview-hidden', !open);
+}
+
 function resetTemplateForm() {
   _editingTemplateId = null;
   ['tpl-name', 'tpl-subject', 'tpl-tags', 'tpl-body'].forEach(id => {
@@ -4623,12 +4903,14 @@ function resetTemplateForm() {
   const t = document.getElementById('tpl-form-title'); if (t) t.textContent = 'Save New Template';
   const b = document.getElementById('tpl-save-btn'); if (b) b.textContent = 'Save Template';
   const c = document.getElementById('tpl-cancel-edit-btn'); if (c) c.style.display = 'none';
+  toggleTplEditor(false);
 }
 
 function editTemplate(id) {
   const tpl = _templates.find(x => x.id === id);
   if (!tpl) return;
   _editingTemplateId = id;
+  toggleTplEditor(true);
   const setV = (k, v) => { const el = document.getElementById(k); if (el) el.value = v || ''; };
   setV('tpl-name', tpl.name);
   setV('tpl-category', tpl.category || 'cold');
@@ -5135,6 +5417,21 @@ function renderCampaignAnalyticsPanel(c) {
 }
 
 let _campaignFilter = 'all';
+let _campaignsSubtab = 'campaigns';
+
+function setCampaignsSubtab(tab, btn) {
+  _campaignsSubtab = tab === 'funnel' ? 'funnel' : 'campaigns';
+  document.querySelectorAll('#campaigns-subtabs .subtab-btn').forEach(b => {
+    const active = (typeof b.getAttribute === 'function' ? b.getAttribute('data-campaigns-tab') : '') === _campaignsSubtab || b === btn;
+    b.classList.toggle('active', active);
+    if (typeof b.setAttribute === 'function') b.setAttribute('aria-selected', active ? 'true' : 'false');
+  });
+  const lp = document.getElementById('campaigns-list-pane');
+  const fp = document.getElementById('campaigns-funnel-pane');
+  if (lp) lp.classList.toggle('subview-hidden', _campaignsSubtab !== 'campaigns');
+  if (fp) fp.classList.toggle('subview-hidden', _campaignsSubtab !== 'funnel');
+}
+
 function setCampaignFilter(f) {
   _campaignFilter = f || 'all';
   renderCampaignsList();
@@ -5178,19 +5475,16 @@ function renderCampaignsList() {
     el.innerHTML = html + emptyState(icon('campaigns'), 'No ' + escHtml(_campaignFilter) + ' campaigns', 'Switch filter or create a new campaign above.');
     return;
   }
-  shown.forEach((c) => {
+  shown.forEach((c, idx) => {
     const i = data.indexOf(c);
     let stepsHtml = '';
     (c.sequence || []).forEach((step, s) => {
       const sendBtns = (c.recipients || []).map((r, ri) => {
-        // Only offered when VeloReach can't send itself and this person can
-        // still be emailed (the server decides: can_send_by_hand).
         if (r.sent_by_hand) {
           const tick = '<label style="display:inline-flex;align-items:center;gap:4px;font-size:13px;cursor:pointer">' +
             '<input type="checkbox" checked onchange="markSent(' + i + ',' + ri + ',this.checked)"> ' +
             '&#10003; Sent by you</label>';
           if (s === 0) return '<span class="rcpt-who">' + escHtml(r.email) + '</span>' + tick;
-          // Follow-ups are the user's too: VeloReach never emails someone they emailed.
           return '<span class="rcpt-who">' + escHtml(r.email) + '</span>' +
             '<button class="btn btn-secondary btn-sm" onclick="openInGmail(' + i + ',' + s + ',' + ri + ')">' +
             'Open in Gmail</button>' +
@@ -5198,7 +5492,6 @@ function renderCampaignsList() {
         }
         if (s !== 0) return '';
         if (!r.can_send_by_hand) {
-          // VeloReach sends here; this only records an email the user already sent.
           return r.can_mark_sent
             ? '<label class="muted" style="display:inline-flex;align-items:center;gap:4px;font-size:12px;cursor:pointer">' +
               '<input type="checkbox" onchange="markSent(' + i + ',' + ri + ',this.checked)"> ' +
@@ -5212,9 +5505,11 @@ function renderCampaignsList() {
           'Open in Gmail</button>' +
           '<label><input type="checkbox" onchange="markSent(' + i + ',' + ri + ',this.checked)"> Mark as sent</label>'
       }).filter(Boolean).map(x => '<div class="rcpt">' + x + '</div>').join('');
+      const hasB = !!(step.subject_b || step.body_b);
       stepsHtml += '<div class="email-step"><span class="step-dot">' + escHtml(String(step.step || '?')) + '</span>' +
         '<div><div class="step-num">' + (s === 0 ? 'First email' : 'Follow-up') +
-        (step.delay_days ? ' &middot; ' + escHtml(String(step.delay_days)) + ' days after the last' : '') + '</div>' +
+        (step.delay_days ? ' · ' + escHtml(String(step.delay_days)) + ' days after the last' : '') +
+        (hasB ? ' <span class="tag accent">A/B Split</span>' : '') + '</div>' +
         '<div class="subject">' + escHtml(step.subject) + '</div>' +
         '<div class="body">' + escHtml(step.body) + '</div>' +
         (sendBtns ? '<div class="step-actions">' + sendBtns + '</div>' : '') +
@@ -5227,29 +5522,39 @@ function renderCampaignsList() {
     const nextStatus = c.status === 'active' ? 'paused' : 'active';
     const statusLabel = c.status === 'active' ? 'Pause' : 'Activate';
     const delLabel = _armedDeleteCampaignId === c.id ? 'Confirm delete?' : 'Delete';
+    const stepCount = (c.sequence || []).length;
     html += '<div class="campaign-card"><div class="campaign-top">' +
       '<div class="campaign-title"><h3>' + escHtml(c.name || 'Untitled Campaign') + '</h3>' +
         (c.framework ? '<span class="mini" title="Copywriting framework this campaign tests">' + escHtml(c.framework) + '</span>' : '') +
         '<div class="campaign-actions">' +
           '<button class="btn btn-primary btn-sm" onclick="launchCampaignById(' + jsq(c.id) + ', this)">Launch to Outbox</button>' +
-          '<button class="btn btn-secondary btn-sm" onclick="openCampaignTestSend(' + jsq(c.id) + ')">Test Email</button>' +
-          '<button class="btn btn-secondary btn-sm" onclick="toggleCampaignStatus(' + jsq(c.id) + ',' + jsq(nextStatus) + ', this)">' + statusLabel + '</button>' +
+          '<button class="btn btn-secondary btn-sm" onclick="openCampaignBuilderModal(' + jsq(c.id) + ')">Edit</button>' +
           '<button class="btn btn-ghost btn-sm" onclick="toggleCampaignAnalytics(' + jsq(c.id) + ')">Analytics</button>' +
-          '<button class="btn btn-ghost btn-sm" onclick="openCampaignBuilderModal(' + jsq(c.id) + ')">Edit</button>' +
-          '<button class="btn btn-ghost btn-sm" onclick="cloneCampaignById(' + jsq(c.id) + ', this)">Clone</button>' +
-          '<button class="btn btn-ghost btn-sm" onclick="fbCampaign(' + i + ')">Feedback</button>' +
-          '<button class="btn btn-ghost btn-sm" onclick="deleteCampaignById(' + jsq(c.id) + ', this)">' + delLabel + '</button>' +
+          '<details class="more-wrap" ontoggle="this.classList.toggle(\'open\', this.open)">' +
+            '<summary class="more-btn" aria-label="More actions for ' + escHtml(c.name || 'campaign') + '">More</summary>' +
+            '<div class="more-menu" role="menu">' +
+              '<button type="button" class="more-item" role="menuitem" onclick="openCampaignTestSend(' + jsq(c.id) + ')">Test Email</button>' +
+              '<button type="button" class="more-item" role="menuitem" onclick="toggleCampaignStatus(' + jsq(c.id) + ',' + jsq(nextStatus) + ', this)">' + statusLabel + '</button>' +
+              '<button type="button" class="more-item" role="menuitem" onclick="cloneCampaignById(' + jsq(c.id) + ', this)">Clone</button>' +
+              '<button type="button" class="more-item" role="menuitem" onclick="fbCampaign(' + i + ')">Feedback</button>' +
+              '<button type="button" class="more-item danger" role="menuitem" onclick="deleteCampaignById(' + jsq(c.id) + ', this)">' + delLabel + '</button>' +
+            '</div>' +
+          '</details>' +
         '</div></div>' +
       '<div class="meta">' + badge(c.status) + '<span>' + pc + ' prospect' + (pc !== 1 ? 's' : '') + '</span>' +
-        '<span>' + (c.sequence || []).length + ' emails</span>' +
+        '<span>' + stepCount + ' emails</span>' +
         '<span>Outbox: ' + (oc.pending_review || 0) + ' pending · ' + ((oc.approved || 0) + (oc.sending || 0)) + ' scheduled · ' + (oc.sent || 0) + ' sent</span>' +
         (an.replied ? '<span>Reply rate: ' + (an.reply_rate_pct || 0) + '%</span>' : '') +
         '<span>Created ' + relTime(c.created_at) + '</span>' +
         (tagPills ? '<span class="tag-pills">Targets: ' + tagPills + '</span>' : '') + '</div>' +
       renderCampaignAnalyticsPanel(c) +
       campaignProgress(c) + '</div>' +
-      '<div class="sequence">' +
-      (stepsHtml || '<p class="muted" style="font-size:13px;padding-top:16px">No email steps in this campaign.</p>') + '</div></div>';
+      '<details class="sequence-wrap"' + (idx === 0 || shown.length === 1 ? ' open' : '') + '>' +
+        '<summary style="padding:10px var(--sp-5);font-size:12.5px;font-weight:500;color:var(--text-2);border-top:1px solid var(--line)">Sequence steps (' + stepCount + ')</summary>' +
+        '<div class="sequence">' +
+          (stepsHtml || '<p class="muted" style="font-size:13px;padding-top:16px">No email steps in this campaign.</p>') +
+        '</div>' +
+      '</details></div>';
   });
   el.innerHTML = html;
 }
@@ -5288,25 +5593,50 @@ async function loadConversations() {
   renderConversations();
 }
 
-function setConvoFilter(f) { _convoFilter = f; renderConversations(); }
+let _convoSelectedId = null;
+let _convoQuery = '';
+
+function setConvoFilter(f) { _convoFilter = f; _convoSelectedId = null; renderConversations(); }
+function selectConvo(id) { _convoSelectedId = id; renderConversations(); }
 
 function renderConversations() {
   const el = document.getElementById('conversations-list');
   const filter = CONVO_FILTERS.find(f => f[0] === _convoFilter) || CONVO_FILTERS[CONVO_FILTERS.length - 1];
-  const bar = '<div class="toolbar"><div class="segmented" role="group" aria-label="Filter conversations">' +
-    CONVO_FILTERS.map(f => '<button class="' + (f[0] === filter[0] ? 'on' : '') + '" aria-pressed="' + (f[0] === filter[0]) +
-      '" onclick="setConvoFilter(\'' + f[0] + '\')">' + f[1] + ' <span class="n">' +
-      _convos.filter(f[2]).length + '</span></button>').join('') + '</div></div>';
-  // Handed-to-you first, then drafts waiting; otherwise newest first (as served).
+  const bar = '<div class="toolbar">' +
+    '<div class="search"><svg class="icon" aria-hidden="true"><use href="#i-discover"/></svg>' +
+      '<input type="search" class="form-input" value="' + escHtml(_convoQuery) + '" placeholder="Search conversations…" aria-label="Search conversations" oninput="_convoQuery=this.value;renderConversations()"></div>' +
+    '<div class="segmented" role="group" aria-label="Filter conversations">' +
+      CONVO_FILTERS.map(f => '<button class="' + (f[0] === filter[0] ? 'on' : '') + '" aria-pressed="' + (f[0] === filter[0]) +
+        '" onclick="setConvoFilter(\'' + f[0] + '\')">' + f[1] + ' <span class="n">' +
+        _convos.filter(f[2]).length + '</span></button>').join('') + '</div></div>';
   const rank = c => c.status === 'needs_human' ? 0 : c.draft ? 1 : 2;
-  const shown = _convos.filter(filter[2]).map((c, i) => [c, i])
+  const q = _convoQuery.trim().toLowerCase();
+  const matchQ = c => !q || [c.first_name, c.last_name, c.company, c.prospect_email, c.status, c.intent].join(' ').toLowerCase().includes(q);
+  const shown = _convos.filter(c => filter[2](c) && matchQ(c)).map((c, i) => [c, i])
     .sort((a, b) => rank(a[0]) - rank(b[0]) || a[1] - b[1]).map(x => x[0]);
   if (!shown.length) {
     el.innerHTML = bar + '<div class="card">' + emptyState(icon('check'), 'Nothing here',
       'No conversation matches this filter.') + '</div>';
     return;
   }
-  el.innerHTML = bar + shown.map(convoCard).join('');
+  const active = shown.find(c => c.id === _convoSelectedId) || shown[0];
+  _convoSelectedId = active.id;
+  const railHtml = shown.map(c => {
+    const name = [c.first_name, c.last_name].filter(Boolean).join(' ') || c.company || c.prospect_email || 'Unknown';
+    const lastMsg = (c.thread && c.thread.length) ? c.thread[c.thread.length - 1].content : (c.draft ? c.draft.body : c.company || '');
+    return '<button type="button" class="unibox-row' + (c.id === active.id ? ' active' : '') + '" onclick="selectConvo(' + jsq(c.id) + ')">' +
+      '<span class="avatar">' + initials(c.first_name, c.last_name) + '</span>' +
+      '<div class="unibox-row-body">' +
+        '<div class="unibox-row-top"><span class="unibox-row-name">' + escHtml(name) + '</span>' +
+          '<span class="unibox-row-time">' + relTime(c.updated_at) + '</span></div>' +
+        '<div class="unibox-row-sub">' + escHtml(c.company || c.prospect_email || '') + '</div>' +
+        '<div class="unibox-row-sub">' + escHtml(String(lastMsg || '').slice(0, 72)) + '</div>' +
+        '<div class="unibox-row-tags">' + badge(c.status) + (c.draft ? '<span class="tag accent">Draft ready</span>' : '') + '</div>' +
+      '</div></button>';
+  }).join('');
+  el.innerHTML = bar + '<div class="unibox">' +
+    '<div class="unibox-rail"><div class="unibox-list">' + railHtml + '</div></div>' +
+    '<div class="unibox-main">' + convoCard(active) + '</div></div>';
 }
 
 function convoCard(c) {
@@ -5366,7 +5696,7 @@ function convoActions(c) {
         '<div class="convo-reply-actions">' +
           '<button class="btn btn-primary btn-sm" onclick="submitConvoReply(' + jsq(c.id) + ',\'queue\',this)">Stage Reply to Outbox</button>' +
           '<button class="btn btn-secondary btn-sm" onclick="submitConvoReply(' + jsq(c.id) + ',\'ai_draft\',this)">AI Draft Reply</button>' +
-          (_templates.length
+          (typeof _templates !== 'undefined' && _templates.length && typeof templatePickerOptions === 'function'
             ? '<select class="form-input tpl-picker" aria-label="Insert reply template" onchange="insertTemplateIntoConvo(' + jsq(c.id) + ',this)">' +
                 templatePickerOptions('Insert template…') + '</select>'
             : '') +
@@ -5943,18 +6273,39 @@ async function submitAddInbox() {
   }, 1500);
 }
 
+let _activityData = [];
+
 async function loadActivity() {
   const el = document.getElementById('activity-list');
   const data = await api('/api/activity');
   if (!data) { el.innerHTML = offlineState(); return; }
+  _activityData = data;
+  renderActivity();
+}
+
+function renderActivity() {
+  const el = document.getElementById('activity-list');
+  if (!el) return;
+  const data = _activityData || [];
   if (!data.length) {
     el.innerHTML = emptyState(icon('activity'), 'No activity yet',
       'VeloReach hasn\'t taken any actions. Every prospect found, email written, and reply handled will appear here the moment it happens.');
     return;
   }
+  const q = ((document.getElementById('activity-search') || {}).value || '').trim().toLowerCase();
+  const agent = ((document.getElementById('activity-agent-filter') || {}).value || '').trim().toLowerCase();
+  const shown = data.filter(a => {
+    if (agent && String(a.agent || '').toLowerCase() !== agent) return false;
+    if (q && !(String(a.agent || '') + ' ' + actionText(a)).toLowerCase().includes(q)) return false;
+    return true;
+  });
+  if (!shown.length) {
+    el.innerHTML = '<div class="card">' + emptyState(icon('activity'), 'No matching events', 'Try clearing the activity filter or search.') + '</div>';
+    return;
+  }
   let html = '<div class="card"><div class="timeline">';
   let day = '';
-  for (const a of data) {
+  for (const a of shown) {
     const label = dayLabel(a.created_at);
     if (label !== day) { day = label; html += '<div class="tl-day">' + escHtml(label) + '</div>'; }
     html += '<div class="tl-item' + (a.agent === 'main' ? ' quiet' : '') + '"><span class="tl-time">' + timeOfDay(a.created_at) + '</span>' +
@@ -6007,8 +6358,14 @@ setInterval(() => {
     case 'today': loadToday(); loadTrend(); loadFunnel(); loadRuns(); loadTodayActivity(); break;
     case 'companies': if (!companyDrill) loadCompanies(); break;
     case 'prospects': loadProspects(); break;
-    case 'campaigns': loadCampaigns(); break;
-    case 'conversations': loadConversations(); break;
+    case 'campaigns':
+      if (!_armedDeleteCampaignId && !document.querySelector('#campaigns-list details.more-wrap[open]')) loadCampaigns();
+      break;
+    case 'conversations': {
+      const openReply = document.querySelector('.convo-reply-panel[style*="block"], .convo-book-panel[data-open="1"]');
+      if (!openReply) loadConversations();
+      break;
+    }
     case 'activity': loadActivity(); break;
     case 'enrichment': loadEnrichment(); break;
     case 'inboxes': loadInboxes(); break;
@@ -6212,7 +6569,29 @@ async function loadCompany() {
   const o = data.offer || {}, p = data.product || {}, icp = data.icp || {}, s = data.persona || {};
   const objections = Object.entries(p.objection_responses || {});
   const isPlaceholder = /smoke test|placeholder|yourcompany/i.test((p.name || '') + ' ' + (s.company || ''));
+  let _companySubtab = 'quick';
+  window.setCompanySubtab = window.setCompanySubtab || function(tab, btn) {
+    window._companySubtab = tab || 'quick';
+    document.querySelectorAll('#company-subtabs .subtab-btn').forEach(b => {
+      const active = (typeof b.getAttribute === 'function' ? b.getAttribute('data-company-tab') : '') === window._companySubtab || b === btn;
+      b.classList.toggle('active', active);
+      if (typeof b.setAttribute === 'function') b.setAttribute('aria-selected', active ? 'true' : 'false');
+    });
+    document.querySelectorAll('#company-body .company-panel').forEach(p => {
+      const pt = typeof p.getAttribute === 'function' ? p.getAttribute('data-company-tab') : '';
+      p.classList.toggle('subview-hidden', pt !== window._companySubtab);
+    });
+  };
+  const activeCoTab = window._companySubtab || 'quick';
+  const coHidden = t => activeCoTab === t ? '' : ' subview-hidden';
   body.innerHTML = `
+  <div class="subtabs" id="company-subtabs" role="tablist" aria-label="Company sections">
+    <button type="button" class="subtab-btn${activeCoTab === 'quick' ? ' active' : ''}" role="tab" aria-selected="${activeCoTab === 'quick' ? 'true' : 'false'}" data-company-tab="quick" onclick="setCompanySubtab('quick', this)">Quick Setup &amp; URL</button>
+    <button type="button" class="subtab-btn${activeCoTab === 'offer' ? ' active' : ''}" role="tab" aria-selected="${activeCoTab === 'offer' ? 'true' : 'false'}" data-company-tab="offer" onclick="setCompanySubtab('offer', this)">Offer &amp; Messaging</button>
+    <button type="button" class="subtab-btn${activeCoTab === 'icp' ? ' active' : ''}" role="tab" aria-selected="${activeCoTab === 'icp' ? 'true' : 'false'}" data-company-tab="icp" onclick="setCompanySubtab('icp', this)">Product &amp; ICP</button>
+    <button type="button" class="subtab-btn${activeCoTab === 'sender' ? ' active' : ''}" role="tab" aria-selected="${activeCoTab === 'sender' ? 'true' : 'false'}" data-company-tab="sender" onclick="setCompanySubtab('sender', this)">Sender &amp; Objections</button>
+  </div>
+  <div class="company-panel${coHidden('quick')}" data-company-tab="quick">
   <section class="card company-card playbook-card" aria-labelledby="co-playbook-h">
     <div class="company-card-head">
       <h3 id="co-playbook-h">Launch Your SaaS or Local Outreach</h3>
@@ -6262,7 +6641,9 @@ async function loadCompany() {
     </div>
     <div id="co-train-status" class="hint" aria-live="polite" style="margin-top:8px"></div>
   </section>
+  </div>
 
+  <div class="company-panel${coHidden('offer')}" data-company-tab="offer">
   <section class="card company-card" aria-labelledby="co-offer-h">
     <div class="company-card-head">
       <h3 id="co-offer-h">Your offer</h3>
@@ -6290,7 +6671,15 @@ async function loadCompany() {
     <div id="offer-preview" class="offer-preview" hidden></div>
     <div id="offer-ideas" class="offer-ideas"></div>
   </section>
+  ${data.knowledge || data.competitors ? `<section class="card company-card" aria-labelledby="co-learned-h">
+    <div class="company-card-head"><h3 id="co-learned-h">What VeloReach learned from your site</h3>
+      <span class="hint">From training. Retrain with <b>Train from Website</b> or <code>sellbird train &lt;url&gt;</code></span></div>
+    ${data.knowledge ? `<details class="company-learned"><summary>Product knowledge</summary><pre>${ce(data.knowledge)}</pre></details>` : ''}
+    ${data.competitors ? `<details class="company-learned"><summary>Competitors</summary><pre>${ce(data.competitors)}</pre></details>` : ''}
+  </section>` : ''}
+  </div>
 
+  <div class="company-panel${coHidden('icp')}" data-company-tab="icp">
   <section class="card company-card" aria-labelledby="co-product-h">
     <div class="company-card-head"><h3 id="co-product-h">What you sell</h3></div>
     <div class="company-grid">
@@ -6326,7 +6715,9 @@ async function loadCompany() {
     </div>
     <div class="offer-actions"><button class="btn btn-primary btn-sm" onclick="saveCompanySection('icp')">Save</button></div>
   </section>
+  </div>
 
+  <div class="company-panel${coHidden('sender')}" data-company-tab="sender">
   <section class="card company-card" aria-labelledby="co-sender-h">
     <div class="company-card-head"><h3 id="co-sender-h">Who it's from</h3>
       <span class="hint">Appears in email headers &amp; sign-offs</span></div>
@@ -6360,13 +6751,12 @@ async function loadCompany() {
       <button class="btn btn-primary btn-sm" onclick="saveCompanySection('product', true)">Save</button>
     </div>
   </section>
+  </div>
 
-  ${data.knowledge || data.competitors ? `<section class="card company-card" aria-labelledby="co-learned-h">
-    <div class="company-card-head"><h3 id="co-learned-h">What VeloReach learned from your site</h3>
-      <span class="hint">From training. Retrain with <b>Train from Website</b> above or <code>sellbird train &lt;url&gt;</code></span></div>
-    ${data.knowledge ? `<details class="company-learned"><summary>Product knowledge</summary><pre>${ce(data.knowledge)}</pre></details>` : ''}
-    ${data.competitors ? `<details class="company-learned"><summary>Competitors</summary><pre>${ce(data.competitors)}</pre></details>` : ''}
-  </section>` : ''}`;
+  <div class="sticky-save-bar">
+    <span class="hint">Applies Offer, Product, ICP &amp; Sender together cleanly</span>
+    <button type="button" class="btn btn-primary btn-sm" onclick="saveCompanyBlueprintAll(this)">Save All Changes</button>
+  </div>`;
   renderIndustryChipStates();
   _offerIdeas = (o.entry_ideas || []).map(x => ({offer: x}));
   renderOfferIdeas();
@@ -6560,6 +6950,158 @@ async function dismissProposedOffer() {
 // ═══════════════════════════════════════════════════════════════════════════
 
 let _brainConfig = null;
+let _brainProviders = [];
+let _liveModelsCache = {};
+
+function formatModelMeta(m) {
+  if (!m) return '';
+  const bits = [];
+  if (m.context_length) bits.push(Math.round(m.context_length / 1000) + 'k');
+  if (m.input_per_m != null && m.output_per_m != null) {
+    if (m.input_per_m === 0 && m.output_per_m === 0) bits.push('free');
+    else bits.push('$' + Number(m.input_per_m).toFixed(2) + '/$' + Number(m.output_per_m).toFixed(2));
+  }
+  if (m.curated) bits.push('curated');
+  return bits.join(' · ');
+}
+
+function modelCacheKey(provider, baseUrl) {
+  return String(provider || '').toLowerCase() + '|' + String(baseUrl || '').trim();
+}
+
+async function fetchModelsForProvider(provider, baseUrl, apiKeyEnv, refresh) {
+  const payload = {
+    provider: provider || 'openrouter',
+    base_url: baseUrl || '',
+    api_key_env: apiKeyEnv || '',
+    refresh: !!refresh,
+  };
+  const key = modelCacheKey(payload.provider, payload.base_url);
+  if (!refresh && _liveModelsCache[key]) return _liveModelsCache[key];
+  const res = await api('/api/brain/models', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(payload),
+  });
+  if (res && Array.isArray(res.models)) {
+    _liveModelsCache[key] = res;
+  }
+  return res || { ok: false, source: 'curated', models: [], warning: 'Server unreachable.' };
+}
+
+function renderPickerMenuHtml(models, query, inputSelector) {
+  const q = String(query || '').trim().toLowerCase();
+  const list = (models || []).filter(m => !q || String(m.id || '').toLowerCase().includes(q) || String(m.label || '').toLowerCase().includes(q));
+  if (!list.length) return '<div class="cmdk-empty" style="padding:10px">No matching models. Type any custom ID.</div>';
+  return list.slice(0, 60).map(m =>
+    '<button type="button" class="model-opt" onmousedown="event.preventDefault();pickPickerModel(this,' + jsq(m.id) + ')" onclick="pickPickerModel(this,' + jsq(m.id) + ')">' +
+      '<span class="model-opt-main">' + escHtml(m.id) + '</span>' +
+      '<span class="model-opt-meta">' + escHtml(formatModelMeta(m)) + '</span>' +
+    '</button>'
+  ).join('');
+}
+
+function pickPickerModel(optBtn, modelId) {
+  const picker = optBtn && typeof optBtn.closest === 'function' ? optBtn.closest('.model-picker') : null;
+  if (!picker) return;
+  const inp = picker.querySelector('input');
+  const menu = picker.querySelector('.model-menu');
+  if (inp) inp.value = modelId;
+  if (menu) menu.classList.remove('open');
+}
+
+function filterPickerMenu(inp) {
+  const picker = inp && typeof inp.closest === 'function' ? inp.closest('.model-picker') : null;
+  if (!picker) return;
+  const menu = picker.querySelector('.model-menu');
+  if (!menu) return;
+  const row = picker.closest('.chain-row') || picker.closest('.role-box');
+  let prov = picker.getAttribute('data-provider') || 'openrouter';
+  let baseUrl = picker.getAttribute('data-base-url') || '';
+  if (row && row.classList.contains('chain-row')) {
+    prov = (row.querySelector('.chain-prov') || {}).value || prov;
+    baseUrl = ((row.querySelector('.chain-url') || {}).value || '').trim();
+  } else if (row && row.classList.contains('role-box')) {
+    const chainTop = (_brainConfig && Array.isArray(_brainConfig.chain) && _brainConfig.chain[0]) || {};
+    prov = ((row.querySelector('.role-prov') || {}).value || '').trim() || chainTop.provider || prov;
+    baseUrl = prov === chainTop.provider ? (chainTop.base_url || '') : '';
+  }
+  const entry = _liveModelsCache[modelCacheKey(prov, baseUrl)];
+  if (!entry || !Array.isArray(entry.models) || !entry.models.length) return;
+  menu.innerHTML = renderPickerMenuHtml(entry.models, inp.value);
+  menu.classList.add('open');
+}
+
+function closeAllModelMenus() {
+  if (!document.querySelectorAll) return;
+  document.querySelectorAll('.model-menu.open').forEach(m => m.classList.remove('open'));
+}
+
+if (typeof document.addEventListener === 'function') {
+  document.addEventListener('click', e => {
+    if (!e.target || typeof e.target.closest !== 'function' || !e.target.closest('.model-picker')) {
+      closeAllModelMenus();
+    }
+  });
+}
+
+async function fetchRowModels(btn, refresh) {
+  const picker = btn && typeof btn.closest === 'function' ? btn.closest('.model-picker') : null;
+  if (!picker) return;
+  const row = picker.closest('.chain-row') || picker.closest('.role-box');
+  let prov = '';
+  let baseUrl = '';
+  let apiKeyEnv = '';
+  if (row && row.classList.contains('chain-row')) {
+    prov = (row.querySelector('.chain-prov') || {}).value || 'openrouter';
+    baseUrl = ((row.querySelector('.chain-url') || {}).value || '').trim();
+    apiKeyEnv = ((row.querySelector('.chain-env') || {}).value || '').trim();
+  } else if (row && row.classList.contains('role-box')) {
+    const chainTop = (_brainConfig && Array.isArray(_brainConfig.chain) && _brainConfig.chain[0]) || {};
+    prov = ((row.querySelector('.role-prov') || {}).value || '').trim() || chainTop.provider || 'openrouter';
+    baseUrl = prov === chainTop.provider ? (chainTop.base_url || '') : '';
+  }
+  picker.setAttribute('data-provider', prov);
+  picker.setAttribute('data-base-url', baseUrl);
+  const menu = picker.querySelector('.model-menu');
+  const inp = picker.querySelector('input');
+  if (btn) { btn.disabled = true; btn.textContent = '…'; }
+  try {
+    const res = await fetchModelsForProvider(prov, baseUrl, apiKeyEnv, refresh !== false);
+    if (menu) {
+      menu.innerHTML = renderPickerMenuHtml(res.models || [], '');
+      menu.classList.add('open');
+    }
+    const label = res.source === 'live' ? (res.models || []).length + ' live models for ' + prov : (res.warning || 'Showing curated fallback for ' + prov);
+    showToast(label, res.ok ? 'success' : 'info');
+  } finally {
+    if (btn) { btn.disabled = false; btn.textContent = 'Fetch'; }
+  }
+}
+
+async function fetchAllBrainModels(btn) {
+  const rows = Array.from(document.querySelectorAll('#brain-chain-container .chain-row'));
+  const targets = rows.length ? rows.map(r => ({
+    prov: (r.querySelector('.chain-prov') || {}).value || 'openrouter',
+    url: ((r.querySelector('.chain-url') || {}).value || '').trim(),
+    env: ((r.querySelector('.chain-env') || {}).value || '').trim(),
+  })) : [{ prov: 'openrouter', url: '', env: 'OPENROUTER_API_KEY' }];
+  if (btn) { btn.disabled = true; btn.textContent = 'Fetching…'; }
+  try {
+    let liveTotal = 0;
+    const seen = new Set();
+    for (const t of targets) {
+      const k = modelCacheKey(t.prov, t.url);
+      if (seen.has(k)) continue;
+      seen.add(k);
+      const res = await fetchModelsForProvider(t.prov, t.url, t.env, true);
+      if (res && res.ok) liveTotal += (res.models || []).length;
+    }
+    showToast(liveTotal ? 'Fetched ' + liveTotal + ' live models across active chain providers.' : 'Refreshed curated provider catalogs (add API keys for live catalogs).', liveTotal ? 'success' : 'info');
+  } finally {
+    if (btn) { btn.disabled = false; btn.textContent = 'Fetch All Active Models'; }
+  }
+}
 
 const ALL_ROLES = [
   { id: 'scout', name: 'Scout', desc: 'Decision Maker & ICP scoring' },
@@ -6573,14 +7115,15 @@ const ALL_ROLES = [
 ];
 
 const KNOWN_PROVIDERS = [
-  'openai_compat', 'openrouter', 'deepseek', 'xai', 'gemini', 'groq',
-  'together', 'mistral', 'fireworks', 'cerebras', 'ollama', 'lmstudio', 'vllm', 'custom'
+  'openai_compat', 'openrouter', 'openai', 'anthropic', 'deepseek', 'xai', 'gemini', 'groq',
+  'together', 'mistral', 'fireworks', 'cerebras', 'ollama', 'lmstudio', 'vllm', 'custom', 'claude_cli', 'codex_cli'
 ];
 
 const PROVIDER_DEFAULTS = {
   deepseek:      { model: 'deepseek-chat',                                   url: 'https://api.deepseek.com/v1',                           env: 'DEEPSEEK_API_KEY' },
   openrouter:    { model: 'openai/gpt-4o-mini',                              url: 'https://openrouter.ai/api/v1',                          env: 'OPENROUTER_API_KEY' },
   openai:        { model: 'gpt-4o-mini',                                     url: 'https://api.openai.com/v1',                             env: 'OPENAI_API_KEY' },
+  anthropic:     { model: 'claude-sonnet-4-5',                               url: 'https://api.anthropic.com/v1',                          env: 'ANTHROPIC_API_KEY' },
   openai_compat: { model: 'gpt-4o-mini',                                     url: '',                                                      env: 'OPENAI_API_KEY' },
   gemini:        { model: 'gemini-2.5-flash',                                url: 'https://generativelanguage.googleapis.com/v1beta/openai', env: 'GEMINI_API_KEY' },
   groq:          { model: 'llama-3.3-70b-versatile',                         url: 'https://api.groq.com/openai/v1',                        env: 'GROQ_API_KEY' },
@@ -6589,16 +7132,17 @@ const PROVIDER_DEFAULTS = {
   together:      { model: 'meta-llama/Llama-3.3-70B-Instruct-Turbo',         url: 'https://api.together.xyz/v1',                           env: 'TOGETHER_API_KEY' },
   fireworks:     { model: 'accounts/fireworks/models/llama-v3p3-70b-instruct', url: 'https://api.fireworks.ai/inference/v1',               env: 'FIREWORKS_API_KEY' },
   cerebras:      { model: 'llama-3.3-70b',                                   url: 'https://api.cerebras.ai/v1',                            env: 'CEREBRAS_API_KEY' },
-  ollama:        { model: 'llama3.1',                                        url: 'http://localhost:11434/v1',                             env: '' },
+  ollama:        { model: 'llama3.2',                                        url: 'http://localhost:11434/v1',                             env: '' },
   lmstudio:      { model: 'local-model',                                     url: 'http://localhost:1234/v1',                              env: '' },
   vllm:          { model: 'local-model',                                     url: 'http://localhost:8000/v1',                              env: '' },
+  claude_cli:    { model: 'sonnet',                                          url: '',                                                      env: '' },
+  codex_cli:     { model: 'gpt-6-luna',                                      url: '',                                                      env: '' },
   custom:        { model: '',                                                url: '',                                                      env: '' },
 };
 
 async function loadBrainStudio() {
   const data = await api('/api/brain/config');
   if (!data) {
-    // Never leave the studio stuck on "Loading…" when the read fails.
     const chainEl = document.getElementById('brain-chain-container');
     const rolesEl = document.getElementById('brain-roles-grid');
     if (chainEl) chainEl.innerHTML = offlineState();
@@ -6606,6 +7150,28 @@ async function loadBrainStudio() {
     return;
   }
   _brainConfig = data;
+  if (Array.isArray(data.providers) && data.providers.length) {
+    _brainProviders = data.providers;
+    data.providers.forEach(p => {
+      if (p && p.id) {
+        PROVIDER_DEFAULTS[p.id] = {
+          model: p.default_model || (PROVIDER_DEFAULTS[p.id] && PROVIDER_DEFAULTS[p.id].model) || '',
+          url: p.base_url || (PROVIDER_DEFAULTS[p.id] && PROVIDER_DEFAULTS[p.id].url) || '',
+          env: p.api_key_env || (PROVIDER_DEFAULTS[p.id] && PROVIDER_DEFAULTS[p.id].env) || '',
+        };
+      }
+    });
+  }
+
+  const keyBar = document.getElementById('brain-key-bar');
+  if (keyBar && data.env_keys_set) {
+    keyBar.innerHTML = Object.entries(data.env_keys_set).map(([k, ok]) => {
+      const short = k.replace(/_API_KEY$/, '').toLowerCase();
+      return '<button type="button" class="chip' + (ok ? ' on' : '') + '" onclick="goTab(\'settings\');setTimeout(() => setSettingsSubtab(\'ai\'), 60)" title="' +
+        escHtml(k + (ok ? ' configured' : ' not set — click to configure')) + '">' +
+        escHtml(short) + (ok ? ' ✓' : '') + '</button>';
+    }).join('');
+  }
 
   const routerToggle = document.getElementById('brain-activate-router');
   if (routerToggle) routerToggle.checked = !!data.transport_active;
@@ -6681,19 +7247,24 @@ function renderBrainChain(chain) {
   container.innerHTML = chain.map((item, idx) => {
     const rawProv = (item.provider || '').trim();
     const provLower = rawProv.toLowerCase();
-    const opts = (!rawProv || KNOWN_PROVIDERS.includes(provLower))
-      ? KNOWN_PROVIDERS
-      : [rawProv, ...KNOWN_PROVIDERS];
+    const provList = _brainProviders.length ? _brainProviders.map(p => p.id) : KNOWN_PROVIDERS;
+    const opts = (!rawProv || provList.includes(provLower)) ? provList : [rawProv, ...provList];
     return `
       <div class="chain-row" data-idx="${idx}">
         <span class="chain-idx">${idx + 1}</span>
-        <select class="form-input chain-prov" onchange="onChainProviderChange(this)">
+        <select class="form-input chain-prov" aria-label="Chain step ${idx + 1} provider" onchange="onChainProviderChange(this)">
           ${opts.map(p => `<option value="${escHtml(p)}" ${p.toLowerCase() === provLower ? 'selected' : ''}>${escHtml(p)}</option>`).join('')}
         </select>
-        <input type="text" class="form-input chain-model" placeholder="Model ID (e.g. deepseek-chat)" value="${escHtml(item.model || '')}">
-        <input type="text" class="form-input chain-url" placeholder="Base URL (optional)" value="${escHtml(item.base_url || '')}">
-        <input type="text" class="form-input chain-env" placeholder="API Key Env (e.g. DEEPSEEK_API_KEY)" value="${escHtml(item.api_key_env || '')}">
-        <button class="btn btn-ghost" title="Remove" onclick="removeChainRow(this)"><svg class="icon"><use href="#i-close"/></svg></button>
+        <div class="model-picker" data-provider="${escHtml(rawProv || 'openrouter')}" data-base-url="${escHtml(item.base_url || '')}">
+          <div class="model-input-row">
+            <input type="text" class="form-input chain-model" aria-label="Chain step ${idx + 1} model" placeholder="Model ID (e.g. deepseek-chat)" value="${escHtml(item.model || '')}" oninput="filterPickerMenu(this)" onfocus="filterPickerMenu(this)">
+            <button type="button" class="model-fetch-btn" title="Fetch live models from provider" onclick="fetchRowModels(this, true)">Fetch</button>
+          </div>
+          <div class="model-menu" role="listbox" aria-label="Available models"></div>
+        </div>
+        <input type="text" class="form-input chain-url" aria-label="Chain step ${idx + 1} base URL" placeholder="Base URL (optional)" value="${escHtml(item.base_url || '')}">
+        <input type="text" class="form-input chain-env" aria-label="Chain step ${idx + 1} API key variable" placeholder="API Key Env (e.g. DEEPSEEK_API_KEY)" value="${escHtml(item.api_key_env || '')}">
+        <button class="btn btn-ghost" title="Remove" aria-label="Remove chain step ${idx + 1}" onclick="removeChainRow(this)"><svg class="icon"><use href="#i-close"/></svg></button>
       </div>
     `;
   }).join('');
@@ -6705,18 +7276,25 @@ function addChainRow() {
   const idx = container.querySelectorAll('.chain-row').length;
   const defProv = 'deepseek';
   const def = PROVIDER_DEFAULTS[defProv];
+  const provList = _brainProviders.length ? _brainProviders.map(p => p.id) : KNOWN_PROVIDERS;
   const div = document.createElement('div');
   div.className = 'chain-row';
   div.dataset.idx = idx;
   div.innerHTML = `
     <span class="chain-idx">${idx + 1}</span>
-    <select class="form-input chain-prov" onchange="onChainProviderChange(this)">
-      ${KNOWN_PROVIDERS.map(p => `<option value="${escHtml(p)}" ${p === defProv ? 'selected' : ''}>${escHtml(p)}</option>`).join('')}
+    <select class="form-input chain-prov" aria-label="Chain step ${idx + 1} provider" onchange="onChainProviderChange(this)">
+      ${provList.map(p => `<option value="${escHtml(p)}" ${p === defProv ? 'selected' : ''}>${escHtml(p)}</option>`).join('')}
     </select>
-    <input type="text" class="form-input chain-model" placeholder="Model ID" value="${escHtml(def.model)}">
-    <input type="text" class="form-input chain-url" placeholder="Base URL (optional)" value="${escHtml(def.url)}">
-    <input type="text" class="form-input chain-env" placeholder="API Key Env (e.g. DEEPSEEK_API_KEY)" value="${escHtml(def.env)}">
-    <button class="btn btn-ghost" title="Remove" onclick="removeChainRow(this)"><svg class="icon"><use href="#i-close"/></svg></button>
+    <div class="model-picker" data-provider="${escHtml(defProv)}" data-base-url="${escHtml(def.url)}">
+      <div class="model-input-row">
+        <input type="text" class="form-input chain-model" aria-label="Chain step ${idx + 1} model" placeholder="Model ID" value="${escHtml(def.model)}" oninput="filterPickerMenu(this)" onfocus="filterPickerMenu(this)">
+        <button type="button" class="model-fetch-btn" title="Fetch live models from provider" onclick="fetchRowModels(this, true)">Fetch</button>
+      </div>
+      <div class="model-menu" role="listbox" aria-label="Available models"></div>
+    </div>
+    <input type="text" class="form-input chain-url" aria-label="Chain step ${idx + 1} base URL" placeholder="Base URL (optional)" value="${escHtml(def.url)}">
+    <input type="text" class="form-input chain-env" aria-label="Chain step ${idx + 1} API key variable" placeholder="API Key Env (e.g. DEEPSEEK_API_KEY)" value="${escHtml(def.env)}">
+    <button class="btn btn-ghost" title="Remove" aria-label="Remove chain step ${idx + 1}" onclick="removeChainRow(this)"><svg class="icon"><use href="#i-close"/></svg></button>
   `;
   container.appendChild(div);
 }
@@ -6806,8 +7384,11 @@ async function saveBrainChain() {
 function renderBrainRoles(profiles) {
   const grid = document.getElementById('brain-roles-grid');
   if (!grid) return;
+  const provList = _brainProviders.length ? _brainProviders.map(p => p.id) : KNOWN_PROVIDERS;
   grid.innerHTML = ALL_ROLES.map(role => {
     const p = profiles[role.id] || {};
+    const curProv = String(p.provider || '').trim();
+    const opts = (!curProv || provList.includes(curProv.toLowerCase())) ? provList : [curProv, ...provList];
     return `
       <div class="role-box" data-role="${role.id}">
         <div class="role-box-head">
@@ -6815,8 +7396,17 @@ function renderBrainRoles(profiles) {
           <span>${role.desc}</span>
         </div>
         <div class="role-box-inputs">
-          <input type="text" class="form-input role-model" placeholder="Model (optional)" value="${escHtml(p.model || '')}">
-          <input type="text" class="form-input role-prov" placeholder="Provider override" value="${escHtml(p.provider || '')}">
+          <div class="model-picker" data-provider="${escHtml(curProv || 'openrouter')}" data-base-url="">
+            <div class="model-input-row">
+              <input type="text" class="form-input role-model" placeholder="Inherit chain (or type model)" value="${escHtml(p.model || '')}" oninput="filterPickerMenu(this)" onfocus="filterPickerMenu(this)">
+              <button type="button" class="model-fetch-btn" title="Fetch live models" onclick="fetchRowModels(this, true)">Fetch</button>
+            </div>
+            <div class="model-menu" role="listbox"></div>
+          </div>
+          <select class="form-input role-prov" aria-label="${escHtml(role.name)} provider override">
+            <option value="">Inherit chain</option>
+            ${opts.map(pr => `<option value="${escHtml(pr)}" ${pr.toLowerCase() === curProv.toLowerCase() && curProv ? 'selected' : ''}>${escHtml(pr)}</option>`).join('')}
+          </select>
         </div>
       </div>
     `;
@@ -6969,6 +7559,8 @@ async function loadEnrichment() {
   }
 
   if (matrixEl) {
+    const prevCard = typeof matrixEl.querySelector === 'function' ? matrixEl.querySelector('.table-card') : null;
+    const prevScroll = prevCard ? (prevCard.scrollLeft || 0) : 0;
     const companyIds = Object.keys(companiesMap);
     for (const cid of Object.keys(vals)) {
       if (!Object.prototype.hasOwnProperty.call(companiesMap, cid)) companyIds.push(cid);
@@ -6978,7 +7570,7 @@ async function loadEnrichment() {
         'Add at least one AI column and discover companies to view and export enriched matrix data.');
       return;
     }
-    let mHtml = '<div class="table-card" style="overflow-x:auto"><table class="nowrap"><thead><tr>' +
+    let mHtml = '<div class="table-card" style="overflow-x:auto"><table class="clay-table nowrap"><thead><tr>' +
       '<th>Company</th><th>Domain</th>';
     for (const col of cols) {
       mHtml += '<th>' + escHtml(col.name || col.key || col.id) + '</th>';
@@ -6995,14 +7587,22 @@ async function loadEnrichment() {
       for (const col of cols) {
         const cell = compVals[col.id] || (col.key ? compVals[col.key] : null);
         const valText = cell && cell.value ? escHtml(cell.value) : '<span class="muted">—</span>';
+        let srcHost = 'source';
+        if (cell && cell.source_url) {
+          try { srcHost = new URL(cell.source_url).hostname.replace(/^www\./, ''); } catch { srcHost = 'source'; }
+        }
         const srcLink = (cell && cell.source_url && safeHref(cell.source_url))
-          ? ' <a href="' + safeHref(cell.source_url) + '" target="_blank" rel="noopener noreferrer" class="hint">[source]</a>'
+          ? '<a href="' + safeHref(cell.source_url) + '" target="_blank" rel="noopener noreferrer" class="source-pill" title="' + escHtml(cell.source_url) + '">' + escHtml(srcHost) + ' &#8599;</a>'
           : '';
-        mHtml += '<td class="clay-cell" title="' + escHtml((cell && cell.value) || '') + '">' + valText + srcLink + '</td>';
+        mHtml += '<td class="clay-cell" title="' + escHtml((cell && cell.value) || '') + '"><div class="clay-cell-wrap"><span class="clay-cell-text">' + valText + '</span>' + srcLink + '</div></td>';
       }
       mHtml += '<td><button class="btn btn-secondary btn-sm" onclick="runCompanyEnrichment(' + jsq(cid) + ', this)">Run</button></td></tr>';
     }
     matrixEl.innerHTML = mHtml + '</tbody></table></div>';
+    if (prevScroll > 0 && typeof matrixEl.querySelector === 'function') {
+      const nextCard = matrixEl.querySelector('.table-card');
+      if (nextCard) nextCard.scrollLeft = prevScroll;
+    }
   }
 }
 

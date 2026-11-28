@@ -7,6 +7,7 @@ import io
 import ipaddress
 import json
 import logging
+import math
 import os
 import re
 import shutil
@@ -489,7 +490,7 @@ ALLOWED_ENV_KEYS = (
     "OPENROUTER_API_KEY", "OPENAI_API_KEY", "GEMINI_API_KEY",
     "DEEPSEEK_API_KEY", "GROQ_API_KEY", "MISTRAL_API_KEY",
     "TOGETHER_API_KEY", "FIREWORKS_API_KEY", "CEREBRAS_API_KEY",
-    "XAI_API_KEY",
+    "XAI_API_KEY", "ANTHROPIC_API_KEY",
     # Search & Scraping
     "TAVILY_API_KEY", "EXA_API_KEY", "SEARXNG_URL",
     "FIRECRAWL_API_KEY", "SERPER_API_KEY", "SCAVIO_API_KEY",
@@ -565,6 +566,7 @@ async def get_settings():
         "fireworks_api_key_set": is_set("FIREWORKS_API_KEY"),
         "cerebras_api_key_set": is_set("CEREBRAS_API_KEY"),
         "xai_api_key_set": is_set("XAI_API_KEY"),
+        "anthropic_api_key_set": is_set("ANTHROPIC_API_KEY"),
         # Search & Scraping
         "tavily_api_key_set": is_set("TAVILY_API_KEY"),
         "exa_api_key_set": is_set("EXA_API_KEY"),
@@ -628,6 +630,7 @@ async def save_env_settings(request: Request):
                         os.environ[key] = val
                     else:
                         os.environ.pop(key, None)
+            _MODEL_LIST_CACHE.clear()
     return {"success": True}
 
 
@@ -3654,9 +3657,10 @@ def _extra_inboxes_connected() -> bool:
     db_path = _db_path()
     if not db_path.exists():
         return False
+    from contextlib import closing
     try:
         uri = f"{Path(db_path).resolve().as_uri()}?mode=ro"
-        with sqlite3.connect(uri, uri=True) as db:
+        with closing(sqlite3.connect(uri, uri=True)) as db:
             row = db.execute("SELECT 1 FROM mailboxes WHERE state != 'retired' LIMIT 1").fetchone()
     except (sqlite3.Error, ValueError, OSError):
         return False   # no table yet: no extra inbox
@@ -5844,7 +5848,7 @@ async def get_today():
                 "title": (f"{len(proposed)} signal waiting for your confirmation"
                           if len(proposed) == 1
                           else f"{len(proposed)} signals waiting for your confirmation"),
-                "detail": ("Sellbird won't collect anything you haven't approved. "
+                "detail": ("VeloReach won't collect anything you haven't approved. "
                            "Confirm which signals define a good prospect for you."),
                 "action": "Review signals", "tab": "signals",
             })
@@ -6455,20 +6459,88 @@ async def get_instance():
 
 _agentic_router = APIRouter(tags=["AI Brain & Enrichment"])
 
-BRAIN_ROLES = ("scout", "researcher", "writer", "critic", "handler", "trainer")
+BRAIN_ROLES = (
+    "scout", "researcher", "enricher", "writer",
+    "critic", "handler", "analyst", "trainer",
+)
 
-_PROVIDER_DEFAULTS: dict[str, tuple[str, str]] = {
-    "openrouter": ("https://openrouter.ai/api/v1", "OPENROUTER_API_KEY"),
-    "openai": ("https://api.openai.com/v1", "OPENAI_API_KEY"),
-    "openai_compat": ("", "OPENAI_API_KEY"),
-    "gemini": ("https://generativelanguage.googleapis.com/v1beta/openai", "GEMINI_API_KEY"),
-    "deepseek": ("https://api.deepseek.com/v1", "DEEPSEEK_API_KEY"),
-    "groq": ("https://api.groq.com/openai/v1", "GROQ_API_KEY"),
-    "mistral": ("https://api.mistral.ai/v1", "MISTRAL_API_KEY"),
-    "together": ("https://api.together.xyz/v1", "TOGETHER_API_KEY"),
-    "fireworks": ("https://api.fireworks.ai/inference/v1", "FIREWORKS_API_KEY"),
-    "cerebras": ("https://api.cerebras.ai/v1", "CEREBRAS_API_KEY"),
-    "xai": ("https://api.x.ai/v1", "XAI_API_KEY"),
+_PROVIDER_LABELS: dict[str, str] = {
+    "openrouter": "OpenRouter",
+    "openai": "OpenAI",
+    "openai_compat": "OpenAI-Compatible",
+    "anthropic": "Anthropic",
+    "gemini": "Google Gemini",
+    "deepseek": "DeepSeek",
+    "groq": "Groq",
+    "xai": "xAI (Grok)",
+    "mistral": "Mistral",
+    "together": "Together AI",
+    "fireworks": "Fireworks AI",
+    "cerebras": "Cerebras",
+    "ollama": "Ollama (Local)",
+    "lmstudio": "LM Studio (Local)",
+    "vllm": "vLLM (Local)",
+    "custom": "Custom OpenAI-Compatible",
+    "claude_cli": "Claude CLI (Host)",
+    "codex_cli": "Codex CLI (Host)",
+}
+
+
+def _build_provider_defaults() -> dict[str, tuple[str, str]]:
+    """Build (base_url, api_key_env) defaults merged cleanly with harvey_brain.spec.PROVIDERS."""
+    defaults: dict[str, tuple[str, str]] = {
+        "openrouter": ("https://openrouter.ai/api/v1", "OPENROUTER_API_KEY"),
+        "openai": ("https://api.openai.com/v1", "OPENAI_API_KEY"),
+        "openai_compat": ("", "OPENAI_API_KEY"),
+        "custom": ("https://api.openai.com/v1", "OPENAI_API_KEY"),
+        "gemini": ("https://generativelanguage.googleapis.com/v1beta/openai", "GEMINI_API_KEY"),
+        "deepseek": ("https://api.deepseek.com/v1", "DEEPSEEK_API_KEY"),
+        "groq": ("https://api.groq.com/openai/v1", "GROQ_API_KEY"),
+        "xai": ("https://api.x.ai/v1", "XAI_API_KEY"),
+        "mistral": ("https://api.mistral.ai/v1", "MISTRAL_API_KEY"),
+        "together": ("https://api.together.xyz/v1", "TOGETHER_API_KEY"),
+        "fireworks": ("https://api.fireworks.ai/inference/v1", "FIREWORKS_API_KEY"),
+        "cerebras": ("https://api.cerebras.ai/v1", "CEREBRAS_API_KEY"),
+        "anthropic": ("https://api.anthropic.com/v1", "ANTHROPIC_API_KEY"),
+        "ollama": ("http://localhost:11434/v1", ""),
+        "lmstudio": ("http://localhost:1234/v1", ""),
+        "vllm": ("http://localhost:8000/v1", ""),
+        "claude_cli": ("", ""),
+        "codex_cli": ("", ""),
+    }
+    try:
+        from harvey_brain.spec import PROVIDERS as hb_providers
+        for prov_id, spec in hb_providers.items():
+            key = str(prov_id or "").strip().lower()
+            if key:
+                defaults[key] = (
+                    str(getattr(spec, "base_url", "") or ""),
+                    str(getattr(spec, "api_key_env", "") or ""),
+                )
+    except ImportError:
+        pass
+    return defaults
+
+
+_PROVIDER_DEFAULTS: dict[str, tuple[str, str]] = _build_provider_defaults()
+
+_MODEL_LIST_CACHE_TTL = 120.0
+_MODEL_LIST_CACHE: dict[tuple[str, str, str, bool], tuple[float, dict]] = {}
+
+_NON_CHAT_RE = re.compile(
+    r"(?:^|[/:_-])(?:"
+    r"whisper|tts|dall-e|text-embedding|embedding|embed|moderation|omni-moderation|"
+    r"transcribe|sora|gpt-image|chatgpt-image|imagen|stable-diffusion|flux"
+    r")(?:[/:_.-]|$)",
+    re.IGNORECASE,
+)
+
+_PROVIDER_EXTRA_CURATED: dict[str, tuple[str, ...]] = {
+    "anthropic": ("claude-sonnet-5.5", "claude-haiku-5.5", "claude-opus-4-8"),
+    "deepseek": ("deepseek-chat", "deepseek-reasoner"),
+    "codex_cli": ("gpt-6.1-sol", "gpt-6.1-terra", "gpt-6-luna", "gpt-5.5"),
+    "claude_cli": ("sonnet", "haiku", "opus"),
+    "ollama": ("llama3.2", "llama3.1", "qwen2.5"),
 }
 
 _ENV_VAR_RE = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*$")
@@ -6864,9 +6936,9 @@ async def get_brain_config():
             profiles[str(role)] = {"provider": "", "model": val.strip(), "base_url": "", "api_key_env": ""}
 
     ai_env_keys = (
-        "OPENROUTER_API_KEY", "OPENAI_API_KEY", "GEMINI_API_KEY", "DEEPSEEK_API_KEY",
-        "GROQ_API_KEY", "MISTRAL_API_KEY", "TOGETHER_API_KEY", "FIREWORKS_API_KEY",
-        "CEREBRAS_API_KEY", "XAI_API_KEY",
+        "OPENROUTER_API_KEY", "OPENAI_API_KEY", "ANTHROPIC_API_KEY", "GEMINI_API_KEY",
+        "DEEPSEEK_API_KEY", "GROQ_API_KEY", "MISTRAL_API_KEY", "TOGETHER_API_KEY",
+        "FIREWORKS_API_KEY", "CEREBRAS_API_KEY", "XAI_API_KEY",
     )
     brain = _active_brain()
     spend_today = await _spend_today_usd()
@@ -6881,6 +6953,7 @@ async def get_brain_config():
         "chain": chain,
         "profiles": profiles,
         "roles": list(BRAIN_ROLES),
+        "providers": _build_brain_providers_catalog(env_map),
         "transport_active": _is_transport_mode(brain),
         "brain_provider": _active_provider(),
         "transport_factory": (getattr(brain, "transport_factory", "") or "") if brain else "",
@@ -6888,6 +6961,577 @@ async def get_brain_config():
         "openai_model": env_map.get("OPENAI_MODEL", ""),
         "env_keys_set": {k: bool(env_map.get(k, "").strip()) for k in ai_env_keys},
     }
+
+
+def _canonical_brain_provider(provider: str) -> str:
+    clean = (provider or "").strip().lower()
+    if clean == "codex":
+        return "codex_cli"
+    if clean == "claude":
+        return "claude_cli"
+    return clean
+
+
+def _build_brain_providers_catalog(env_map: dict[str, str]) -> list[dict]:
+    """Return normalized provider catalog from harvey_brain.spec.PROVIDERS + env readiness."""
+    try:
+        from harvey_brain.spec import PROVIDERS as hb_providers
+    except ImportError:
+        hb_providers = {}
+
+    seen: set[str] = set()
+    ordered_ids: list[str] = []
+    for pid in (*hb_providers.keys(), "anthropic", "openai_compat", *_PROVIDER_DEFAULTS.keys()):
+        clean = str(pid or "").strip().lower()
+        if clean and clean not in seen:
+            seen.add(clean)
+            ordered_ids.append(clean)
+
+    providers: list[dict] = []
+    for pid in ordered_ids:
+        spec = hb_providers.get(pid)
+        def_url, def_env = _PROVIDER_DEFAULTS.get(pid, ("", ""))
+        base_url = str(getattr(spec, "base_url", def_url) if spec is not None else def_url)
+        api_key_env = str(getattr(spec, "api_key_env", def_env) if spec is not None else def_env)
+        if pid in ("custom", "openai_compat") and env_map.get("OPENAI_BASE_URL", "").strip():
+            base_url = env_map["OPENAI_BASE_URL"].strip()
+
+        default_model = str(getattr(spec, "default_model", "") or "")
+        if not default_model:
+            if pid == "anthropic":
+                default_model = "claude-sonnet-5.5"
+            elif pid in ("custom", "openai_compat"):
+                default_model = env_map.get("OPENAI_MODEL", "").strip() or "gpt-4o-mini"
+        elif pid == "custom" and env_map.get("OPENAI_MODEL", "").strip():
+            default_model = env_map["OPENAI_MODEL"].strip()
+
+        is_cli = bool(getattr(spec, "delegates", False) or pid in ("claude_cli", "codex_cli"))
+        keyless = bool(getattr(spec, "keyless", not api_key_env) if spec is not None else (not api_key_env))
+        key_set = bool(api_key_env and env_map.get(api_key_env, "").strip())
+
+        providers.append({
+            "id": pid,
+            "label": _PROVIDER_LABELS.get(pid) or pid.replace("_", " ").title(),
+            "base_url": base_url,
+            "api_key_env": api_key_env,
+            "default_model": default_model,
+            "keyless": keyless,
+            "is_cli": is_cli,
+            "key_set": key_set,
+        })
+    return providers
+
+
+def _curated_model_ids(provider: str, env_map: dict[str, str] | None = None) -> list[str]:
+    """Collect curated model IDs for a provider from spec.PROVIDERS, DEFAULT_PROFILES, and pricing.PRICES."""
+    canon = _canonical_brain_provider(provider)
+    ordered: list[str] = []
+    seen: set[str] = set()
+
+    def add_id(mid: str) -> None:
+        clean = (mid or "").strip()
+        if clean and clean not in seen:
+            seen.add(clean)
+            ordered.append(clean)
+
+    try:
+        from harvey_brain.spec import PROVIDERS as hb_providers
+        spec = hb_providers.get(canon)
+        if spec is not None and spec.default_model:
+            add_id(spec.default_model)
+    except ImportError:
+        pass
+
+    if canon in ("custom", "openai_compat") and env_map:
+        env_model = env_map.get("OPENAI_MODEL", "").strip()
+        if env_model:
+            add_id(env_model)
+
+    try:
+        from harvey_brain.profile import DEFAULT_PROFILES
+        for prof in DEFAULT_PROFILES.values():
+            if (getattr(prof, "provider", "") or "").strip().lower() == canon and prof.model:
+                add_id(prof.model)
+    except ImportError:
+        pass
+
+    for extra_id in _PROVIDER_EXTRA_CURATED.get(canon, ()):
+        add_id(extra_id)
+
+    try:
+        from harvey_brain.pricing import PRICES
+        for prov_key, prefix, _price in PRICES:
+            if prov_key != canon:
+                continue
+            p_clean = (prefix or "").strip()
+            if not p_clean or p_clean.endswith(("-", "/")):
+                continue
+            # Skip broad family stems when a concrete model with that prefix is already included
+            if any(existing.startswith(p_clean) and existing != p_clean for existing in ordered):
+                continue
+            add_id(p_clean)
+    except ImportError:
+        pass
+
+    if not ordered and canon in ("custom", "openai_compat"):
+        add_id("gpt-4o-mini")
+    return ordered
+
+
+def _parse_per_m_price(raw_val) -> float | None:
+    if raw_val is None or isinstance(raw_val, bool):
+        return None
+    try:
+        val = float(raw_val)
+    except (TypeError, ValueError):
+        return None
+    if not math.isfinite(val) or val < 0:
+        return None
+    return round(val * 1_000_000.0, 6)
+
+
+def _normalize_model_item(
+    provider: str,
+    raw: object,
+    curated_ids: set[str],
+    *,
+    force_curated: bool = False,
+) -> dict | None:
+    """Normalize a raw provider model object into the unified dashboard model schema."""
+    if isinstance(raw, str):
+        model_id = raw.strip()
+        item: dict = {}
+    elif isinstance(raw, dict):
+        model_id = str(
+            raw.get("id") or raw.get("slug") or raw.get("name") or raw.get("model") or ""
+        ).strip()
+        item = raw
+    else:
+        return None
+
+    if not model_id:
+        return None
+    if provider == "gemini" and model_id.startswith("models/"):
+        model_id = model_id[len("models/"):]
+
+    label = str(item.get("display_name") or item.get("name") or model_id).strip() or model_id
+
+    ctx_raw = (
+        item.get("context_length")
+        or item.get("context_window")
+        or item.get("max_model_len")
+        or item.get("max_context_length")
+        or item.get("input_token_limit")
+    )
+    if ctx_raw is None and isinstance(item.get("top_provider"), dict):
+        ctx_raw = item["top_provider"].get("context_length")
+    context_length: int | None = None
+    if ctx_raw is not None and not isinstance(ctx_raw, bool):
+        try:
+            ctx_int = int(ctx_raw)
+            if ctx_int > 0:
+                context_length = ctx_int
+        except (TypeError, ValueError):
+            pass
+
+    input_per_m: float | None = None
+    output_per_m: float | None = None
+    pricing_raw = item.get("pricing")
+    if isinstance(pricing_raw, dict):
+        input_per_m = _parse_per_m_price(pricing_raw.get("prompt"))
+        output_per_m = _parse_per_m_price(pricing_raw.get("completion"))
+
+    if input_per_m is None and output_per_m is None:
+        try:
+            from harvey_brain.pricing import lookup as pricing_lookup
+            price = pricing_lookup(_canonical_brain_provider(provider), model_id)
+        except ImportError:
+            price = None
+        if price is not None and getattr(price, "verified", True):
+            input_per_m = float(price.input_per_m)
+            output_per_m = float(price.output_per_m)
+
+    base_tag = model_id.split(":", 1)[0] if provider == "ollama" else model_id
+    is_curated = force_curated or (model_id in curated_ids) or (base_tag in curated_ids)
+    return {
+        "id": model_id,
+        "label": label,
+        "context_length": context_length,
+        "input_per_m": input_per_m,
+        "output_per_m": output_per_m,
+        "curated": bool(is_curated),
+    }
+
+
+def _filter_and_sort_models(models: list[dict], default_model: str = "") -> list[dict]:
+    """Deduplicate, filter obvious non-chat models when chat models exist, and sort curated first."""
+    deduped: list[dict] = []
+    seen: set[str] = set()
+    for m in models:
+        mid = m["id"]
+        if mid in seen:
+            continue
+        seen.add(mid)
+        deduped.append(m)
+
+    chat_only = [m for m in deduped if not _NON_CHAT_RE.search(m["id"])]
+    kept = chat_only if chat_only else deduped
+    kept.sort(
+        key=lambda m: (
+            0 if default_model and m["id"] == default_model else 1,
+            0 if m.get("curated") else 1,
+            1 if _NON_CHAT_RE.search(m["id"]) else 0,
+        )
+    )
+    return kept
+
+
+def _curated_models_for_provider(provider: str, env_map: dict[str, str] | None = None) -> list[dict]:
+    """Build normalized curated fallback models for a provider."""
+    ids = _curated_model_ids(provider, env_map)
+    curated_set = set(ids)
+    out = []
+    for mid in ids:
+        norm = _normalize_model_item(provider, mid, curated_set, force_curated=True)
+        if norm is not None:
+            out.append(norm)
+    return out
+
+
+def _provider_default_model(provider: str, env_map: dict[str, str] | None = None) -> str:
+    canon = _canonical_brain_provider(provider)
+    if canon in ("custom", "openai_compat") and env_map:
+        m = env_map.get("OPENAI_MODEL", "").strip()
+        if m:
+            return m
+    try:
+        from harvey_brain.spec import PROVIDERS as hb_providers
+        spec = hb_providers.get(canon)
+        if spec is not None and spec.default_model:
+            return spec.default_model
+    except ImportError:
+        pass
+    ids = _curated_model_ids(provider, env_map)
+    return ids[0] if ids else ""
+
+
+def _models_payload(
+    *,
+    ok: bool,
+    provider: str,
+    base_url: str,
+    api_key_env: str,
+    api_key_set: bool,
+    source: str,
+    models: list[dict],
+    warning: str = "",
+    cached: bool = False,
+) -> dict:
+    return {
+        "ok": ok,
+        "provider": provider,
+        "base_url": base_url,
+        "api_key_env": api_key_env,
+        "api_key_set": api_key_set,
+        "source": source,
+        "cached": cached,
+        "warning": warning,
+        "models": models,
+    }
+
+
+def _curated_fallback_payload(
+    provider: str,
+    base_url: str,
+    api_key_env: str,
+    api_key_set: bool,
+    warning: str,
+    env_map: dict[str, str],
+) -> dict:
+    return _models_payload(
+        ok=False,
+        provider=provider,
+        base_url=base_url,
+        api_key_env=api_key_env,
+        api_key_set=api_key_set,
+        source="curated",
+        models=_curated_models_for_provider(provider, env_map),
+        warning=warning,
+    )
+
+
+async def _fetch_cli_delegate_models(provider: str) -> dict:
+    """Resolve curated/runtime model lists for CLI delegate providers (claude_cli, codex_cli)."""
+    canon = _canonical_brain_provider(provider)
+    curated_ids = _curated_model_ids(canon)
+    curated_set = set(curated_ids)
+    default_model = _provider_default_model(canon)
+
+    if canon == "claude_cli":
+        return _models_payload(
+            ok=True,
+            provider=provider,
+            base_url="",
+            api_key_env="",
+            api_key_set=False,
+            source="curated",
+            models=_curated_models_for_provider(canon),
+        )
+
+    # codex_cli / codex
+    raw_catalog: dict | None = None
+    try:
+        from sellbird import codex as codex_mod
+        top_read = getattr(codex_mod, "read_catalog", None)
+        if callable(top_read):
+            res = top_read()
+            raw_catalog = await res if inspect.isawaitable(res) else res
+        else:
+            codex_path = codex_mod.find_codex()
+            if codex_path:
+                codex_mod.require_supported_platform()
+                server = codex_mod._AppServer(codex_path)
+                try:
+                    server.prepare()
+                    deadline = time.monotonic() + 6.0
+                    await server.read_version(deadline)
+                    raw_catalog = await server.read_catalog(deadline)
+                finally:
+                    await server.close()
+    except Exception:
+        raw_catalog = None
+
+    if isinstance(raw_catalog, dict) and raw_catalog:
+        items = []
+        for slug, entry in raw_catalog.items():
+            merged = {"id": entry.get("slug") or slug, **entry} if isinstance(entry, dict) else {"id": str(slug)}
+            norm = _normalize_model_item(canon, merged, curated_set)
+            if norm is not None:
+                items.append(norm)
+        models = _filter_and_sort_models(items, default_model=default_model)
+        if models:
+            return _models_payload(
+                ok=True,
+                provider=provider,
+                base_url="",
+                api_key_env="",
+                api_key_set=False,
+                source="live",
+                models=models,
+            )
+
+    return _models_payload(
+        ok=True,
+        provider=provider,
+        base_url="",
+        api_key_env="",
+        api_key_set=False,
+        source="curated",
+        warning="Host Codex CLI unavailable; showing curated Codex models.",
+        models=_curated_models_for_provider(canon),
+    )
+
+
+async def _fetch_http_models(
+    provider: str,
+    base_url: str,
+    api_key_env: str,
+    api_key: str,
+    env_map: dict[str, str],
+) -> dict:
+    """Query a provider's live models endpoint with normalized output and curated fallback."""
+    import httpx
+
+    api_key_set = bool(api_key)
+    if provider == "anthropic":
+        headers = {
+            "x-api-key": api_key,
+            "anthropic-version": "2023-06-01",
+            "Accept": "application/json",
+        }
+    else:
+        headers = {"Accept": "application/json"}
+        if api_key:
+            headers["Authorization"] = f"Bearer {api_key}"
+        if provider == "openrouter":
+            headers["HTTP-Referer"] = "https://github.com/ethanplusai/sellbird"
+            headers["X-OpenRouter-Title"] = "Sellbird"
+            headers["X-Title"] = "Sellbird"
+
+    curated_ids = set(_curated_model_ids(provider, env_map))
+    default_model = _provider_default_model(provider, env_map)
+
+    try:
+        async with httpx.AsyncClient(timeout=12.0, trust_env=False) as client:
+            resp = await client.get(f"{base_url}/models", headers=headers)
+            if provider == "ollama" and resp.status_code == 404:
+                ollama_root = base_url[:-3] if base_url.endswith("/v1") else base_url
+                resp = await client.get(f"{ollama_root}/api/tags", headers=headers)
+
+        if resp.status_code < 200 or resp.status_code >= 300:
+            if resp.status_code in (401, 403):
+                warning = (
+                    f"Authentication rejected (HTTP {resp.status_code}) for {provider}. "
+                    f"Check {api_key_env or 'API key'}. Showing curated fallback models."
+                )
+            else:
+                warning = (
+                    f"{provider} models endpoint returned HTTP {resp.status_code}. "
+                    "Showing curated fallback models."
+                )
+            return _curated_fallback_payload(provider, base_url, api_key_env, api_key_set, warning, env_map)
+
+        payload = resp.json()
+        if isinstance(payload, list):
+            raw_items = payload
+        elif isinstance(payload, dict) and isinstance(payload.get("data"), list):
+            raw_items = payload["data"]
+        elif isinstance(payload, dict) and isinstance(payload.get("models"), list):
+            raw_items = payload["models"]
+        else:
+            raise ValueError("Unexpected models response format")
+
+        normalized = []
+        for item in raw_items:
+            norm = _normalize_model_item(provider, item, curated_ids)
+            if norm is not None:
+                normalized.append(norm)
+        models = _filter_and_sort_models(normalized, default_model=default_model)
+        return _models_payload(
+            ok=True,
+            provider=provider,
+            base_url=base_url,
+            api_key_env=api_key_env,
+            api_key_set=api_key_set,
+            source="live",
+            models=models,
+        )
+    except Exception as exc:
+        return _curated_fallback_payload(
+            provider,
+            base_url,
+            api_key_env,
+            api_key_set,
+            f"Could not reach {provider} models endpoint ({exc}). Showing curated fallback models.",
+            env_map,
+        )
+
+
+@_agentic_router.get("/api/brain/providers")
+async def get_brain_providers():
+    """List supported AI providers from harvey_brain.spec.PROVIDERS with env key readiness."""
+    return {"providers": _build_brain_providers_catalog(_merged_env_map())}
+
+
+@_agentic_router.post("/api/brain/models")
+async def fetch_brain_models(request: Request):
+    """Fetch and normalize live LLM models for a provider, with 120s TTL cache and curated fallback."""
+    try:
+        raw_body = await request.body()
+        body = json.loads(raw_body) if raw_body.strip() else {}
+    except Exception:
+        return JSONResponse({"ok": False, "error": "Invalid JSON body."}, status_code=400)
+    if not isinstance(body, dict):
+        return JSONResponse({"ok": False, "error": "Request body must be a JSON object."}, status_code=400)
+
+    env_map = _merged_env_map()
+    req_provider = str(body.get("provider") or "").strip().lower()
+    if not req_provider:
+        active_prov = _active_provider()
+        if active_prov in ("openai_compat", "custom") or (
+            not active_prov and env_map.get("OPENAI_BASE_URL", "").strip()
+        ):
+            provider = active_prov or "openai_compat"
+        else:
+            provider = "openrouter"
+    else:
+        provider = req_provider
+
+    req_base_url = str(body.get("base_url") or "").strip()
+    req_key_env = str(body.get("api_key_env") or "").strip()
+    raw_refresh = body.get("refresh", False)
+    refresh = raw_refresh.strip().lower() in ("1", "true", "yes", "on") if isinstance(raw_refresh, str) else bool(raw_refresh)
+
+    try:
+        if req_base_url:
+            req_base_url = _validate_brain_base_url(req_base_url, provider)
+        if req_key_env:
+            req_key_env = _validate_api_key_env(req_key_env)
+    except ValueError as exc:
+        return JSONResponse({"ok": False, "error": str(exc)}, status_code=400)
+
+    canon = _canonical_brain_provider(provider)
+    if canon in ("claude_cli", "codex_cli"):
+        cache_key = (provider, "", "", False)
+        if not refresh and cache_key in _MODEL_LIST_CACHE:
+            ts, cached_res = _MODEL_LIST_CACHE[cache_key]
+            if time.monotonic() - ts < _MODEL_LIST_CACHE_TTL:
+                return {**cached_res, "cached": True}
+        res = await _fetch_cli_delegate_models(provider)
+        _MODEL_LIST_CACHE[cache_key] = (time.monotonic(), res)
+        return res
+
+    if provider not in _PROVIDER_DEFAULTS and not req_base_url:
+        return JSONResponse(
+            {"ok": False, "error": f"Unknown provider {provider!r} and no base_url provided."},
+            status_code=400,
+        )
+
+    def_url, def_env = _PROVIDER_DEFAULTS.get(provider, ("", ""))
+    resolved_base_url = req_base_url
+    if not resolved_base_url:
+        if provider in ("openai_compat", "custom"):
+            resolved_base_url = env_map.get("OPENAI_BASE_URL", "").strip() or def_url
+        else:
+            resolved_base_url = def_url
+    resolved_base_url = resolved_base_url.rstrip("/")
+
+    resolved_key_env = req_key_env or def_env
+    try:
+        if resolved_base_url:
+            _validate_brain_base_url(resolved_base_url, provider)
+        if resolved_key_env:
+            _validate_api_key_env(resolved_key_env)
+    except ValueError as exc:
+        return JSONResponse({"ok": False, "error": str(exc)}, status_code=400)
+
+    api_key = env_map.get(resolved_key_env, "").strip() if resolved_key_env else ""
+    api_key_set = bool(api_key)
+    is_local_loopback = (
+        provider in _LOCAL_INFERENCE_PROVIDERS and _is_loopback_url(resolved_base_url)
+    )
+    key_required = bool(resolved_key_env) and not is_local_loopback
+
+    if not resolved_base_url:
+        return _curated_fallback_payload(
+            provider,
+            "",
+            resolved_key_env,
+            api_key_set,
+            f"No base_url configured for {provider}. Set OPENAI_BASE_URL or provide a Base URL.",
+            env_map,
+        )
+
+    if key_required and not api_key:
+        return _curated_fallback_payload(
+            provider,
+            resolved_base_url,
+            resolved_key_env,
+            False,
+            f"Missing {resolved_key_env} in .env. Showing curated fallback models.",
+            env_map,
+        )
+
+    cache_key = (provider, resolved_base_url, resolved_key_env, api_key_set)
+    if not refresh and cache_key in _MODEL_LIST_CACHE:
+        ts, cached_res = _MODEL_LIST_CACHE[cache_key]
+        if time.monotonic() - ts < _MODEL_LIST_CACHE_TTL:
+            return {**cached_res, "cached": True}
+
+    result = await _fetch_http_models(provider, resolved_base_url, resolved_key_env, api_key, env_map)
+    if result.get("ok"):
+        _MODEL_LIST_CACHE[cache_key] = (time.monotonic(), result)
+    return result
 
 
 @_agentic_router.post("/api/brain/config")
